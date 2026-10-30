@@ -12,7 +12,9 @@ public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> op
     public DbSet<Organizer> Organizers => Set<Organizer>();
     public DbSet<OrganizerMembership> OrganizerMemberships => Set<OrganizerMembership>();
     public DbSet<Event> Events => Set<Event>();
+    public DbSet<Race> Races => Set<Race>();
     public DbSet<RaceCategory> RaceCategories => Set<RaceCategory>();
+    public DbSet<StartWave> StartWaves => Set<StartWave>();
     public DbSet<Course> Courses => Set<Course>();
     public DbSet<CourseCheckpoint> CourseCheckpoints => Set<CourseCheckpoint>();
     public DbSet<Runner> Runners => Set<Runner>();
@@ -52,7 +54,7 @@ public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> op
             e.Property(x => x.TimeZoneId).HasMaxLength(100).IsRequired();
             e.Property(x => x.Status).HasConversion<string>().HasMaxLength(32);
             e.HasOne(x => x.Organizer).WithMany(x => x.Events).HasForeignKey(x => x.OrganizerId);
-            e.HasMany(x => x.Categories).WithOne(x => x.Event).HasForeignKey(x => x.EventId);
+            e.HasMany(x => x.Races).WithOne(x => x.Event).HasForeignKey(x => x.EventId);
             e.HasMany(x => x.Courses).WithOne(x => x.Event).HasForeignKey(x => x.EventId);
             e.HasMany(x => x.Registrations).WithOne(x => x.Event).HasForeignKey(x => x.EventId);
         });
@@ -62,15 +64,34 @@ public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> op
             e.Property(x => x.DistanceKm).HasPrecision(8, 3);
             e.HasAlternateKey(x => new { x.Id, x.EventId });
         });
-        b.Entity<RaceCategory>(e =>
+        b.Entity<Race>(e =>
         {
+            e.HasIndex(x => new { x.EventId, x.Name }).IsUnique();
             e.Property(x => x.Name).HasMaxLength(120).IsRequired();
             e.Property(x => x.DistanceKm).HasPrecision(8, 3);
             e.Property(x => x.Status).HasConversion<string>().HasMaxLength(24);
             e.HasAlternateKey(x => new { x.Id, x.EventId });
-            e.HasOne(x => x.Course).WithMany(x => x.Categories)
+            e.HasOne(x => x.Course).WithMany(x => x.Races)
                 .HasForeignKey(x => new { x.CourseId, x.EventId })
-                .HasPrincipalKey(x => new { x.Id, x.EventId }).IsRequired(false);
+                .HasPrincipalKey(x => new { x.Id, x.EventId });
+        });
+        b.Entity<RaceCategory>(e =>
+        {
+            e.HasIndex(x => new { x.RaceId, x.Name }).IsUnique();
+            e.Property(x => x.Name).HasMaxLength(120).IsRequired();
+            e.Property(x => x.Status).HasConversion<string>().HasMaxLength(24);
+            e.HasAlternateKey(x => new { x.Id, x.RaceId });
+            e.HasOne(x => x.Race).WithMany(x => x.Categories).HasForeignKey(x => x.RaceId);
+            e.ToTable(t => t.HasCheckConstraint("CK_RaceCategory_AgeRange",
+                "`MinimumAge` IS NULL OR `MaximumAge` IS NULL OR `MaximumAge` >= `MinimumAge`"));
+        });
+        b.Entity<StartWave>(e =>
+        {
+            e.HasIndex(x => new { x.RaceId, x.Sequence }).IsUnique();
+            e.Property(x => x.Name).HasMaxLength(120).IsRequired();
+            e.Property(x => x.Status).HasConversion<string>().HasMaxLength(24);
+            e.HasAlternateKey(x => new { x.Id, x.RaceId });
+            e.HasOne(x => x.Race).WithMany(x => x.StartWaves).HasForeignKey(x => x.RaceId);
         });
         b.Entity<CourseCheckpoint>(e =>
         {
@@ -93,12 +114,15 @@ public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> op
             e.HasIndex(x => new { x.EventId, x.BibNumber }).IsUnique();
             e.Property(x => x.BibNumber).HasMaxLength(32).IsRequired();
             e.Property(x => x.RegistrationStatus).HasConversion<string>().HasMaxLength(24);
+            e.HasOne(x => x.Race).WithMany(x => x.Registrations)
+                .HasForeignKey(x => new { x.RaceId, x.EventId })
+                .HasPrincipalKey(x => new { x.Id, x.EventId });
             e.HasOne(x => x.RaceCategory).WithMany(x => x.Registrations)
-                .HasForeignKey(x => new { x.RaceCategoryId, x.EventId })
-                .HasPrincipalKey(x => new { x.Id, x.EventId });
-            e.HasOne(x => x.Course).WithMany(x => x.Registrations)
-                .HasForeignKey(x => new { x.CourseId, x.EventId })
-                .HasPrincipalKey(x => new { x.Id, x.EventId });
+                .HasForeignKey(x => new { x.RaceCategoryId, x.RaceId })
+                .HasPrincipalKey(x => new { x.Id, x.RaceId }).IsRequired(false);
+            e.HasOne(x => x.StartWave).WithMany(x => x.Registrations)
+                .HasForeignKey(x => new { x.StartWaveId, x.RaceId })
+                .HasPrincipalKey(x => new { x.Id, x.RaceId }).IsRequired(false);
             e.HasOne(x => x.Runner).WithMany(x => x.Registrations).HasForeignKey(x => x.RunnerId);
         });
     }
