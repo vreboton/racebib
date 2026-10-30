@@ -19,7 +19,7 @@ public sealed class Event
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
     public Organizer Organizer { get; set; } = null!;
-    public ICollection<RaceCategory> Categories { get; set; } = new List<RaceCategory>();
+    public ICollection<Race> Races { get; set; } = new List<Race>();
     public ICollection<Course> Courses { get; set; } = new List<Course>();
     public ICollection<Registration> Registrations { get; set; } = new List<Registration>();
 }
