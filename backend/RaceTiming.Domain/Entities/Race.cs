@@ -10,7 +10,7 @@ public sealed class Race
     public required string Name { get; set; }
     public decimal DistanceKm { get; set; }
     public string? Description { get; set; }
-    public TimeOnly StartTime { get; set; }
+    public DateTime StartAtUtc { get; set; }
     public int? CutoffDurationSeconds { get; set; }
     public RecordStatus Status { get; set; } = RecordStatus.Active;
     public Event Event { get; set; } = null!;
