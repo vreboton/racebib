@@ -6,6 +6,7 @@ public sealed class Registration
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid EventId { get; set; }
+    public Guid OrganizerId { get; set; }
     public Guid RaceId { get; set; }
     public Guid RunnerId { get; set; }
     public Guid? RaceCategoryId { get; set; }
