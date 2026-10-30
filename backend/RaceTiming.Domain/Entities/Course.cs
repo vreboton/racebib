@@ -14,6 +14,5 @@ public sealed class Course
     public RecordStatus Status { get; set; } = RecordStatus.Active;
     public Event Event { get; set; } = null!;
     public ICollection<CourseCheckpoint> Checkpoints { get; set; } = new List<CourseCheckpoint>();
-    public ICollection<RaceCategory> Categories { get; set; } = new List<RaceCategory>();
-    public ICollection<Registration> Registrations { get; set; } = new List<Registration>();
+    public ICollection<Race> Races { get; set; } = new List<Race>();
 }
