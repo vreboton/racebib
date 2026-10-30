@@ -56,7 +56,8 @@ public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> op
             e.HasOne(x => x.Organizer).WithMany(x => x.Events).HasForeignKey(x => x.OrganizerId);
             e.HasMany(x => x.Races).WithOne(x => x.Event).HasForeignKey(x => x.EventId);
             e.HasMany(x => x.Courses).WithOne(x => x.Event).HasForeignKey(x => x.EventId);
-            e.HasMany(x => x.Registrations).WithOne(x => x.Event).HasForeignKey(x => x.EventId);
+            e.HasAlternateKey(x => new { x.Id, x.OrganizerId });
+            e.HasMany(x => x.Registrations).WithOne(x => x.Event).HasForeignKey(x => new { x.EventId, x.OrganizerId }).HasPrincipalKey(x => new { x.Id, x.OrganizerId });
         });
         b.Entity<Course>(e =>
         {
@@ -107,7 +108,9 @@ public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> op
             e.Property(x => x.FirstName).HasMaxLength(100).IsRequired();
             e.Property(x => x.LastName).HasMaxLength(100).IsRequired();
             e.Property(x => x.Email).HasMaxLength(254);
-            e.HasIndex(x => x.Email);
+            e.HasAlternateKey(x => new { x.Id, x.OrganizerId });
+            e.HasOne(x => x.Organizer).WithMany().HasForeignKey(x => x.OrganizerId);
+            e.HasIndex(x => new { x.OrganizerId, x.Email });
         });
         b.Entity<Registration>(e =>
         {
@@ -123,7 +126,9 @@ public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> op
             e.HasOne(x => x.StartWave).WithMany(x => x.Registrations)
                 .HasForeignKey(x => new { x.StartWaveId, x.RaceId })
                 .HasPrincipalKey(x => new { x.Id, x.RaceId }).IsRequired(false);
-            e.HasOne(x => x.Runner).WithMany(x => x.Registrations).HasForeignKey(x => x.RunnerId);
+            e.HasOne(x => x.Runner).WithMany(x => x.Registrations)
+                .HasForeignKey(x => new { x.RunnerId, x.OrganizerId })
+                .HasPrincipalKey(x => new { x.Id, x.OrganizerId });
         });
     }
 }
