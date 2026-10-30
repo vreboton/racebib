@@ -59,7 +59,7 @@ public sealed class EventsController(
         var item = await db.Events.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
         if (item is null) return NotFound();
         if (!await CanAccessOrganizer(item.OrganizerId, false, ct)) return Forbid();
-        return Ok(item);
+        return Ok(ToDto(item));
     }
 
     [HttpPost]
@@ -84,7 +84,7 @@ public sealed class EventsController(
         };
         db.Events.Add(item);
         await db.SaveChangesAsync(ct);
-        return CreatedAtAction(nameof(Get), new { id = item.Id }, item);
+        return CreatedAtAction(nameof(Get), new { id = item.Id }, ToDto(item));
     }
 
     [HttpPut("{id:guid}")]
@@ -124,6 +124,13 @@ public sealed class EventsController(
         await db.SaveChangesAsync(ct);
         return Ok(new { item.Id, item.Status, item.UpdatedAt });
     }
+
+    private static object ToDto(Event item) => new
+    {
+        item.Id, item.OrganizerId, item.Name, item.Slug, item.Description, item.OrganizerName,
+        item.Venue, item.Location, item.StartDate, item.EndDate, item.TimeZoneId,
+        item.Status, item.CreatedAt, item.UpdatedAt
+    };
 
     private async Task<bool> CanAccessOrganizer(Guid organizerId, bool requireManagement, CancellationToken ct)
     {
