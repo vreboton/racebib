@@ -8,6 +8,7 @@ namespace RaceTiming.Infrastructure.Persistence;
 public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> options)
     : IdentityDbContext<ApplicationUser>(options)
 {
+    public DbSet<RevokedToken> RevokedTokens => Set<RevokedToken>();
     public DbSet<Organizer> Organizers => Set<Organizer>();
     public DbSet<OrganizerMembership> OrganizerMemberships => Set<OrganizerMembership>();
     public DbSet<Event> Events => Set<Event>();
@@ -20,6 +21,14 @@ public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> op
     protected override void OnModelCreating(ModelBuilder b)
     {
         base.OnModelCreating(b);
+
+        b.Entity<RevokedToken>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.Property(x => x.JwtId).HasMaxLength(64).IsRequired();
+            e.HasIndex(x => x.JwtId).IsUnique();
+            e.HasIndex(x => x.ExpiresAtUtc);
+        });
 
         b.Entity<Organizer>(e =>
         {
