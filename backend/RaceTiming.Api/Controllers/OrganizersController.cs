@@ -23,12 +23,13 @@ public sealed class OrganizersController(
     public async Task<IActionResult> List(CancellationToken ct)
     {
         if (User.IsInRole("SystemAdministrator"))
-            return Ok(await db.Organizers.AsNoTracking().OrderBy(x => x.Name).ToListAsync(ct));
+            return Ok(await db.Organizers.AsNoTracking().OrderBy(x => x.Name)
+                .Select(x => new { x.Id, x.Name, x.Slug, x.Description, x.IsActive }).ToListAsync(ct));
 
         var userId = users.GetUserId(User)!;
         var items = await db.OrganizerMemberships.AsNoTracking()
             .Where(x => x.UserId == userId && x.IsActive && x.Organizer.IsActive)
-            .Select(x => x.Organizer)
+            .Select(x => new { x.Organizer.Id, x.Organizer.Name, x.Organizer.Slug, x.Organizer.Description, x.Organizer.IsActive })
             .OrderBy(x => x.Name).ToListAsync(ct);
         return Ok(items);
     }
@@ -53,7 +54,7 @@ public sealed class OrganizersController(
             OrganizerId = organizer.Id, UserId = userId, Role = OrganizerRole.EventAdministrator
         });
         await db.SaveChangesAsync(ct);
-        return CreatedAtAction(nameof(List), new { id = organizer.Id }, new
+        return StatusCode(StatusCodes.Status201Created, new
         {
             organizer.Id, organizer.Name, organizer.Slug, organizer.Description
         });
