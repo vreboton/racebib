@@ -8,7 +8,7 @@ public sealed class StartWave
     public Guid RaceId { get; set; }
     public required string Name { get; set; }
     public int Sequence { get; set; }
-    public TimeOnly StartTime { get; set; }
+    public DateTime StartAtUtc { get; set; }
     public int? Capacity { get; set; }
     public RecordStatus Status { get; set; } = RecordStatus.Active;
     public Race Race { get; set; } = null!;
