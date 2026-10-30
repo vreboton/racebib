@@ -28,6 +28,8 @@ services:
       Jwt__Audience: ${JWT_AUDIENCE:-RaceBib.Clients}
       Jwt__SigningKey: ${JWT_SIGNING_KEY:?Set JWT_SIGNING_KEY in .env}
       Jwt__AccessTokenMinutes: ${JWT_ACCESS_TOKEN_MINUTES:-15}
+      SeedAdmin__Email: ${SEED_ADMIN_EMAIL:-}
+      SeedAdmin__Password: ${SEED_ADMIN_PASSWORD:-}
     ports:
       - "${API_PORT:-5080}:8080"
     depends_on:
