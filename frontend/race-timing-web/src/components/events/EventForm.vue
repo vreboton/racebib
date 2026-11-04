@@ -5,6 +5,9 @@
         <v-alert v-if="errorMessage" type="error" variant="tonal" class="mb-5" closable @click:close="errorMessage = ''">
           {{ errorMessage }}
         </v-alert>
+        <v-alert v-if="!event && !loadingOrganizers && !organizers.length" type="warning" variant="tonal" class="mb-5">
+          No active organizer is available for your account. Ask an organizer administrator to add you before creating an event.
+        </v-alert>
         <v-row>
           <v-col cols="12" md="8">
             <v-text-field v-model="form.name" label="Event name" :rules="[required, maxLength(200)]" counter="200" />
@@ -20,6 +23,7 @@
               :rules="[required]"
               :loading="loadingOrganizers"
               :disabled="loadingOrganizers || organizers.length === 0"
+              @update:model-value="syncOrganizerName"
             />
             <v-text-field v-else :model-value="event.organizerName" label="Organizer" readonly />
           </v-col>
@@ -53,7 +57,7 @@
       <v-card-actions class="pa-5">
         <v-spacer />
         <v-btn variant="text" :disabled="saving" @click="$emit('cancel')">Cancel</v-btn>
-        <v-btn color="primary" type="submit" :loading="saving" :disabled="!valid || saving || (!event && !form.organizerId)">
+        <v-btn color="primary" type="submit" :loading="saving" :disabled="!valid || saving || loadingOrganizers || (!event && !form.organizerId)">
           {{ event ? 'Save changes' : 'Create event' }}
         </v-btn>
       </v-card-actions>
@@ -98,6 +102,10 @@ function toLocalInput(value?: string) {
   return local.toISOString().slice(0, 16)
 }
 
+function syncOrganizerName(id: string) {
+  form.organizerName = organizers.value.find(item => item.id === id)?.name ?? ''
+}
+
 onMounted(async () => {
   if (props.event) {
     Object.assign(form, {
@@ -113,7 +121,7 @@ onMounted(async () => {
     organizers.value = await loadOrganizers()
     if (organizers.value.length === 1) {
       form.organizerId = organizers.value[0].id
-      form.organizerName = organizers.value[0].name
+      syncOrganizerName(form.organizerId)
     }
   } catch (error) {
     errorMessage.value = getApiError(error, 'Unable to load organizers.')
