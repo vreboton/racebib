@@ -8,15 +8,8 @@
     <v-btn variant="text" prepend-icon="mdi-arrow-left" to="/events">Back to events</v-btn>
   </div>
   <v-skeleton-loader v-if="loadingEvent" type="article, actions" class="mt-5" />
-  <EventForm
-    v-else
-    ref="eventFormRef"
-    :event="event"
-    class="mt-5"
-    @submit="save"
-    @cancel="router.push('/events')"
-  />
-  <v-snackbar v-model="success" color="success" timeout="3000">Event saved successfully.</v-snackbar>
+  <EventForm v-else ref="eventFormRef" :event="event" class="mt-5" @submit="save" @cancel="router.push('/events')" />
+  <v-snackbar v-model="success" color="success" timeout="2500">Event saved successfully.</v-snackbar>
 </template>
 
 <script setup lang="ts">
@@ -33,7 +26,7 @@ const isEdit = computed(() => Boolean(eventId.value))
 const event = ref<EventDetails | null>(null)
 const loadingEvent = ref(false)
 const success = ref(false)
-const eventFormRef = ref<InstanceType<typeof EventForm>>()
+const eventFormRef = ref<InstanceType<typeof EventForm> | null>(null)
 
 onMounted(async () => {
   if (!isEdit.value) return
@@ -50,15 +43,16 @@ onMounted(async () => {
 async function save(payload: EventPayload & { organizerId?: string }) {
   eventFormRef.value?.setSaving(true)
   try {
+    let saved: EventDetails
     if (isEdit.value) {
       const { organizerId: _ignored, ...updatePayload } = payload
-      await eventsApi.update(eventId.value, updatePayload)
+      saved = await eventsApi.update(eventId.value, updatePayload)
     } else {
       if (!payload.organizerId) throw new Error('Select an organizer before creating an event.')
-      await eventsApi.create(payload as EventPayload & { organizerId: string })
+      saved = await eventsApi.create(payload as EventPayload & { organizerId: string })
     }
     success.value = true
-    await router.push({ name: 'event-details', params: { id: isEdit.value ? eventId.value : (await eventsApi.list({ page: 1, pageSize: 1, search: payload.name })).items[0]?.id } })
+    await router.push({ name: 'event-details', params: { id: saved.id } })
   } catch (error) {
     eventFormRef.value?.setError(getApiError(error, 'Unable to save event.'))
   } finally {
