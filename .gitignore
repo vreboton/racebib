@@ -12,3 +12,6 @@
 .idea/
 .DS_Store
 coverage/
+
+# TypeScript build cache
+*.tsbuildinfo
