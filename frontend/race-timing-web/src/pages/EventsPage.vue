@@ -98,7 +98,7 @@
       <v-btn v-else color="primary" variant="tonal" class="mt-4" to="/events/new">Create your first event</v-btn>
     </v-card-text>
   </v-card>
-  <v-snackbar v-model="successMessage" color="success" timeout="3000">{{ successMessage }}</v-snackbar>
+  <v-snackbar v-model="successSnackbar" color="success" timeout="3000">{{ successMessage }}</v-snackbar>
 </template>
 
 <script setup lang="ts">
@@ -112,6 +112,7 @@ const events = ref<EventListItem[]>([])
 const loading = ref(false)
 const pageError = ref('')
 const successMessage = ref('')
+const successSnackbar = ref(false)
 const searchInput = ref('')
 const requestSequence = ref(0)
 const search = ref('')
@@ -126,7 +127,10 @@ const firstItem = computed(() => total.value ? (page.value - 1) * pageSize.value
 const lastItem = computed(() => Math.min(page.value * pageSize.value, total.value))
 
 onMounted(async () => {
-  if (typeof route.query.success === 'string') successMessage.value = route.query.success
+  if (typeof route.query.success === 'string') {
+    successMessage.value = route.query.success
+    successSnackbar.value = true
+  }
   if (typeof route.query.error === 'string') pageError.value = route.query.error
   await loadEvents()
 })
