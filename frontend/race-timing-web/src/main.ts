@@ -1,11 +1,11 @@
 import { createApp } from 'vue'
-import { createPinia } from 'pinia'
 import { createVuetify } from 'vuetify'
 import 'vuetify/styles'
 import '@mdi/font/css/materialdesignicons.css'
 import './styles/main.scss'
 import App from './App.vue'
 import router from './router'
+import { pinia } from './stores'
 
 const vuetify = createVuetify({
   theme: {
@@ -27,4 +27,4 @@ const vuetify = createVuetify({
   },
 })
 
-createApp(App).use(createPinia()).use(router).use(vuetify).mount('#app')
+createApp(App).use(pinia).use(router).use(vuetify).mount('#app')
