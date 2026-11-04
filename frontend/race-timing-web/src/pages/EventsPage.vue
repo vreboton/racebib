@@ -113,6 +113,7 @@ const loading = ref(false)
 const pageError = ref('')
 const successMessage = ref('')
 const searchInput = ref('')
+const requestSequence = ref(0)
 const search = ref('')
 const selectedStatus = ref<EventStatus | null>(null)
 const page = ref(1)
@@ -133,6 +134,7 @@ onMounted(async () => {
 watch([search, selectedStatus], () => { page.value = 1 })
 
 async function loadEvents() {
+  const requestId = ++requestSequence.value
   loading.value = true
   pageError.value = ''
   try {
@@ -140,6 +142,7 @@ async function loadEvents() {
       page: page.value, pageSize: pageSize.value,
       search: search.value || undefined, status: selectedStatus.value,
     })
+    if (requestId !== requestSequence.value) return
     events.value = result.items
     total.value = result.total
     totalPages.value = result.totalPages
@@ -148,12 +151,13 @@ async function loadEvents() {
       await loadEvents()
     }
   } catch (error) {
+    if (requestId !== requestSequence.value) return
     events.value = []
     total.value = 0
     totalPages.value = 0
     pageError.value = getApiError(error, 'Unable to load events.')
   } finally {
-    loading.value = false
+    if (requestId === requestSequence.value) loading.value = false
   }
 }
 function applySearch() {
