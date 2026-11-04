@@ -58,7 +58,9 @@
         <tbody>
           <tr v-for="item in events" :key="item.id">
             <td>
-              <div class="font-weight-medium">{{ item.name }}</div>
+              <div class="font-weight-medium">
+                <router-link class="event-name-link" :to="{ name: 'event-details', params: { id: item.id } }">{{ item.name }}</router-link>
+              </div>
               <div class="text-caption text-medium-emphasis">{{ item.slug }}</div>
             </td>
             <td>
@@ -71,7 +73,7 @@
             </td>
             <td><v-chip size="small" :color="statusColor(item.status)" variant="tonal">{{ statusLabel(item.status) }}</v-chip></td>
             <td class="text-right">
-              <v-btn icon="mdi-eye-outline" size="small" variant="text" :to="{ name: 'event-details', params: { id: item.id } }" aria-label="View event" />
+              <v-btn size="small" variant="tonal" color="primary" prepend-icon="mdi-eye-outline" :to="{ name: 'event-details', params: { id: item.id } }">View details</v-btn>
               <v-btn icon="mdi-pencil-outline" size="small" variant="text" :to="{ name: 'event-edit', params: { id: item.id } }" aria-label="Edit event" :disabled="['Live', 'Completed', 'Cancelled'].includes(item.status)" />
             </td>
           </tr>
@@ -197,4 +199,6 @@ function formatDate(value: string) {
 
 <style scoped>
 .rows-select { max-width: 90px; }
+.event-name-link { color: inherit; text-decoration: none; }
+.event-name-link:hover { color: rgb(var(--v-theme-primary)); text-decoration: underline; }
 </style>
