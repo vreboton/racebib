@@ -1,23 +1,192 @@
 <template>
   <div class="page-heading">
-    <div><div class="eyebrow">WORKSPACE</div><h1>Events</h1><p>Create and manage races across your organizations.</p></div>
-    <v-btn color="primary" prepend-icon="mdi-plus">Create event</v-btn>
+    <div>
+      <div class="eyebrow">WORKSPACE</div>
+      <h1>Events</h1>
+      <p>Create and manage races across your organizations.</p>
+    </div>
+    <v-btn color="primary" prepend-icon="mdi-plus" to="/events/new">Create event</v-btn>
   </div>
+
   <v-card border flat rounded="lg" class="mt-5">
     <v-card-text class="d-flex flex-wrap ga-3 align-center">
-      <v-text-field v-model="search" prepend-inner-icon="mdi-magnify" label="Search events" density="comfortable" variant="outlined" hide-details class="search-field" />
-      <v-select :items="statuses" label="All statuses" density="comfortable" variant="outlined" hide-details clearable class="filter-field" />
+      <v-text-field
+        v-model="searchInput"
+        prepend-inner-icon="mdi-magnify"
+        label="Search events"
+        placeholder="Name or location"
+        density="comfortable"
+        variant="outlined"
+        hide-details
+        clearable
+        class="search-field"
+        @keyup.enter="applySearch"
+        @click:clear="applySearch"
+      />
+      <v-select
+        v-model="selectedStatus"
+        :items="statusOptions"
+        label="All statuses"
+        density="comfortable"
+        variant="outlined"
+        hide-details
+        clearable
+        class="filter-field"
+        @update:model-value="applyFilters"
+      />
+      <v-btn variant="tonal" color="secondary" prepend-icon="mdi-filter-remove" @click="clearFilters">Clear</v-btn>
+      <v-spacer />
+      <v-btn color="primary" variant="text" prepend-icon="mdi-magnify" @click="applySearch">Search</v-btn>
     </v-card-text>
     <v-divider />
-    <v-card-text class="empty-state">
+
+    <v-alert v-if="pageError" type="error" variant="tonal" class="ma-4" closable @click:close="pageError = ''">
+      {{ pageError }}
+    </v-alert>
+    <v-skeleton-loader v-if="loading" type="table-row@6" />
+    <template v-else-if="events.length">
+      <v-table>
+        <thead>
+          <tr>
+            <th class="text-left">Event</th>
+            <th class="text-left">Location</th>
+            <th class="text-left">Event dates</th>
+            <th class="text-left">Status</th>
+            <th class="text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="item in events" :key="item.id">
+            <td>
+              <div class="font-weight-medium">{{ item.name }}</div>
+              <div class="text-caption text-medium-emphasis">{{ item.slug }}</div>
+            </td>
+            <td>
+              <div>{{ item.venue || '—' }}</div>
+              <div class="text-caption text-medium-emphasis">{{ item.location || 'Location not set' }}</div>
+            </td>
+            <td>
+              <div>{{ formatDate(item.startDate) }}</div>
+              <div class="text-caption text-medium-emphasis">to {{ formatDate(item.endDate) }}</div>
+            </td>
+            <td><v-chip size="small" :color="statusColor(item.status)" variant="tonal">{{ statusLabel(item.status) }}</v-chip></td>
+            <td class="text-right">
+              <v-btn icon="mdi-eye-outline" size="small" variant="text" :to="{ name: 'event-details', params: { id: item.id } }" aria-label="View event" />
+              <v-btn icon="mdi-pencil-outline" size="small" variant="text" :to="{ name: 'event-edit', params: { id: item.id } }" aria-label="Edit event" :disabled="['Live', 'Completed', 'Cancelled'].includes(item.status)" />
+            </td>
+          </tr>
+        </tbody>
+      </v-table>
+      <v-divider />
+      <div class="d-flex align-center justify-space-between flex-wrap ga-3 px-4 py-3">
+        <div class="text-caption text-medium-emphasis">
+          Showing {{ firstItem }}–{{ lastItem }} of {{ total }} events
+        </div>
+        <div class="d-flex align-center ga-3">
+          <v-select v-model="pageSize" :items="[10, 20, 50, 100]" label="Rows" density="compact" variant="outlined" hide-details class="rows-select" @update:model-value="changePageSize" />
+          <v-pagination v-model="page" :length="totalPages" :total-visible="5" density="comfortable" @update:model-value="loadEvents" />
+        </div>
+      </div>
+    </template>
+    <v-card-text v-else class="empty-state">
       <v-icon size="42" color="grey-lighten-1">mdi-calendar-blank-outline</v-icon>
-      <div class="text-subtitle-1 font-weight-medium mt-3">No events found</div>
-      <div class="text-body-2 text-medium-emphasis mt-1">Events you create will appear here.</div>
+      <div class="text-subtitle-1 font-weight-medium mt-3">{{ hasFilters ? 'No matching events' : 'No events found' }}</div>
+      <div class="text-body-2 text-medium-emphasis mt-1">
+        {{ hasFilters ? 'Try changing your search or status filter.' : 'Events you create will appear here.' }}
+      </div>
+      <v-btn v-if="hasFilters" variant="tonal" class="mt-4" @click="clearFilters">Clear filters</v-btn>
+      <v-btn v-else color="primary" variant="tonal" class="mt-4" to="/events/new">Create your first event</v-btn>
     </v-card-text>
   </v-card>
+  <v-snackbar v-model="successMessage" color="success" timeout="3000">{{ successMessage }}</v-snackbar>
 </template>
+
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import { eventStatuses, eventsApi, getApiError } from '../services/events'
+import type { EventListItem, EventStatus } from '../services/events'
+
+const route = useRoute()
+const events = ref<EventListItem[]>([])
+const loading = ref(false)
+const pageError = ref('')
+const successMessage = ref('')
+const searchInput = ref('')
 const search = ref('')
-const statuses = ['Draft', 'Published', 'RegistrationOpen', 'RegistrationClosed', 'Ready', 'Live', 'Completed', 'Cancelled']
+const selectedStatus = ref<EventStatus | null>(null)
+const page = ref(1)
+const pageSize = ref(20)
+const total = ref(0)
+const totalPages = ref(0)
+const statusOptions = eventStatuses.map(value => ({ title: value.replace(/([a-z])([A-Z])/g, '$1 $2'), value }))
+const hasFilters = computed(() => Boolean(search.value || selectedStatus.value))
+const firstItem = computed(() => total.value ? (page.value - 1) * pageSize.value + 1 : 0)
+const lastItem = computed(() => Math.min(page.value * pageSize.value, total.value))
+
+onMounted(async () => {
+  if (typeof route.query.success === 'string') successMessage.value = route.query.success
+  if (typeof route.query.error === 'string') pageError.value = route.query.error
+  await loadEvents()
+})
+
+watch([search, selectedStatus], () => { page.value = 1 })
+
+async function loadEvents() {
+  loading.value = true
+  pageError.value = ''
+  try {
+    const result = await eventsApi.list({
+      page: page.value, pageSize: pageSize.value,
+      search: search.value || undefined, status: selectedStatus.value,
+    })
+    events.value = result.items
+    total.value = result.total
+    totalPages.value = result.totalPages
+    if (result.totalPages > 0 && page.value > result.totalPages) {
+      page.value = result.totalPages
+      await loadEvents()
+    }
+  } catch (error) {
+    events.value = []
+    total.value = 0
+    totalPages.value = 0
+    pageError.value = getApiError(error, 'Unable to load events.')
+  } finally {
+    loading.value = false
+  }
+}
+function applySearch() {
+  search.value = searchInput.value.trim()
+  page.value = 1
+  loadEvents()
+}
+function applyFilters() {
+  page.value = 1
+  loadEvents()
+}
+function clearFilters() {
+  searchInput.value = ''
+  search.value = ''
+  selectedStatus.value = null
+  page.value = 1
+  loadEvents()
+}
+function changePageSize() {
+  page.value = 1
+  loadEvents()
+}
+function statusLabel(status: EventStatus) {
+  return status.replace(/([a-z])([A-Z])/g, '$1 $2')
+}
+function statusColor(status: EventStatus) {
+  return ({ Draft: 'grey', Published: 'info', RegistrationOpen: 'success', RegistrationClosed: 'warning', Ready: 'primary', Live: 'error', Completed: 'teal', Cancelled: 'grey-darken-1' } as Record<EventStatus, string>)[status]
+}
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(value))
+}
 </script>
+
+<style scoped>
+.rows-select { max-width: 90px; }
+</style>
