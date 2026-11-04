@@ -2,11 +2,13 @@ import { createRouter, createWebHistory } from 'vue-router'
 import AppLayout from '../layouts/AppLayout.vue'
 import DashboardPage from '../pages/DashboardPage.vue'
 import EventsPage from '../pages/EventsPage.vue'
+import { pinia } from '../stores'
+import { useAuthStore } from '../stores/auth'
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/login', component: () => import('../pages/LoginPage.vue'), meta: { public: true } },
+    { path: '/login', name: 'login', component: () => import('../pages/LoginPage.vue'), meta: { public: true } },
     {
       path: '/',
       component: AppLayout,
@@ -21,6 +23,19 @@ const router = createRouter({
       ],
     },
   ],
+})
+
+router.beforeEach(async (to) => {
+  const auth = useAuthStore(pinia)
+  await auth.initialize()
+
+  if (to.meta.public) {
+    if (auth.isAuthenticated) return { name: 'dashboard' }
+    return true
+  }
+
+  if (!auth.isAuthenticated) return { name: 'login', query: { redirect: to.fullPath } }
+  return true
 })
 
 export default router
