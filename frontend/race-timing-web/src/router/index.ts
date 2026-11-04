@@ -2,6 +2,8 @@ import { createRouter, createWebHistory } from 'vue-router'
 import AppLayout from '../layouts/AppLayout.vue'
 import DashboardPage from '../pages/DashboardPage.vue'
 import EventsPage from '../pages/EventsPage.vue'
+import EventFormPage from '../pages/EventFormPage.vue'
+import EventDetailsPage from '../pages/EventDetailsPage.vue'
 import { pinia } from '../stores'
 import { useAuthStore } from '../stores/auth'
 
@@ -15,6 +17,9 @@ const router = createRouter({
       children: [
         { path: '', name: 'dashboard', component: DashboardPage },
         { path: 'events', name: 'events', component: EventsPage },
+        { path: 'events/new', name: 'event-create', component: EventFormPage },
+        { path: 'events/:id', name: 'event-details', component: EventDetailsPage },
+        { path: 'events/:id/edit', name: 'event-edit', component: EventFormPage },
         { path: 'participants', name: 'participants', component: () => import('../pages/PlaceholderPage.vue'), meta: { title: 'Participants' } },
         { path: 'courses', name: 'courses', component: () => import('../pages/PlaceholderPage.vue'), meta: { title: 'Courses' } },
         { path: 'categories', name: 'categories', component: () => import('../pages/PlaceholderPage.vue'), meta: { title: 'Categories' } },
