@@ -63,7 +63,7 @@ const loading = ref(true)
 const errorMessage = ref('')
 const success = ref(false)
 const changingStatus = ref<EventStatus | null>(null)
-const canEdit = computed(() => Boolean(auth.user?.roles?.includes('SystemAdministrator') || auth.user?.roles?.includes('EventAdministrator') || auth.user?.roles?.includes('RaceDirector')))
+const canEdit = computed(() => Boolean(event.value && auth.canManageOrganizer(event.value.organizerId)))
 const transitions = computed(() => event.value ? eventStatusTransitions[event.value.status] : [])
 
 onMounted(load)

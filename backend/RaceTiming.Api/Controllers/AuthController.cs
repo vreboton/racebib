@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using RaceTiming.Domain.Enums;
 using RaceTiming.Infrastructure.Identity;
 using RaceTiming.Infrastructure.Persistence;
 
@@ -15,18 +16,35 @@ namespace RaceTiming.Api.Controllers;
 [Route("api/v1/auth")]
 public sealed class AuthController(
     UserManager<ApplicationUser> users,
+    SignInManager<ApplicationUser> signInManager,
     RaceTimingDbContext db,
     IConfiguration configuration) : ControllerBase
 {
     public sealed record LoginRequest(string Email, string Password);
-    public sealed record LoginResponse(string AccessToken, DateTime ExpiresAtUtc, object User);
+    public sealed record OrganizerMembershipInfo(Guid OrganizerId, string OrganizerName, OrganizerRole Role);
+    public sealed record UserProfile(
+        string Id, string? Email, string? DisplayName, IList<string> Roles,
+        IReadOnlyList<OrganizerMembershipInfo> OrganizerMemberships);
+    public sealed record LoginResponse(string AccessToken, DateTime ExpiresAtUtc, UserProfile User);
     
     [HttpPost("login")]
     [AllowAnonymous]
     public async Task<IActionResult> Login(LoginRequest request, CancellationToken ct)
     {
         var user = await users.FindByEmailAsync(request.Email);
-        if (user is null || !user.IsActive || !await users.CheckPasswordAsync(user, request.Password))
+        if (user is null || !user.IsActive)
+            return Unauthorized(new ProblemDetails { Status = 401, Title = "Invalid email or password." });
+
+        // CheckPasswordSignInAsync applies Identity lockout rules without issuing an
+        // authentication cookie. JWT remains the API's only authentication scheme.
+        var result = await signInManager.CheckPasswordSignInAsync(user, request.Password, lockoutOnFailure: true);
+        if (result.IsLockedOut || await users.IsLockedOutAsync(user))
+            return StatusCode(StatusCodes.Status423Locked, new ProblemDetails
+            {
+                Status = StatusCodes.Status423Locked,
+                Title = "This account is temporarily locked after too many failed sign-in attempts."
+            });
+        if (!result.Succeeded)
             return Unauthorized(new ProblemDetails { Status = 401, Title = "Invalid email or password." });
 
         var key = configuration["Jwt:SigningKey"];
@@ -35,7 +53,7 @@ public sealed class AuthController(
 
         var now = DateTime.UtcNow;
         var expires = now.AddMinutes(configuration.GetValue<int>("Jwt:AccessTokenMinutes", 15));
-        var roles = await users.GetRolesAsync(user);
+        var profile = await BuildUserProfile(user, ct);
         var claims = new List<Claim>
         {
             new(JwtRegisteredClaimNames.Sub, user.Id),
@@ -44,7 +62,7 @@ public sealed class AuthController(
             new(ClaimTypes.NameIdentifier, user.Id),
             new(ClaimTypes.Name, user.DisplayName ?? user.Email ?? user.UserName ?? user.Id)
         };
-        claims.AddRange(roles.Select(role => new Claim(ClaimTypes.Role, role)));
+        claims.AddRange(profile.Roles.Select(role => new Claim(ClaimTypes.Role, role)));
 
         var token = new JwtSecurityToken(
             issuer: configuration["Jwt:Issuer"],
@@ -58,16 +76,28 @@ public sealed class AuthController(
 
         return Ok(new LoginResponse(
             new JwtSecurityTokenHandler().WriteToken(token), expires,
-            new { user.Id, user.Email, user.DisplayName, Roles = roles }));
+            profile));
     }
 
     [HttpGet("me")]
     [Authorize]
-    public async Task<IActionResult> Me()
+    public async Task<IActionResult> Me(CancellationToken ct)
     {
         var user = await users.GetUserAsync(User);
         if (user is null || !user.IsActive) return Unauthorized();
-        return Ok(new { user.Id, user.Email, user.DisplayName, Roles = await users.GetRolesAsync(user) });
+        return Ok(await BuildUserProfile(user, ct));
+    }
+
+    private async Task<UserProfile> BuildUserProfile(ApplicationUser user, CancellationToken ct)
+    {
+        var memberships = await db.OrganizerMemberships.AsNoTracking()
+            .Where(x => x.UserId == user.Id && x.IsActive && x.Organizer.IsActive)
+            .OrderBy(x => x.Organizer.Name)
+            .Select(x => new OrganizerMembershipInfo(x.OrganizerId, x.Organizer.Name, x.Role))
+            .ToListAsync(ct);
+
+        return new UserProfile(user.Id, user.Email, user.DisplayName,
+            await users.GetRolesAsync(user), memberships);
     }
 
     [HttpPost("logout")]

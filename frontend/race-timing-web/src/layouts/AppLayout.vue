@@ -35,7 +35,7 @@
             </v-btn>
           </template>
           <v-list density="compact" min-width="190">
-            <v-list-item :title="auth.user?.displayName || 'Account'" :subtitle="auth.user?.email" />
+            <v-list-item :title="auth.user?.displayName || 'Account'" :subtitle="auth.user?.email ?? ''" />
             <v-divider />
             <v-list-item prepend-icon="mdi-logout" title="Sign out" @click="signOut" />
           </v-list>

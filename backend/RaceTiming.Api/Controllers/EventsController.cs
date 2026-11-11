@@ -1,12 +1,10 @@
-using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using RaceTiming.Domain.Entities;
 using RaceTiming.Domain.Enums;
 using RaceTiming.Domain.Services;
-using RaceTiming.Infrastructure.Identity;
+using RaceTiming.Api.Authorization;
 using RaceTiming.Infrastructure.Persistence;
 
 namespace RaceTiming.Api.Controllers;
@@ -16,7 +14,7 @@ namespace RaceTiming.Api.Controllers;
 [Route("api/v1/events")]
 public sealed class EventsController(
     RaceTimingDbContext db,
-    UserManager<ApplicationUser> users) : ControllerBase
+    IOrganizerMembershipAuthorization organizerAuthorization) : ControllerBase
 {
     public sealed record CreateEventRequest(
         Guid OrganizerId, string Name, string Slug, string? Description, string OrganizerName,
@@ -35,8 +33,8 @@ public sealed class EventsController(
         var query = db.Events.AsNoTracking();
         if (!User.IsInRole("SystemAdministrator"))
         {
-            var userId = users.GetUserId(User)!;
-            var organizerIds = db.OrganizerMemberships.Where(x => x.UserId == userId && x.IsActive)
+            var userId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+            var organizerIds = db.OrganizerMemberships.Where(x => x.UserId == userId && x.IsActive && x.Organizer.IsActive)
                 .Select(x => x.OrganizerId);
             query = query.Where(x => organizerIds.Contains(x.OrganizerId));
         }
@@ -58,14 +56,14 @@ public sealed class EventsController(
     {
         var item = await db.Events.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
         if (item is null) return NotFound();
-        if (!await CanAccessOrganizer(item.OrganizerId, false, ct)) return Forbid();
+        if (!await organizerAuthorization.CanAccessAsync(User, item.OrganizerId, false, ct)) return Forbid();
         return Ok(ToDto(item));
     }
 
     [HttpPost]
     public async Task<IActionResult> Create(CreateEventRequest request, CancellationToken ct)
     {
-        if (!await CanAccessOrganizer(request.OrganizerId, true, ct)) return Forbid();
+        if (!await organizerAuthorization.CanAccessAsync(User, request.OrganizerId, true, ct)) return Forbid();
         var validation = ValidateEvent(request.Name, request.Slug, request.OrganizerName,
             request.StartDateUtc, request.EndDateUtc, request.TimeZoneId);
         if (validation is not null) return BadRequest(validation);
@@ -92,7 +90,7 @@ public sealed class EventsController(
     {
         var item = await db.Events.FirstOrDefaultAsync(x => x.Id == id, ct);
         if (item is null) return NotFound();
-        if (!await CanAccessOrganizer(item.OrganizerId, true, ct)) return Forbid();
+        if (!await organizerAuthorization.CanAccessAsync(User, item.OrganizerId, true, ct)) return Forbid();
         if (item.Status is EventStatus.Live or EventStatus.Completed or EventStatus.Cancelled)
             return Conflict(new ProblemDetails { Status = 409, Title = "Event details cannot be edited in its current status." });
         var validation = ValidateEvent(request.Name, request.Slug, request.OrganizerName,
@@ -116,7 +114,7 @@ public sealed class EventsController(
     {
         var item = await db.Events.FirstOrDefaultAsync(x => x.Id == id, ct);
         if (item is null) return NotFound();
-        if (!await CanAccessOrganizer(item.OrganizerId, true, ct)) return Forbid();
+        if (!await organizerAuthorization.CanAccessAsync(User, item.OrganizerId, true, ct)) return Forbid();
         if (!EventLifecycle.CanTransition(item.Status, request.Status))
             return Conflict(new ProblemDetails { Status = 409, Title = $"Transition from {item.Status} to {request.Status} is not allowed." });
         item.Status = request.Status;
@@ -131,17 +129,6 @@ public sealed class EventsController(
         item.Venue, item.Location, item.StartDate, item.EndDate, item.TimeZoneId,
         item.Status, item.CreatedAt, item.UpdatedAt
     };
-
-    private async Task<bool> CanAccessOrganizer(Guid organizerId, bool requireManagement, CancellationToken ct)
-    {
-        if (User.IsInRole("SystemAdministrator")) return true;
-        var userId = users.GetUserId(User);
-        if (userId is null) return false;
-        var membership = await db.OrganizerMemberships.AsNoTracking()
-            .FirstOrDefaultAsync(x => x.OrganizerId == organizerId && x.UserId == userId && x.IsActive, ct);
-        if (membership is null) return false;
-        return !requireManagement || membership.Role is OrganizerRole.EventAdministrator or OrganizerRole.RaceDirector;
-    }
 
     private static ProblemDetails? ValidateEvent(string name, string slug, string organizerName,
         DateTime start, DateTime end, string timeZoneId)

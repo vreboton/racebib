@@ -1,11 +1,9 @@
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using RaceTiming.Domain.Entities;
-using RaceTiming.Domain.Enums;
-using RaceTiming.Infrastructure.Identity;
+using RaceTiming.Api.Authorization;
 using RaceTiming.Infrastructure.Persistence;
 
 namespace RaceTiming.Api.Controllers;
@@ -15,7 +13,7 @@ namespace RaceTiming.Api.Controllers;
 [Route("api/v1/organizers/{organizerId:guid}/runners")]
 public sealed class RunnersController(
     RaceTimingDbContext db,
-    UserManager<ApplicationUser> users) : ControllerBase
+    IOrganizerMembershipAuthorization organizerAuthorization) : ControllerBase
 {
     public sealed record CreateRunnerRequest(
         string FirstName, string LastName, string? PublicDisplayName, string? Email);
@@ -27,7 +25,7 @@ public sealed class RunnersController(
     public async Task<IActionResult> List(Guid organizerId, [FromQuery] string? search = null,
         [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default)
     {
-        if (!await CanAccessOrganizer(organizerId, false, ct)) return Forbid();
+        if (!await organizerAuthorization.CanAccessAsync(User, organizerId, false, ct)) return Forbid();
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
         var query = db.Runners.AsNoTracking().Where(x => x.OrganizerId == organizerId);
@@ -52,7 +50,7 @@ public sealed class RunnersController(
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid organizerId, Guid id, CancellationToken ct)
     {
-        if (!await CanAccessOrganizer(organizerId, false, ct)) return Forbid();
+        if (!await organizerAuthorization.CanAccessAsync(User, organizerId, false, ct)) return Forbid();
         var runner = await db.Runners.AsNoTracking()
             .Where(x => x.OrganizerId == organizerId && x.Id == id)
             .Select(x => new { x.Id, x.FirstName, x.LastName, x.PublicDisplayName, x.Email, x.CreatedAt })
@@ -63,7 +61,7 @@ public sealed class RunnersController(
     [HttpPost]
     public async Task<IActionResult> Create(Guid organizerId, CreateRunnerRequest request, CancellationToken ct)
     {
-        if (!await CanAccessOrganizer(organizerId, true, ct)) return Forbid();
+        if (!await organizerAuthorization.CanAccessAsync(User, organizerId, true, ct)) return Forbid();
         var validation = Validate(request.FirstName, request.LastName, request.Email);
         if (validation is not null) return BadRequest(validation);
 
@@ -83,7 +81,7 @@ public sealed class RunnersController(
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(Guid organizerId, Guid id, UpdateRunnerRequest request, CancellationToken ct)
     {
-        if (!await CanAccessOrganizer(organizerId, true, ct)) return Forbid();
+        if (!await organizerAuthorization.CanAccessAsync(User, organizerId, true, ct)) return Forbid();
         var validation = Validate(request.FirstName, request.LastName, request.Email);
         if (validation is not null) return BadRequest(validation);
 
@@ -97,17 +95,6 @@ public sealed class RunnersController(
         runner.Email = NormalizeEmail(request.Email);
         await db.SaveChangesAsync(ct);
         return Ok(ToDto(runner));
-    }
-
-    private async Task<bool> CanAccessOrganizer(Guid organizerId, bool requireManagement, CancellationToken ct)
-    {
-        if (User.IsInRole("SystemAdministrator")) return true;
-        var userId = users.GetUserId(User);
-        if (userId is null) return false;
-        var membership = await db.OrganizerMemberships.AsNoTracking()
-            .FirstOrDefaultAsync(x => x.OrganizerId == organizerId && x.UserId == userId && x.IsActive, ct);
-        if (membership is null) return false;
-        return !requireManagement || membership.Role is OrganizerRole.EventAdministrator or OrganizerRole.RaceDirector;
     }
 
     private static ProblemDetails? Validate(string firstName, string lastName, string? email)

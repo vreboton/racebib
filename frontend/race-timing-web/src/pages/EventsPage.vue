@@ -5,7 +5,7 @@
       <h1>Events</h1>
       <p>Create and manage races across your organizations.</p>
     </div>
-    <v-btn color="primary" prepend-icon="mdi-plus" to="/events/new">Create event</v-btn>
+    <v-btn v-if="auth.canManageAnyOrganizer" color="primary" prepend-icon="mdi-plus" to="/events/new">Create event</v-btn>
   </div>
 
   <v-card border flat rounded="lg" class="mt-5">
@@ -74,7 +74,7 @@
             <td><v-chip size="small" :color="statusColor(item.status)" variant="tonal">{{ statusLabel(item.status) }}</v-chip></td>
             <td class="text-right">
               <v-btn size="small" variant="tonal" color="primary" prepend-icon="mdi-eye-outline" :to="{ name: 'event-details', params: { id: item.id } }">View details</v-btn>
-              <v-btn icon="mdi-pencil-outline" size="small" variant="text" :to="{ name: 'event-edit', params: { id: item.id } }" aria-label="Edit event" :disabled="['Live', 'Completed', 'Cancelled'].includes(item.status)" />
+              <v-btn v-if="auth.canManageOrganizer(item.organizerId)" icon="mdi-pencil-outline" size="small" variant="text" :to="{ name: 'event-edit', params: { id: item.id } }" aria-label="Edit event" :disabled="['Live', 'Completed', 'Cancelled'].includes(item.status)" />
             </td>
           </tr>
         </tbody>
@@ -97,7 +97,7 @@
         {{ hasFilters ? 'Try changing your search or status filter.' : 'Events you create will appear here.' }}
       </div>
       <v-btn v-if="hasFilters" variant="tonal" class="mt-4" @click="clearFilters">Clear filters</v-btn>
-      <v-btn v-else color="primary" variant="tonal" class="mt-4" to="/events/new">Create your first event</v-btn>
+      <v-btn v-else-if="auth.canManageAnyOrganizer" color="primary" variant="tonal" class="mt-4" to="/events/new">Create your first event</v-btn>
     </v-card-text>
   </v-card>
   <v-snackbar v-model="successSnackbar" color="success" timeout="3000">{{ successMessage }}</v-snackbar>
@@ -108,8 +108,10 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { eventStatuses, eventsApi, getApiError } from '../services/events'
 import type { EventListItem, EventStatus } from '../services/events'
+import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
+const auth = useAuthStore()
 const events = ref<EventListItem[]>([])
 const loading = ref(false)
 const pageError = ref('')

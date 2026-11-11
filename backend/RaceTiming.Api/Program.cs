@@ -9,6 +9,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using RaceTiming.Api.Infrastructure;
+using RaceTiming.Api.Authorization;
 using RaceTiming.Infrastructure.Identity;
 using RaceTiming.Infrastructure.Persistence;
 
@@ -35,7 +36,8 @@ builder.Services.AddIdentityCore<ApplicationUser>(options =>
     options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
 })
 .AddRoles<IdentityRole>()
-.AddEntityFrameworkStores<RaceTimingDbContext>();
+.AddEntityFrameworkStores<RaceTimingDbContext>()
+.AddSignInManager();
 
 builder.Services.AddControllers().AddJsonOptions(options =>
 {
@@ -87,6 +89,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
 });
 
 builder.Services.AddAuthorization();
+builder.Services.AddScoped<IOrganizerMembershipAuthorization, OrganizerMembershipAuthorization>();
 builder.Services.AddHealthChecks();
 
 var app = builder.Build();

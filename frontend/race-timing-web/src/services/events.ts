@@ -108,7 +108,8 @@ export async function loadOrganizers() {
 
 export function getApiError(error: unknown, fallback: string) {
   if (typeof error === 'object' && error !== null && 'response' in error) {
-    const response = (error as { response?: { data?: { title?: string; detail?: string; errors?: Record<string, string[]> } } }).response
+    const response = (error as { response?: { status?: number; data?: { title?: string; detail?: string; errors?: Record<string, string[]> } } }).response
+    if (response?.status === 403) return 'You do not have permission to access or manage this organizer.'
     const body = response?.data
     if (body?.title) return body.title
     if (body?.detail) return body.detail

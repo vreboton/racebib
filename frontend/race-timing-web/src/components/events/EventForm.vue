@@ -6,7 +6,7 @@
           {{ errorMessage }}
         </v-alert>
         <v-alert v-if="!event && !loadingOrganizers && !organizers.length" type="warning" variant="tonal" class="mb-5">
-          No active organizer is available for your account. Ask an organizer administrator to add you before creating an event.
+          You do not have event-management access to an active organizer. Ask an organizer administrator to update your membership.
         </v-alert>
         <v-row>
           <v-col cols="12" md="8">
@@ -69,8 +69,10 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import type { EventDetails, EventPayload, Organizer } from '../../services/events'
 import { getApiError, loadOrganizers } from '../../services/events'
+import { useAuthStore } from '../../stores/auth'
 
 const props = defineProps<{ event?: EventDetails | null }>()
+const auth = useAuthStore()
 const emit = defineEmits<{ submit: [payload: EventPayload & { organizerId?: string }]; cancel: [] }>()
 const formRef = ref()
 const valid = ref(false)
@@ -118,7 +120,8 @@ onMounted(async () => {
   }
   loadingOrganizers.value = true
   try {
-    organizers.value = await loadOrganizers()
+    const availableOrganizers = await loadOrganizers()
+    organizers.value = availableOrganizers.filter(organizer => auth.canManageOrganizer(organizer.id))
     if (organizers.value.length === 1) {
       form.organizerId = organizers.value[0].id
       syncOrganizerName(form.organizerId)

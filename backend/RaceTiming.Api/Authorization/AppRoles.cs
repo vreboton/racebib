@@ -9,9 +9,6 @@ public static class AppRoles
     public const string CheckpointMarshal = "CheckpointMarshal";
     public const string SafetyOfficer = "SafetyOfficer";
 
-    public static readonly string[] All =
-    [
-        SystemAdministrator, EventAdministrator, RaceDirector,
-        TimingOfficial, CheckpointMarshal, SafetyOfficer
-    ];
+    // Organizer responsibilities are membership roles, never global Identity roles.
+    public static readonly string[] All = [SystemAdministrator];
 }

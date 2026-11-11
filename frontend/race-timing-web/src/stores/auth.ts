@@ -5,9 +5,16 @@ import { api } from '../services/api'
 
 export interface AuthUser {
   id: string
-  email: string
-  displayName: string
+  email: string | null
+  displayName: string | null
   roles: string[]
+  organizerMemberships: OrganizerMembership[]
+}
+
+export interface OrganizerMembership {
+  organizerId: string
+  organizerName: string
+  role: 'EventAdministrator' | 'RaceDirector' | 'TimingOfficial' | 'CheckpointMarshal' | 'SafetyOfficer'
 }
 
 interface LoginResponse {
@@ -23,6 +30,22 @@ export const useAuthStore = defineStore('auth', () => {
   const user = ref<AuthUser | null>(null)
   const initialized = ref(false)
   const isAuthenticated = computed(() => Boolean(token.value))
+  const canManageAnyOrganizer = computed(() => Boolean(
+    user.value?.roles.includes('SystemAdministrator') ||
+    user.value?.organizerMemberships.some(membership => canManageRole(membership.role)),
+  ))
+
+  function canManageOrganizer(organizerId: string) {
+    return Boolean(
+      user.value?.roles.includes('SystemAdministrator') ||
+      user.value?.organizerMemberships.some(membership =>
+        membership.organizerId === organizerId && canManageRole(membership.role)),
+    )
+  }
+
+  function canManageRole(role: OrganizerMembership['role']) {
+    return role === 'EventAdministrator' || role === 'RaceDirector'
+  }
 
   function clearSession() {
     token.value = null
@@ -85,6 +108,8 @@ export const useAuthStore = defineStore('auth', () => {
     user,
     initialized,
     isAuthenticated,
+    canManageAnyOrganizer,
+    canManageOrganizer,
     login,
     loadUser,
     initialize,

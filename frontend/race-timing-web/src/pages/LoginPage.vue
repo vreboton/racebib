@@ -71,9 +71,11 @@ async function submit() {
     await router.replace(redirect)
   } catch (error) {
     if (isAxiosError(error)) {
-      errorMessage.value = error.response?.status === 401
-        ? 'The email or password you entered is incorrect.'
-        : (error.response?.data as { title?: string } | undefined)?.title || 'Unable to sign in. Please try again.'
+      errorMessage.value = error.response?.status === 423
+        ? 'This account is temporarily locked after too many failed sign-in attempts. Try again later.'
+        : error.response?.status === 401
+          ? 'The email or password you entered is incorrect.'
+          : (error.response?.data as { title?: string } | undefined)?.title || 'Unable to sign in. Please try again.'
     } else {
       errorMessage.value = 'Unable to sign in. Please try again.'
     }
