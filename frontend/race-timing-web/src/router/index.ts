@@ -11,6 +11,7 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', name: 'login', component: () => import('../pages/LoginPage.vue'), meta: { public: true } },
+    { path: '/accept-invitation', name: 'accept-invitation', component: () => import('../pages/AcceptInvitationPage.vue'), meta: { public: true } },
     {
       path: '/',
       component: AppLayout,
@@ -23,7 +24,7 @@ const router = createRouter({
         { path: 'participants', name: 'participants', component: () => import('../pages/PlaceholderPage.vue'), meta: { title: 'Participants' } },
         { path: 'courses', name: 'courses', component: () => import('../pages/PlaceholderPage.vue'), meta: { title: 'Courses' } },
         { path: 'categories', name: 'categories', component: () => import('../pages/PlaceholderPage.vue'), meta: { title: 'Categories' } },
-        { path: 'users', name: 'users', component: () => import('../pages/PlaceholderPage.vue'), meta: { title: 'Users and Access' } },
+        { path: 'users', name: 'users', component: () => import('../pages/OrganizerMembersPage.vue'), meta: { title: 'Organizer Members' } },
         { path: 'settings', name: 'settings', component: () => import('../pages/PlaceholderPage.vue'), meta: { title: 'System Settings' } },
       ],
     },
@@ -35,7 +36,7 @@ router.beforeEach(async (to) => {
   await auth.initialize()
 
   if (to.meta.public) {
-    if (auth.isAuthenticated) return { name: 'dashboard' }
+    if (to.name === 'login' && auth.isAuthenticated) return { name: 'dashboard' }
     return true
   }
 

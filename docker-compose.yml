@@ -30,6 +30,14 @@ services:
       Jwt__Audience: ${JWT_AUDIENCE:-RaceBib.Clients}
       Jwt__SigningKey: ${JWT_SIGNING_KEY:?Set JWT_SIGNING_KEY in .env}
       Jwt__AccessTokenMinutes: ${JWT_ACCESS_TOKEN_MINUTES:-15}
+      Application__BaseUrl: ${APPLICATION_BASE_URL:-}
+      Invitations__ExpirationDays: ${INVITATION_EXPIRATION_DAYS:-7}
+      Email__Smtp__Host: ${SMTP_HOST:-}
+      Email__Smtp__Port: ${SMTP_PORT:-587}
+      Email__Smtp__EnableSsl: ${SMTP_ENABLE_SSL:-true}
+      Email__Smtp__From: ${SMTP_FROM:-}
+      Email__Smtp__Username: ${SMTP_USERNAME:-}
+      Email__Smtp__Password: ${SMTP_PASSWORD:-}
       SeedAdmin__Email: ${SEED_ADMIN_EMAIL:-}
       SeedAdmin__Password: ${SEED_ADMIN_PASSWORD:-}
     ports:

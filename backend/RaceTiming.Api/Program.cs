@@ -5,11 +5,13 @@ using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using RaceTiming.Api.Infrastructure;
 using RaceTiming.Api.Authorization;
+using RaceTiming.Api.Services;
 using RaceTiming.Infrastructure.Identity;
 using RaceTiming.Infrastructure.Persistence;
 
@@ -22,7 +24,7 @@ if (string.IsNullOrWhiteSpace(jwtKey) || Encoding.UTF8.GetByteCount(jwtKey) < 32
     throw new InvalidOperationException("Jwt:SigningKey must contain at least 32 bytes.");
 
 builder.Services.AddDbContext<RaceTimingDbContext>(options =>
-    options.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString)));
+    options.UseMySql(connectionString, new MySqlServerVersion(new Version(8, 4, 0))));
 
 builder.Services.AddIdentityCore<ApplicationUser>(options =>
 {
@@ -90,6 +92,18 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
 
 builder.Services.AddAuthorization();
 builder.Services.AddScoped<IOrganizerMembershipAuthorization, OrganizerMembershipAuthorization>();
+builder.Services.AddScoped<IInvitationEmailSender, SmtpInvitationEmailSender>();
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("invitation-public", context =>
+        System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true
+            }));
+});
 builder.Services.AddHealthChecks();
 
 var app = builder.Build();
@@ -115,6 +129,7 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
 app.MapControllers();
 app.MapHealthChecks("/health");
 app.Run();

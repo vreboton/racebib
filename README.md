@@ -46,7 +46,7 @@ docker-compose.yml
 6. API health: http://localhost:5080/health
 7. Swagger is enabled in Development at http://localhost:5080/swagger.
 
-The current branch is an initial scaffold. Database migrations, secure administrator provisioning, API use cases/controllers, frontend API workflows and end-to-end tests are still being implemented. Do not use this scaffold as a production deployment yet.
+The current development branch contains Milestone 1 event management and Milestones 2.1–2.2 organizer security and member management. Review [organizer member management](docs/organizer-membership.md) and [database migrations](docs/database-migrations.md) for API, SMTP, role, and schema details. Production deployment still requires environment-specific SMTP, HTTPS, secret, and migration setup.
 
 ## Development
 

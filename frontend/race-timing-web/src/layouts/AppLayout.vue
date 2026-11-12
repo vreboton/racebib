@@ -14,7 +14,7 @@
         <v-list-item prepend-icon="mdi-map-marker-path" title="Courses" to="/courses" />
         <v-list-item prepend-icon="mdi-format-list-bulleted" title="Categories" to="/categories" />
         <v-list-subheader class="text-grey mt-4">ADMINISTRATION</v-list-subheader>
-        <v-list-item prepend-icon="mdi-shield-account-outline" title="Users and Access" to="/users" />
+        <v-list-item v-if="auth.canManageAnyMembers" prepend-icon="mdi-shield-account-outline" title="Organizer Members" to="/users" />
         <v-list-item prepend-icon="mdi-cog-outline" title="System Settings" to="/settings" />
       </v-list>
       <template #append>

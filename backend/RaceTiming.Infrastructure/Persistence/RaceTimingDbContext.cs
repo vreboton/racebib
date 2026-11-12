@@ -11,6 +11,7 @@ public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> op
     public DbSet<RevokedToken> RevokedTokens => Set<RevokedToken>();
     public DbSet<Organizer> Organizers => Set<Organizer>();
     public DbSet<OrganizerMembership> OrganizerMemberships => Set<OrganizerMembership>();
+    public DbSet<OrganizerInvitation> OrganizerInvitations => Set<OrganizerInvitation>();
     public DbSet<Event> Events => Set<Event>();
     public DbSet<Race> Races => Set<Race>();
     public DbSet<RaceCategory> RaceCategories => Set<RaceCategory>();
@@ -44,6 +45,23 @@ public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> op
             e.HasIndex(x => new { x.OrganizerId, x.UserId }).IsUnique();
             e.HasOne(x => x.Organizer).WithMany(x => x.Memberships).HasForeignKey(x => x.OrganizerId);
             e.HasOne<ApplicationUser>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);
+        });
+        b.Entity<OrganizerInvitation>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Email).HasMaxLength(254).IsRequired();
+            e.Property(x => x.NormalizedEmail).HasMaxLength(254).IsRequired();
+            e.Property(x => x.TokenHash).HasMaxLength(64).IsRequired();
+            e.Property(x => x.CreatedByUserId).HasMaxLength(255).UseCollation("utf8mb4_0900_ai_ci").IsRequired();
+            e.Property(x => x.Status).HasConversion<string>().HasMaxLength(16).IsRequired().IsConcurrencyToken();
+            e.Property(x => x.Role).HasConversion<string>().HasMaxLength(32).IsRequired();
+            e.Property(x => x.ActiveInvitationKey).HasMaxLength(300);
+            e.HasIndex(x => x.ActiveInvitationKey).IsUnique();
+            e.HasIndex(x => new { x.OrganizerId, x.CreatedAtUtc });
+            e.HasIndex(x => x.TokenHash).IsUnique();
+            e.HasIndex(x => x.CreatedByUserId);
+            e.HasOne(x => x.Organizer).WithMany().HasForeignKey(x => x.OrganizerId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne<ApplicationUser>().WithMany().HasForeignKey(x => x.CreatedByUserId).OnDelete(DeleteBehavior.Restrict);
         });
         b.Entity<Event>(e =>
         {

@@ -39,6 +39,8 @@ dotnet ef migrations add AddDescriptiveChange `
 
 Inspect the generated Up/Down operations before applying. Never use `EnsureCreated` alongside migrations. Do not automatically apply migrations at API startup in production; deploy schema changes as an explicit release step.
 
-## Current status (2026-10-30)
+## Current status
 
-The repository currently has no committed EF Core migrations. The race/category/wave domain refactor has changed the model, so the initial migration must be generated from this revised model. No database schema has been generated or applied as part of the source refactor commits.
+Committed migrations include `InitialCreate` and `AddOrganizerInvitations`. The latter adds only the `OrganizerInvitations` table, its organizer/creator foreign keys, indexes, and nullable unique active-invitation key. Application state transitions clear the key when an invitation is accepted, rejected, revoked, or expired, preserving history while enforcing at most one pending invitation per organizer/email. It does not alter or drop existing event, runner, organizer, Identity, or token tables. The current model snapshot matches the latest migration.
+
+Before applying to an existing local database, check the migration SQL and current migration history, back up the database, then run `dotnet ef database update` using the connection string for that environment. Do not reset volumes or use `EnsureCreated` against a migrated database.
