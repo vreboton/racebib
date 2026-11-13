@@ -93,6 +93,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
 builder.Services.AddAuthorization();
 builder.Services.AddScoped<IOrganizerMembershipAuthorization, OrganizerMembershipAuthorization>();
 builder.Services.AddScoped<IInvitationEmailSender, SmtpInvitationEmailSender>();
+builder.Services.AddScoped<IAuditLogger, AuditLogger>();
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -126,7 +127,11 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
-app.UseHttpsRedirection();
+// The Compose API listens only on HTTP behind a separately exposed web service.
+// Enable redirect middleware only when a deployment configures an HTTPS endpoint.
+if (!string.IsNullOrWhiteSpace(builder.Configuration["ASPNETCORE_HTTPS_PORT"]) ||
+    !string.IsNullOrWhiteSpace(builder.Configuration["HttpsRedirection:HttpsPort"]))
+    app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseRateLimiter();

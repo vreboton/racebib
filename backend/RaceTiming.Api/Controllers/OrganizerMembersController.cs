@@ -8,11 +8,12 @@ using RaceTiming.Domain.Entities;
 using RaceTiming.Domain.Enums;
 using RaceTiming.Infrastructure.Identity;
 using RaceTiming.Infrastructure.Persistence;
+using RaceTiming.Api.Services;
 
 namespace RaceTiming.Api.Controllers;
 
 [ApiController, Authorize, Route("api/v1/organizers/{organizerId:guid}/members")]
-public sealed class OrganizerMembersController(RaceTimingDbContext db, UserManager<ApplicationUser> users) : ControllerBase
+public sealed class OrganizerMembersController(RaceTimingDbContext db, UserManager<ApplicationUser> users, IAuditLogger? audit = null) : ControllerBase
 {
     public sealed record MemberDto(Guid MembershipId, string UserId, string? DisplayName, string? Email, OrganizerRole Role, bool IsActive, DateTime JoinedAt);
     public sealed record UserDto(string Id, string? DisplayName, string? Email);
@@ -61,12 +62,18 @@ public sealed class OrganizerMembersController(RaceTimingDbContext db, UserManag
         if (users.GetUserId(User) == user.Id) return BadRequest(new ProblemDetails { Status = 400, Title = "You cannot assign an organizer role to your own account." });
         var membership = await db.OrganizerMemberships.SingleOrDefaultAsync(x => x.OrganizerId == organizerId && x.UserId == user.Id, ct);
         if (membership is { IsActive: true }) return Conflict(new ProblemDetails { Status = 409, Title = "This user is already an active member." });
+        var isReactivation = membership is not null;
+        var previousRole = membership?.Role;
         if (membership is null)
         {
             membership = new OrganizerMembership { OrganizerId = organizerId, UserId = user.Id, Role = request.Role };
             db.OrganizerMemberships.Add(membership);
         }
         else { membership.Role = request.Role; membership.IsActive = true; membership.JoinedAt = DateTime.UtcNow; }
+        audit?.Record(User, isReactivation ? "Organizer.MembershipReactivated" : "Organizer.MemberAdded", "OrganizerMembership", membership.Id.ToString(), organizerId, new Dictionary<string, object?> { ["role"] = membership.Role.ToString() });
+        if (isReactivation && previousRole != request.Role)
+            audit?.Record(User, "Organizer.MembershipRoleChanged", "OrganizerMembership", membership.Id.ToString(), organizerId,
+                new Dictionary<string, object?> { ["from"] = previousRole?.ToString(), ["to"] = request.Role.ToString() });
         await db.SaveChangesAsync(ct);
         return StatusCode(StatusCodes.Status201Created, new MemberDto(membership.Id, user.Id, user.DisplayName, user.Email, membership.Role, true, membership.JoinedAt));
     }
@@ -79,7 +86,9 @@ public sealed class OrganizerMembersController(RaceTimingDbContext db, UserManag
         var membership = await db.OrganizerMemberships.SingleOrDefaultAsync(x => x.Id == membershipId && x.OrganizerId == organizerId, ct);
         if (membership is null) return NotFound();
         if (users.GetUserId(User) == membership.UserId) return BadRequest(new ProblemDetails { Status = 400, Title = "You cannot change your own organizer role." });
+        var oldRole = membership.Role;
         membership.Role = request.Role;
+        audit?.Record(User, "Organizer.MembershipRoleChanged", "OrganizerMembership", membership.Id.ToString(), organizerId, new Dictionary<string, object?> { ["from"] = oldRole.ToString(), ["to"] = request.Role.ToString() });
         await db.SaveChangesAsync(ct);
         return NoContent();
     }
@@ -92,12 +101,13 @@ public sealed class OrganizerMembersController(RaceTimingDbContext db, UserManag
         if (membership is null) return NotFound();
         if (users.GetUserId(User) == membership.UserId && !active) return BadRequest(new ProblemDetails { Status = 400, Title = "You cannot deactivate your own membership." });
         membership.IsActive = active;
+        audit?.Record(User, active ? "Organizer.MembershipReactivated" : "Organizer.MembershipDeactivated", "OrganizerMembership", membership.Id.ToString(), organizerId);
         await db.SaveChangesAsync(ct);
         return NoContent();
     }
 
     private async Task<bool> CanAdminister(Guid organizerId, CancellationToken ct) =>
         User.IsInRole("SystemAdministrator") ||
-        (await db.OrganizerMemberships.AsNoTracking().AnyAsync(x => x.OrganizerId == organizerId && x.UserId == users.GetUserId(User) && x.IsActive && x.Role == OrganizerRole.EventAdministrator && x.Organizer.IsActive, ct));
+        (await db.OrganizerMemberships.AsNoTracking().AnyAsync(x => x.OrganizerId == organizerId && x.UserId == users.GetUserId(User) && x.IsActive && x.Role == OrganizerRole.EventAdministrator && x.Organizer.IsActive && !x.Organizer.IsSuspended, ct));
     private static bool IsAssignableRole(OrganizerRole role) => role is OrganizerRole.EventAdministrator or OrganizerRole.RaceDirector;
 }

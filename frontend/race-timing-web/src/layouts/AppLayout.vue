@@ -15,6 +15,7 @@
         <v-list-item prepend-icon="mdi-format-list-bulleted" title="Categories" to="/categories" />
         <v-list-subheader class="text-grey mt-4">ADMINISTRATION</v-list-subheader>
         <v-list-item v-if="auth.canManageAnyMembers" prepend-icon="mdi-shield-account-outline" title="Organizer Members" to="/users" />
+        <v-list-item v-if="auth.isPlatformAdministrator" prepend-icon="mdi-shield-crown-outline" title="Platform Administration" to="/platform" />
         <v-list-item prepend-icon="mdi-cog-outline" title="System Settings" to="/settings" />
       </v-list>
       <template #append>

@@ -7,6 +7,7 @@ using RaceTiming.Domain.Entities;
 using RaceTiming.Domain.Enums;
 using RaceTiming.Infrastructure.Identity;
 using RaceTiming.Infrastructure.Persistence;
+using RaceTiming.Api.Services;
 
 namespace RaceTiming.Api.Controllers;
 
@@ -15,7 +16,8 @@ namespace RaceTiming.Api.Controllers;
 [Route("api/v1/organizers")]
 public sealed class OrganizersController(
     RaceTimingDbContext db,
-    UserManager<ApplicationUser> users) : ControllerBase
+    UserManager<ApplicationUser> users,
+    IAuditLogger? audit = null) : ControllerBase
 {
     public sealed record CreateOrganizerRequest(string Name, string Slug, string? Description);
 
@@ -24,12 +26,12 @@ public sealed class OrganizersController(
     {
         if (User.IsInRole("SystemAdministrator"))
             return Ok(await db.Organizers.AsNoTracking().OrderBy(x => x.Name)
-                .Select(x => new { x.Id, x.Name, x.Slug, x.Description, x.IsActive }).ToListAsync(ct));
+                .Select(x => new { x.Id, x.Name, x.Slug, x.Description, x.IsActive, x.IsSuspended }).ToListAsync(ct));
 
         var userId = users.GetUserId(User)!;
         var items = await db.OrganizerMemberships.AsNoTracking()
-            .Where(x => x.UserId == userId && x.IsActive && x.Organizer.IsActive)
-            .Select(x => new { x.Organizer.Id, x.Organizer.Name, x.Organizer.Slug, x.Organizer.Description, x.Organizer.IsActive })
+            .Where(x => x.UserId == userId && x.IsActive && x.Organizer.IsActive && !x.Organizer.IsSuspended)
+            .Select(x => new { x.Organizer.Id, x.Organizer.Name, x.Organizer.Slug, x.Organizer.Description, x.Organizer.IsActive, x.Organizer.IsSuspended })
             .OrderBy(x => x.Name).ToListAsync(ct);
         return Ok(items);
     }
@@ -53,6 +55,7 @@ public sealed class OrganizersController(
         {
             OrganizerId = organizer.Id, UserId = userId, Role = OrganizerRole.EventAdministrator
         });
+        audit?.Record(User, "Organizer.Created", "Organizer", organizer.Id.ToString(), organizer.Id);
         await db.SaveChangesAsync(ct);
         return StatusCode(StatusCodes.Status201Created, new
         {

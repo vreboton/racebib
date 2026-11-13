@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.IdentityModel.Tokens.Jwt;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
@@ -8,6 +9,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using RaceTiming.Api.Authorization;
 using RaceTiming.Api.Controllers;
+using RaceTiming.Api.Services;
 using RaceTiming.Domain.Entities;
 using RaceTiming.Domain.Enums;
 using RaceTiming.Infrastructure.Identity;
@@ -114,6 +116,7 @@ public sealed class AuthAndAuthorizationTests : IAsyncLifetime
         Assert.IsType<ObjectResult>(result);
         Assert.Equal(StatusCodes.Status423Locked, ((ObjectResult)result!).StatusCode);
         Assert.True(await users.IsLockedOutAsync(account));
+        Assert.Contains(await db.AuditRecords.Select(x => x.Action).ToListAsync(), x => x == "Authentication.AccountLockedOut");
 
         var lockedAttempt = await controller.Login(new AuthController.LoginRequest(account.Email!, password), default);
         Assert.Equal(StatusCodes.Status423Locked, Assert.IsType<ObjectResult>(lockedAttempt).StatusCode);
@@ -132,6 +135,31 @@ public sealed class AuthAndAuthorizationTests : IAsyncLifetime
         Assert.IsType<OkObjectResult>(result);
         Assert.False(await users.IsLockedOutAsync(account));
         Assert.Equal(0, await users.GetAccessFailedCountAsync(account));
+    }
+
+    [Fact]
+    public async Task LogoutRevokesJwtAndCreatesSecurityAuditRecord()
+    {
+        var loginResult = await CreateAuthController().Login(new AuthController.LoginRequest(account.Email!, password), default);
+        var login = Assert.IsType<AuthController.LoginResponse>(Assert.IsType<OkObjectResult>(loginResult).Value);
+        var jwt = new JwtSecurityTokenHandler().ReadJwtToken(login.AccessToken);
+        var context = new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(new ClaimsIdentity(jwt.Claims, "Bearer"))
+        };
+        var controller = new AuthController(users, signInManager, db,
+            new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Jwt:SigningKey"] = "unused-test-key-value-at-least-32-bytes",
+                ["Jwt:Issuer"] = "RaceBib.Tests", ["Jwt:Audience"] = "RaceBib.Tests.Clients"
+            }).Build(), new AuditLogger(db))
+        {
+            ControllerContext = new ControllerContext { HttpContext = context }
+        };
+
+        Assert.IsType<NoContentResult>(await controller.Logout(default));
+        Assert.Contains(await db.RevokedTokens.Select(x => x.JwtId).ToListAsync(), x => x == jwt.Id);
+        Assert.Contains(await db.AuditRecords.Select(x => x.Action).ToListAsync(), x => x == "Authentication.JwtRevoked");
     }
 
     [Fact]
@@ -223,7 +251,7 @@ public sealed class AuthAndAuthorizationTests : IAsyncLifetime
         var httpContext = new DefaultHttpContext();
         httpContext.User = new ClaimsPrincipal(new ClaimsIdentity(
             [new Claim(ClaimTypes.NameIdentifier, account.Id)], "Test"));
-        return new AuthController(users, signInManager, db, configuration)
+        return new AuthController(users, signInManager, db, configuration, new RaceTiming.Api.Services.AuditLogger(db))
         {
             ControllerContext = new ControllerContext { HttpContext = httpContext }
         };

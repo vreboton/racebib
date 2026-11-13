@@ -154,6 +154,56 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                     b.ToTable("AspNetUserTokens", (string)null);
                 });
 
+            modelBuilder.Entity("RaceTiming.Domain.Entities.AuditRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<string>("ActorIdentity")
+                        .HasMaxLength(254)
+                        .HasColumnType("varchar(254)");
+
+                    b.Property<string>("ActorUserId")
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<string>("MetadataJson")
+                        .HasColumnType("json");
+
+                    b.Property<Guid?>("OrganizerId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("TargetEntityId")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("varchar(80)");
+
+                    b.Property<string>("TargetEntityType")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("varchar(80)");
+
+                    b.Property<DateTime>("TimestampUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TimestampUtc");
+
+                    b.HasIndex("Action", "TimestampUtc");
+
+                    b.HasIndex("ActorUserId", "TimestampUtc");
+
+                    b.HasIndex("OrganizerId", "TimestampUtc");
+
+                    b.ToTable("AuditRecords");
+                });
+
             modelBuilder.Entity("RaceTiming.Domain.Entities.Course", b =>
                 {
                     b.Property<Guid>("Id")
@@ -325,6 +375,9 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                         .HasColumnType("longtext");
 
                     b.Property<bool>("IsActive")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<bool>("IsSuspended")
                         .HasColumnType("tinyint(1)");
 
                     b.Property<string>("Name")
@@ -806,6 +859,14 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("RaceTiming.Domain.Entities.AuditRecord", b =>
+                {
+                    b.HasOne("RaceTiming.Domain.Entities.Organizer", null)
+                        .WithMany()
+                        .HasForeignKey("OrganizerId")
+                        .OnDelete(DeleteBehavior.SetNull);
                 });
 
             modelBuilder.Entity("RaceTiming.Domain.Entities.Course", b =>

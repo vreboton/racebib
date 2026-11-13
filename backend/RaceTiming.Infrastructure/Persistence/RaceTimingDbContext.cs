@@ -12,6 +12,7 @@ public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> op
     public DbSet<Organizer> Organizers => Set<Organizer>();
     public DbSet<OrganizerMembership> OrganizerMemberships => Set<OrganizerMembership>();
     public DbSet<OrganizerInvitation> OrganizerInvitations => Set<OrganizerInvitation>();
+    public DbSet<AuditRecord> AuditRecords => Set<AuditRecord>();
     public DbSet<Event> Events => Set<Event>();
     public DbSet<Race> Races => Set<Race>();
     public DbSet<RaceCategory> RaceCategories => Set<RaceCategory>();
@@ -62,6 +63,20 @@ public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> op
             e.HasIndex(x => x.CreatedByUserId);
             e.HasOne(x => x.Organizer).WithMany().HasForeignKey(x => x.OrganizerId).OnDelete(DeleteBehavior.Cascade);
             e.HasOne<ApplicationUser>().WithMany().HasForeignKey(x => x.CreatedByUserId).OnDelete(DeleteBehavior.Restrict);
+        });
+        b.Entity<AuditRecord>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.Property(x => x.ActorIdentity).HasMaxLength(254);
+            e.Property(x => x.Action).HasMaxLength(100).IsRequired();
+            e.Property(x => x.TargetEntityType).HasMaxLength(80).IsRequired();
+            e.Property(x => x.TargetEntityId).HasMaxLength(80).IsRequired();
+            e.Property(x => x.MetadataJson).HasColumnType("json");
+            e.HasIndex(x => x.TimestampUtc);
+            e.HasIndex(x => new { x.ActorUserId, x.TimestampUtc });
+            e.HasIndex(x => new { x.Action, x.TimestampUtc });
+            e.HasIndex(x => new { x.OrganizerId, x.TimestampUtc });
+            e.HasOne<Organizer>().WithMany().HasForeignKey(x => x.OrganizerId).OnDelete(DeleteBehavior.SetNull);
         });
         b.Entity<Event>(e =>
         {

@@ -34,7 +34,7 @@ public sealed class EventsController(
         if (!User.IsInRole("SystemAdministrator"))
         {
             var userId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
-            var organizerIds = db.OrganizerMemberships.Where(x => x.UserId == userId && x.IsActive && x.Organizer.IsActive)
+            var organizerIds = db.OrganizerMemberships.Where(x => x.UserId == userId && x.IsActive && x.Organizer.IsActive && !x.Organizer.IsSuspended)
                 .Select(x => x.OrganizerId);
             query = query.Where(x => organizerIds.Contains(x.OrganizerId));
         }

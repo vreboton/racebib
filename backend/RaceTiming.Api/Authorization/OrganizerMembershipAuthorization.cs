@@ -17,7 +17,7 @@ public sealed class OrganizerMembershipAuthorization(RaceTimingDbContext db) : I
             return Task.FromResult(false);
 
         var query = db.OrganizerMemberships.AsNoTracking()
-            .Where(x => x.OrganizerId == organizerId && x.UserId == userId && x.IsActive && x.Organizer.IsActive);
+            .Where(x => x.OrganizerId == organizerId && x.UserId == userId && x.IsActive && x.Organizer.IsActive && !x.Organizer.IsSuspended);
         if (requireManagement)
             query = query.Where(x => x.Role == OrganizerRole.EventAdministrator || x.Role == OrganizerRole.RaceDirector);
 

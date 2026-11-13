@@ -38,6 +38,7 @@ export const useAuthStore = defineStore('auth', () => {
     user.value?.roles.includes('SystemAdministrator') ||
     user.value?.organizerMemberships.some(membership => membership.role === 'EventAdministrator'),
   ))
+  const isPlatformAdministrator = computed(() => Boolean(user.value?.roles.includes('SystemAdministrator')))
 
   function canManageMembers(organizerId: string) {
     return Boolean(user.value?.roles.includes('SystemAdministrator') ||
@@ -119,6 +120,7 @@ export const useAuthStore = defineStore('auth', () => {
     isAuthenticated,
     canManageAnyOrganizer,
     canManageAnyMembers,
+    isPlatformAdministrator,
     canManageOrganizer,
     canManageMembers,
     login,

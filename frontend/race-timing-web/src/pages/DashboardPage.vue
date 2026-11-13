@@ -1,4 +1,7 @@
 <template>
+  <v-alert v-if="platformAccessDenied" type="warning" variant="tonal" class="mb-4">
+    Platform Administration is available only to System Administrators.
+  </v-alert>
   <div class="page-heading">
     <div><div class="eyebrow">OVERVIEW</div><h1>Dashboard</h1><p>Manage your events and race operations from one place.</p></div>
     <v-btn color="primary" prepend-icon="mdi-plus" to="/events">Create event</v-btn>
@@ -24,6 +27,12 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+import { useRoute } from 'vue-router'
+
+const route = useRoute()
+const platformAccessDenied = computed(() => route.query.accessDenied === 'platform')
+
 const stats = [
   { label: 'Total events', value: '—', note: 'Across your organizers', icon: 'mdi-flag-outline' },
   { label: 'Upcoming events', value: '—', note: 'Scheduled in the future', icon: 'mdi-calendar-clock' },

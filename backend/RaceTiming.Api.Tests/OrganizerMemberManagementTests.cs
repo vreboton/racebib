@@ -62,6 +62,7 @@ public sealed class OrganizerMemberManagementTests : IAsyncLifetime
         var added = await c.Add(organizerA.Id, new OrganizerMembersController.AddMemberRequest(target.Email!, OrganizerRole.RaceDirector), default);
         Assert.IsType<ObjectResult>(added);
         Assert.Equal(OrganizerRole.RaceDirector, (await db.OrganizerMemberships.SingleAsync(x => x.UserId == target.Id)).Role);
+        Assert.Contains(await db.AuditRecords.Select(x => x.Action).ToListAsync(), x => x == "Organizer.MemberAdded");
         Assert.IsType<ConflictObjectResult>(await c.Add(organizerA.Id, new OrganizerMembersController.AddMemberRequest(target.Email!, OrganizerRole.RaceDirector), default));
         Assert.IsType<BadRequestObjectResult>(await c.Add(organizerA.Id, new OrganizerMembersController.AddMemberRequest("other@example.test", OrganizerRole.TimingOfficial), default));
     }
@@ -92,6 +93,9 @@ public sealed class OrganizerMemberManagementTests : IAsyncLifetime
         Assert.True(await db.OrganizerMemberships.AnyAsync(x => x.UserId == director.Id && x.IsActive));
         Assert.True(await new RaceTiming.Api.Authorization.OrganizerMembershipAuthorization(db)
             .CanAccessAsync(Context(director).User, organizerA.Id, true, default));
+        var membershipActions = await db.AuditRecords.Select(x => x.Action).ToListAsync();
+        Assert.Contains("Organizer.MembershipDeactivated", membershipActions);
+        Assert.Contains("Organizer.MembershipReactivated", membershipActions);
     }
 
     [Fact]
@@ -111,6 +115,7 @@ public sealed class OrganizerMemberManagementTests : IAsyncLifetime
         db.OrganizerMemberships.AddRange(member, other); await db.SaveChangesAsync();
         var c = MembersController(admin);
         Assert.IsType<NoContentResult>(await c.ChangeRole(organizerA.Id, member.Id, new OrganizerMembersController.UpdateRoleRequest(OrganizerRole.EventAdministrator), default));
+        Assert.Contains(await db.AuditRecords.Select(x => x.Action).ToListAsync(), x => x == "Organizer.MembershipRoleChanged");
         Assert.IsType<NotFoundResult>(await c.ChangeRole(organizerA.Id, other.Id, new OrganizerMembersController.UpdateRoleRequest(OrganizerRole.EventAdministrator), default));
         Assert.Equal(OrganizerRole.RaceDirector, (await db.OrganizerMemberships.SingleAsync(x => x.Id == other.Id)).Role);
     }
@@ -124,6 +129,7 @@ public sealed class OrganizerMemberManagementTests : IAsyncLifetime
         var token = ExtractToken(sender.LastUrl!);
         Assert.NotEqual(token, invitation.TokenHash);
         Assert.Equal(64, invitation.TokenHash.Length);
+        Assert.Contains(await db.AuditRecords.Select(x => x.Action).ToListAsync(), x => x == "Organizer.InvitationCreated");
         Assert.IsType<ConflictObjectResult>(await c.Create(organizerA.Id, new OrganizerInvitationsController.CreateInvitationRequest("NEW@example.test", OrganizerRole.EventAdministrator), default));
     }
 
@@ -158,6 +164,7 @@ public sealed class OrganizerMemberManagementTests : IAsyncLifetime
         var accept = InvitationController(target);
         Assert.IsType<NoContentResult>(await accept.Accept(new OrganizerInvitationsController.TokenRequest(token), default));
         Assert.True(await db.OrganizerMemberships.AnyAsync(x => x.UserId == target.Id && x.OrganizerId == organizerA.Id && x.IsActive && x.Role == OrganizerRole.RaceDirector));
+        Assert.Contains(await db.AuditRecords.Select(x => x.Action).ToListAsync(), x => x == "Organizer.InvitationAccepted");
         Assert.IsType<BadRequestObjectResult>(await accept.Accept(new OrganizerInvitationsController.TokenRequest(token), default));
         Assert.Empty(await users.GetRolesAsync(target));
     }
@@ -172,9 +179,11 @@ public sealed class OrganizerMemberManagementTests : IAsyncLifetime
         Assert.IsType<OkObjectResult>(await c.Resend(organizerA.Id, invitation.Id, default));
         var resentToken = ExtractToken(sender.LastUrl!);
         Assert.NotEqual(originalToken, resentToken);
+        Assert.Contains(await db.AuditRecords.Select(x => x.Action).ToListAsync(), x => x == "Organizer.InvitationResent");
         Assert.IsType<BadRequestObjectResult>(await InvitationController(target).Accept(new OrganizerInvitationsController.TokenRequest(originalToken), default));
         Assert.IsType<NoContentResult>(await InvitationController(target).Reject(new OrganizerInvitationsController.TokenRequest(resentToken), default));
         Assert.Equal(OrganizerInvitationStatus.Rejected, (await db.OrganizerInvitations.SingleAsync()).Status);
+        Assert.Contains(await db.AuditRecords.Select(x => x.Action).ToListAsync(), x => x == "Organizer.InvitationRejected");
         Assert.IsType<BadRequestObjectResult>(await InvitationController(target).Accept(new OrganizerInvitationsController.TokenRequest(resentToken), default));
     }
 
@@ -211,8 +220,11 @@ public sealed class OrganizerMemberManagementTests : IAsyncLifetime
         var token = ExtractToken(sender.LastUrl!);
         invitation.ExpiresAtUtc = DateTime.UtcNow.AddMinutes(-1); await db.SaveChangesAsync();
         Assert.IsType<BadRequestObjectResult>(await InvitationController(target).Accept(new OrganizerInvitationsController.TokenRequest(token), default));
+        Assert.IsType<ConflictObjectResult>(await c.Resend(organizerA.Id, invitation.Id, default));
+        Assert.Contains(await db.AuditRecords.Select(x => x.Action).ToListAsync(), x => x == "Organizer.InvitationExpired");
         invitation.ExpiresAtUtc = DateTime.UtcNow.AddDays(1); invitation.Status = OrganizerInvitationStatus.Pending; await db.SaveChangesAsync();
         Assert.IsType<NoContentResult>(await c.Revoke(organizerA.Id, invitation.Id, default));
+        Assert.Contains(await db.AuditRecords.Select(x => x.Action).ToListAsync(), x => x == "Organizer.InvitationRevoked");
         Assert.IsType<BadRequestObjectResult>(await InvitationController(target).Accept(new OrganizerInvitationsController.TokenRequest(token), default));
     }
 
@@ -243,13 +255,13 @@ public sealed class OrganizerMemberManagementTests : IAsyncLifetime
     }
 
     private OrganizerMembersController MembersController(ApplicationUser user, string? globalRole = null) =>
-        new(db, users) { ControllerContext = new ControllerContext { HttpContext = Context(user, globalRole) } };
+        new(db, users, new AuditLogger(db)) { ControllerContext = new ControllerContext { HttpContext = Context(user, globalRole) } };
 
     private OrganizerInvitationsController InvitationController(ApplicationUser user, string? globalRole = null) =>
         new(db, users, sender, new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["Application:BaseUrl"] = "http://localhost:8080", ["Invitations:ExpirationDays"] = "7"
-        }).Build(), new TestEnvironment()) { ControllerContext = new ControllerContext { HttpContext = Context(user, globalRole) } };
+        }).Build(), new TestEnvironment(), new AuditLogger(db)) { ControllerContext = new ControllerContext { HttpContext = Context(user, globalRole) } };
 
     private static DefaultHttpContext Context(ApplicationUser user, string? role = null)
     {

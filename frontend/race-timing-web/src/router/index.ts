@@ -25,6 +25,7 @@ const router = createRouter({
         { path: 'courses', name: 'courses', component: () => import('../pages/PlaceholderPage.vue'), meta: { title: 'Courses' } },
         { path: 'categories', name: 'categories', component: () => import('../pages/PlaceholderPage.vue'), meta: { title: 'Categories' } },
         { path: 'users', name: 'users', component: () => import('../pages/OrganizerMembersPage.vue'), meta: { title: 'Organizer Members' } },
+        { path: 'platform', name: 'platform-admin', component: () => import('../pages/PlatformAdministrationPage.vue'), meta: { title: 'Platform Administration', platformAdmin: true } },
         { path: 'settings', name: 'settings', component: () => import('../pages/PlaceholderPage.vue'), meta: { title: 'System Settings' } },
       ],
     },
@@ -41,6 +42,7 @@ router.beforeEach(async (to) => {
   }
 
   if (!auth.isAuthenticated) return { name: 'login', query: { redirect: to.fullPath } }
+  if (to.meta.platformAdmin && !auth.isPlatformAdministrator) return { name: 'dashboard', query: { accessDenied: 'platform' } }
   return true
 })
 

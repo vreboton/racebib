@@ -17,7 +17,7 @@ namespace RaceTiming.Api.Controllers;
 [ApiController, Authorize, Route("api/v1")]
 public sealed class OrganizerInvitationsController(
     RaceTimingDbContext db, UserManager<ApplicationUser> users, IInvitationEmailSender emailSender,
-    IConfiguration configuration, IHostEnvironment environment) : ControllerBase
+    IConfiguration configuration, IHostEnvironment environment, IAuditLogger? audit = null) : ControllerBase
 {
     public sealed record CreateInvitationRequest([Required, EmailAddress, StringLength(254)] string Email, OrganizerRole Role);
     public sealed record TokenRequest([Required] string Token);
@@ -46,7 +46,11 @@ public sealed class OrganizerInvitationsController(
         var email = request.Email.Trim();
         var normalizedEmail = users.NormalizeEmail(email)!;
         var expired = await db.OrganizerInvitations.Where(x => x.OrganizerId == organizerId && x.Status == OrganizerInvitationStatus.Pending && x.ExpiresAtUtc <= DateTime.UtcNow).ToListAsync(ct);
-        foreach (var item in expired) { item.Status = OrganizerInvitationStatus.Expired; item.ActiveInvitationKey = null; }
+        foreach (var item in expired)
+        {
+            item.Status = OrganizerInvitationStatus.Expired; item.ActiveInvitationKey = null;
+            audit?.Record(User, "Organizer.InvitationExpired", "OrganizerInvitation", item.Id.ToString(), organizerId);
+        }
         if (expired.Count > 0) await db.SaveChangesAsync(ct);
         var actorId = users.GetUserId(User)!;
         var existingUser = await users.FindByEmailAsync(email);
@@ -69,6 +73,7 @@ public sealed class OrganizerInvitationsController(
             ActiveInvitationKey = $"{organizerId:N}:{normalizedEmail}"
         };
         db.OrganizerInvitations.Add(invitation);
+        audit?.Record(User, "Organizer.InvitationCreated", "OrganizerInvitation", invitation.Id.ToString(), organizerId, new Dictionary<string, object?> { ["role"] = invitation.Role.ToString() });
         try { await db.SaveChangesAsync(ct); }
         catch (DbUpdateException) { return Conflict(new ProblemDetails { Status = 409, Title = "A pending invitation already exists for this email." }); }
         var url = BuildAcceptanceUrl(token);
@@ -102,12 +107,14 @@ public sealed class OrganizerInvitationsController(
         {
             invitation.Status = OrganizerInvitationStatus.Expired;
             invitation.ActiveInvitationKey = null;
+            audit?.Record(User, "Organizer.InvitationExpired", "OrganizerInvitation", invitation.Id.ToString(), organizerId);
             await db.SaveChangesAsync(ct);
             return Conflict(new ProblemDetails { Status = 409, Title = "This invitation has expired. Create a new invitation." });
         }
         var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
         invitation.TokenHash = HashToken(token);
         invitation.ExpiresAtUtc = DateTime.UtcNow.AddDays(Math.Clamp(configuration.GetValue("Invitations:ExpirationDays", 7), 1, 30));
+        audit?.Record(User, "Organizer.InvitationResent", "OrganizerInvitation", invitation.Id.ToString(), organizerId, new Dictionary<string, object?> { ["role"] = invitation.Role.ToString() });
         await db.SaveChangesAsync(ct);
         var url = BuildAcceptanceUrl(token);
         try { await emailSender.SendAsync(invitation.Email, invitation.Organizer.Name, url, invitation.ExpiresAtUtc, ct); }
@@ -126,12 +133,14 @@ public sealed class OrganizerInvitationsController(
         {
             invitation.Status = OrganizerInvitationStatus.Expired;
             invitation.ActiveInvitationKey = null;
+            audit?.Record(User, "Organizer.InvitationExpired", "OrganizerInvitation", invitation.Id.ToString(), organizerId);
             await db.SaveChangesAsync(ct);
             return Conflict(new ProblemDetails { Status = 409, Title = "This invitation has expired." });
         }
         invitation.Status = OrganizerInvitationStatus.Revoked;
         invitation.ActiveInvitationKey = null;
         invitation.RevokedAtUtc = DateTime.UtcNow;
+        audit?.Record(User, "Organizer.InvitationRevoked", "OrganizerInvitation", invitation.Id.ToString(), organizerId);
         try { await db.SaveChangesAsync(ct); }
         catch (DbUpdateConcurrencyException) { return Conflict(new ProblemDetails { Status = 409, Title = "This invitation has already been processed." }); }
         return NoContent();
@@ -160,6 +169,7 @@ public sealed class OrganizerInvitationsController(
             return BadRequest(InvalidInvitation());
         invitation.Status = OrganizerInvitationStatus.Rejected;
         invitation.ActiveInvitationKey = null;
+        audit?.Record(User, "Organizer.InvitationRejected", "OrganizerInvitation", invitation.Id.ToString(), invitation.OrganizerId);
         try { await db.SaveChangesAsync(ct); return NoContent(); }
         catch (DbUpdateConcurrencyException) { return BadRequest(InvalidInvitation()); }
     }
@@ -187,13 +197,13 @@ public sealed class OrganizerInvitationsController(
     }
 
     private async Task<bool> CanAdminister(Guid organizerId, CancellationToken ct) =>
-        User.IsInRole("SystemAdministrator") || await db.OrganizerMemberships.AsNoTracking().AnyAsync(x => x.OrganizerId == organizerId && x.UserId == users.GetUserId(User) && x.IsActive && x.Role == OrganizerRole.EventAdministrator && x.Organizer.IsActive, ct);
+        User.IsInRole("SystemAdministrator") || await db.OrganizerMemberships.AsNoTracking().AnyAsync(x => x.OrganizerId == organizerId && x.UserId == users.GetUserId(User) && x.IsActive && x.Role == OrganizerRole.EventAdministrator && x.Organizer.IsActive && !x.Organizer.IsSuspended, ct);
 
     private async Task<OrganizerInvitation?> FindPending(string token, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(token) || token.Length != 64) return null;
         var hash = HashToken(token);
-        return await db.OrganizerInvitations.SingleOrDefaultAsync(x => x.TokenHash == hash && x.Status == OrganizerInvitationStatus.Pending && x.ExpiresAtUtc > DateTime.UtcNow, ct);
+        return await db.OrganizerInvitations.SingleOrDefaultAsync(x => x.TokenHash == hash && x.Status == OrganizerInvitationStatus.Pending && x.ExpiresAtUtc > DateTime.UtcNow && x.Organizer.IsActive && !x.Organizer.IsSuspended, ct);
     }
 
     private async Task<bool> AcceptForUser(OrganizerInvitation invitation, ApplicationUser user, CancellationToken ct)
@@ -209,6 +219,7 @@ public sealed class OrganizerInvitationsController(
         invitation.Status = OrganizerInvitationStatus.Accepted;
         invitation.ActiveInvitationKey = null;
         invitation.AcceptedAtUtc = DateTime.UtcNow;
+        audit?.Record(User, "Organizer.InvitationAccepted", "OrganizerInvitation", invitation.Id.ToString(), invitation.OrganizerId, new Dictionary<string, object?> { ["role"] = invitation.Role.ToString() });
         var membership = await db.OrganizerMemberships.SingleOrDefaultAsync(x => x.OrganizerId == invitation.OrganizerId && x.UserId == user.Id, ct);
         if (membership is null) db.OrganizerMemberships.Add(new OrganizerMembership { OrganizerId = invitation.OrganizerId, UserId = user.Id, Role = invitation.Role });
         else { membership.Role = invitation.Role; membership.IsActive = true; membership.JoinedAt = DateTime.UtcNow; }

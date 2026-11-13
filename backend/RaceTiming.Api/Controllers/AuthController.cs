@@ -9,6 +9,7 @@ using Microsoft.IdentityModel.Tokens;
 using RaceTiming.Domain.Enums;
 using RaceTiming.Infrastructure.Identity;
 using RaceTiming.Infrastructure.Persistence;
+using RaceTiming.Api.Services;
 
 namespace RaceTiming.Api.Controllers;
 
@@ -18,7 +19,8 @@ public sealed class AuthController(
     UserManager<ApplicationUser> users,
     SignInManager<ApplicationUser> signInManager,
     RaceTimingDbContext db,
-    IConfiguration configuration) : ControllerBase
+    IConfiguration configuration,
+    IAuditLogger? audit = null) : ControllerBase
 {
     public sealed record LoginRequest(string Email, string Password);
     public sealed record OrganizerMembershipInfo(Guid OrganizerId, string OrganizerName, OrganizerRole Role);
@@ -39,11 +41,15 @@ public sealed class AuthController(
         // authentication cookie. JWT remains the API's only authentication scheme.
         var result = await signInManager.CheckPasswordSignInAsync(user, request.Password, lockoutOnFailure: true);
         if (result.IsLockedOut || await users.IsLockedOutAsync(user))
+        {
+            audit?.Record(User, "Authentication.AccountLockedOut", "User", user.Id);
+            if (audit is not null) await db.SaveChangesAsync(ct);
             return StatusCode(StatusCodes.Status423Locked, new ProblemDetails
             {
                 Status = StatusCodes.Status423Locked,
                 Title = "This account is temporarily locked after too many failed sign-in attempts."
             });
+        }
         if (!result.Succeeded)
             return Unauthorized(new ProblemDetails { Status = 401, Title = "Invalid email or password." });
 
@@ -91,7 +97,7 @@ public sealed class AuthController(
     private async Task<UserProfile> BuildUserProfile(ApplicationUser user, CancellationToken ct)
     {
         var memberships = await db.OrganizerMemberships.AsNoTracking()
-            .Where(x => x.UserId == user.Id && x.IsActive && x.Organizer.IsActive)
+            .Where(x => x.UserId == user.Id && x.IsActive && x.Organizer.IsActive && !x.Organizer.IsSuspended)
             .OrderBy(x => x.Organizer.Name)
             .Select(x => new OrganizerMembershipInfo(x.OrganizerId, x.Organizer.Name, x.Role))
             .ToListAsync(ct);
@@ -117,6 +123,7 @@ public sealed class AuthController(
                 JwtId = jwtId,
                 ExpiresAtUtc = DateTimeOffset.FromUnixTimeSeconds(expiry).UtcDateTime
             });
+            audit?.Record(User, "Authentication.JwtRevoked", "Jwt", jwtId);
             await db.SaveChangesAsync(ct);
         }
         return NoContent();
