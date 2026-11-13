@@ -1,0 +1,17 @@
+**/bin/
+**/obj/
+**/node_modules/
+**/dist/
+**/.vite/
+.env
+.env.*
+!.env.example
+*.user
+*.suo
+.vscode/
+.idea/
+.DS_Store
+coverage/
+
+# TypeScript build cache
+*.tsbuildinfo

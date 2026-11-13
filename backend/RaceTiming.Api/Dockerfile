@@ -6,9 +6,12 @@ RUN dotnet publish RaceTiming.Api/RaceTiming.Api.csproj -c Release -o /app/publi
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS final
 WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV ASPNETCORE_URLS=http://+:8080
 EXPOSE 8080
 COPY --from=build /app/publish .
-HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
-  CMD ["dotnet", "RaceTiming.Api.dll", "--health-check"]
 ENTRYPOINT ["dotnet", "RaceTiming.Api.dll"]
