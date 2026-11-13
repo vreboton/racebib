@@ -20,6 +20,140 @@ jobs:
           dotnet-version: 8.0.x
       - run: dotnet restore backend/RaceTiming.sln
       - run: dotnet build backend/RaceTiming.sln --configuration Release --no-restore
+      - name: Run backend tests
+        run: >-
+          dotnet test backend/RaceTiming.sln
+          --configuration Release
+          --no-build
+          --no-restore
+          --filter "Category!=MySqlIntegration&Category!=LiveDocker"
+          --logger "trx;LogFileName=backend-tests.trx"
+          --results-directory "${{ runner.temp }}/backend-test-results"
+      - name: Upload backend test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-results
+          path: ${{ runner.temp }}/backend-test-results/*.trx
+          if-no-files-found: warn
+          retention-days: 14
+
+  backend-mysql-integration:
+    runs-on: ubuntu-latest
+    needs: backend
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: racebib_test_ci
+          MYSQL_USER: racebib_test
+          MYSQL_PASSWORD: ${{ format('racebib-{0}-{1}', github.run_id, github.run_attempt) }}
+          MYSQL_ROOT_PASSWORD: ${{ format('racebib-root-{0}-{1}', github.run_id, github.run_attempt) }}
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent --host=127.0.0.1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    env:
+      RACEBIB_MYSQL_TEST_CONNECTION: Server=127.0.0.1;Port=3306;Database=racebib_test_ci;User=racebib_test;Password=${{ format('racebib-{0}-{1}', github.run_id, github.run_attempt) }}
+      RACEBIB_MYSQL_TEST_REQUIRED: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - run: dotnet tool restore
+      - run: dotnet restore backend/RaceTiming.sln
+      - run: dotnet build backend/RaceTiming.sln --configuration Release --no-restore
+      - name: Generate ephemeral CI JWT signing key
+        run: printf 'RACEBIB_CI_JWT_SIGNING_KEY=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+      - name: Validate disposable MySQL target before migration
+        env:
+          MYSQL_TEST_CONNECTION: ${{ env.RACEBIB_MYSQL_TEST_CONNECTION }}
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+
+          if os.environ.get("RACEBIB_MYSQL_TEST_REQUIRED", "").lower() != "true":
+              sys.exit("The MySQL integration job must require its relational test suite.")
+
+          raw = os.environ.get("MYSQL_TEST_CONNECTION", "")
+          properties = {}
+          for part in raw.split(";"):
+              if not part.strip():
+                  continue
+              key, separator, value = part.partition("=")
+              normalized_key = key.strip().lower()
+              if not separator or not normalized_key or normalized_key in properties:
+                  sys.exit("Invalid MySQL test connection properties.")
+              properties[normalized_key] = value.strip().strip('"')
+
+          host = properties.get("server", "").lower()
+          database = properties.get("database", "")
+          user = properties.get("user", "").lower()
+          if host not in {"localhost", "127.0.0.1", "::1"}:
+              sys.exit("MySQL migration target must be a local host.")
+          if not database.lower().startswith("racebib_test_"):
+              sys.exit("MySQL migration target must use a racebib_test_* database.")
+          if not user.startswith("racebib_test"):
+              sys.exit("MySQL migration target must use a racebib_test user.")
+          PY
+      - name: Apply committed EF Core migrations to disposable MySQL
+        env:
+          ASPNETCORE_ENVIRONMENT: Testing
+          ConnectionStrings__DefaultConnection: ${{ env.RACEBIB_MYSQL_TEST_CONNECTION }}
+          Jwt__SigningKey: ${{ env.RACEBIB_CI_JWT_SIGNING_KEY }}
+          Jwt__Issuer: RaceBib.IntegrationTests
+          Jwt__Audience: RaceBib.IntegrationTests
+        run: >-
+          dotnet ef database update
+          --project backend/RaceTiming.Infrastructure
+          --startup-project backend/RaceTiming.Api
+          --configuration Release
+      - name: Run MySQL HTTP integration tests
+        run: >-
+          dotnet test backend/RaceTiming.Api.Tests/RaceTiming.Api.Tests.csproj
+          --configuration Release
+          --no-build
+          --no-restore
+          --filter "Category=MySqlIntegration"
+          --logger "trx;LogFileName=mysql-integration-tests.trx"
+          --results-directory "${{ runner.temp }}/mysql-integration-test-results"
+      - name: Require all six MySQL integration tests to execute and pass
+        env:
+          MYSQL_TEST_RESULTS_DIRECTORY: ${{ runner.temp }}/mysql-integration-test-results
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          result_files = list(Path(os.environ["MYSQL_TEST_RESULTS_DIRECTORY"]).glob("*.trx"))
+          if len(result_files) != 1:
+              sys.exit("Expected one MySQL integration TRX result file.")
+
+          root = ET.parse(result_files[0]).getroot()
+          counters = next((element for element in root.iter() if element.tag.endswith("Counters")), None)
+          if counters is None:
+              sys.exit("MySQL integration TRX results do not contain test counters.")
+
+          expected = {"total": 6, "executed": 6, "passed": 6, "failed": 0, "notExecuted": 0}
+          actual = {name: int(counters.attrib.get(name, "0")) for name in expected}
+          if actual != expected:
+              sys.exit("Expected exactly six executed and passed MySQL integration tests with none skipped or failed.")
+          PY
+      - name: Upload MySQL integration test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mysql-integration-test-results
+          path: ${{ runner.temp }}/mysql-integration-test-results/*.trx
+          if-no-files-found: warn
+          retention-days: 14
 
   frontend:
     runs-on: ubuntu-latest
@@ -32,6 +166,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: frontend/race-timing-web/package.json
-      - run: npm install
+          cache-dependency-path: frontend/race-timing-web/package-lock.json
+      - run: npm ci
+      - run: npm test
       - run: npm run build
