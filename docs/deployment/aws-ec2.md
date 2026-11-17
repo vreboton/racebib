@@ -108,6 +108,41 @@ Initialization creates the persistent volume and database baseline, then deliber
 
 If a matching production data volume already exists, initialization refuses unless --adopt-existing is provided. Adoption verifies the existing container's exact pinned image, environment, command, volume and resource limits; it does not silently replace it. An older prototype configuration that differs must first be inventoried/backed up and deliberately brought through a reviewed adoption/maintenance plan. Never reset it or point this configuration at a development volume.
 
+### Resume initialization after the resource-limit type error
+
+On Compose 5.7.1, rendered memory limits can be decimal byte strings while Docker inspect reports integers. Install the reviewed resource-limit fix in `/opt/racebib/scripts/operations.py` (root-owned, mode 0644, invoked through Python) before retrying. This changes host validation only; keep the approved Compose files, `.env`, MySQL image, running container and named volume unchanged. Preserve a protected copy of the existing state and take an EBS snapshot through the normal backup procedure before maintenance. Never edit/delete state, use `down -v`, remove the volume or run `up --force-recreate` to work around this error.
+
+For the failed first initialization of source `899f0d6a22cdafad3a691c52d3956ffbeb2bbcee`, first inspect state without printing secrets:
+
+```bash
+sudo python3 - <<'PY'
+import json
+from pathlib import Path
+root = Path('/opt/racebib')
+state = json.loads((root / 'state/release-state.json').read_text())
+pending = state.get('inflight') or {}
+print('database baseline exists:', (root / 'state/database.json').exists())
+print('operation:', pending.get('kind'), 'stage:', pending.get('stage'))
+print('successful release exists:', state.get('current') is not None)
+PY
+# With the corrected validator installed, backup does not require database.json:
+sudo bash /opt/racebib/scripts/backup.sh
+# Only for a missing database.json and an interrupted first initialization:
+sudo bash /opt/racebib/scripts/database-init.sh --adopt-existing \
+  --resume-initialization --reason 'Reviewed matching healthy MySQL after resource validation type failure'
+```
+
+The resume operation requires the existing `database-initialization` barrier at `prepared`, no successful release/history, no application target and no database baseline. It records the reason and retains the prior barrier. It validates the existing container before issuing only `compose start --wait` (never pull/up/recreate), verifies health, then atomically records `database.json`. Any validation failure leaves the barrier and does not adopt a mismatched container. Retry after investigation is explicit; there is no force-clear option. If the baseline already exists, initialization is intentionally refused: review it and use ordinary schema recovery below. An unrelated barrier, missing container, changed credentials/configuration or existing application history requires separate investigation.
+
+Successful adoption still leaves maintenance active. After reviewing the backup and the immutable source release, the separate first-schema operation is:
+
+```bash
+sudo bash /opt/racebib/scripts/recover.sh 899f0d6a22cdafad3a691c52d3956ffbeb2bbcee \
+  --resume-migrations --reason 'Resume reviewed first schema after adopting the existing MySQL initialization'
+```
+
+This last command applies migrations and starts application writers; execute it only during the separately authorized deployment window with the runbook's access/TLS restrictions satisfied. It verifies the schema and database-backed application readiness before clearing maintenance. These commands were not executed against AWS during development of this fix.
+
 Create root-owned mode-600 /opt/racebib/admin.env with plain assignments:
 
 ```text
