@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import subprocess
+import textwrap
 import unittest
 from unittest.mock import patch
 
@@ -108,6 +110,74 @@ class SsmTests(unittest.TestCase):
             self.assertNotIn(forbidden, workflow)
         self.assertLess(workflow.index("release.py verify"), workflow.index("configure-aws-credentials@"))
         self.assertIn("--proto '=https'", workflow)
+        self.assertIn("if: inputs.verify_external_https", workflow)
+        self.assertIn("verify_external_https:", workflow)
+        self.assertIn("default: false", workflow.split("verify_external_https:")[1].split("permissions:")[0])
+        self.assertIn("steps.remote.outputs.remote_command", workflow)
+        self.assertIn("steps.remote.outputs.host_state", workflow)
+        self.assertIn("steps.external.outcome", workflow)
+        self.assertNotIn("continue-on-error", workflow)
+        for forbidden in ["authorize-security-group", "revoke-security-group", "recover.sh", "rollback.sh"]:
+            self.assertNotIn(forbidden, workflow)
+
+    def test_receipt_requires_exact_target_and_single_verified_result(self):
+        receipt = {"deployment": "succeeded", "host_state": "verified", "source_sha": SHA}
+        line = "RACEBIB_RESULT " + json.dumps(receipt)
+        ssm_deploy.verify_receipt("non-secret projection\n" + line, SHA)
+        for stdout in ["", line + "\n" + line, line.replace(SHA, "b" * 40),
+                       line.replace('"verified"', '"unconfirmed"'), "RACEBIB_RESULT invalid"]:
+            with self.subTest(stdout=stdout), self.assertRaises((RuntimeError, ValueError)):
+                ssm_deploy.verify_receipt(stdout, SHA)
+
+    def test_submission_pins_version_hash_and_emits_independent_results(self):
+        env = {"SOURCE": SHA, "INSTANCE_ID": "i-" + "a" * 17,
+               "DOCUMENT_NAME": "RaceBib-DeployVerifiedRelease", "DOCUMENT_SHA256": "b" * 64}
+        receipt = 'RACEBIB_RESULT ' + json.dumps({"deployment": "succeeded", "host_state": "verified", "source_sha": SHA})
+        with patch.dict(os.environ, env, clear=True), patch("ssm_deploy.aws") as aws, \
+             patch("ssm_deploy.wait", return_value={"StandardOutputContent": receipt}) as wait, \
+             patch("ssm_deploy.output") as output:
+            aws.return_value = {"Command": {"CommandId": "command"}}
+            ssm_deploy.main()
+            args = aws.call_args.args
+            self.assertEqual(args[args.index("--document-version") + 1], "1")
+            self.assertEqual(args[args.index("--document-hash") + 1], "b" * 64)
+            self.assertEqual(args[args.index("--document-hash-type") + 1], "Sha256")
+            aws.assert_called_once()
+            output.assert_any_call("remote_command", "succeeded")
+            output.assert_any_call("host_state", "verified")
+            output.reset_mock()
+            wait.return_value = {"StandardOutputContent": "missing receipt"}
+            with self.assertRaises(RuntimeError):
+                ssm_deploy.main()
+            output.assert_called_once_with("remote_command", "succeeded")
+
+    def test_missing_or_invalid_document_hash_prevents_submission(self):
+        env = {"SOURCE": SHA, "INSTANCE_ID": "i-" + "a" * 17, "DOCUMENT_NAME": "RaceBib-DeployVerifiedRelease"}
+        for value in ["", "$LATEST", "c" * 63, "A" * 64]:
+            with self.subTest(value=value), patch.dict(os.environ, dict(env, DOCUMENT_SHA256=value), clear=True), \
+                 patch("ssm_deploy.aws") as aws, self.assertRaises(ValueError):
+                ssm_deploy.main()
+            aws.assert_not_called()
+
+    @unittest.skipUnless(os.name == "posix", "Health shell runs on the Linux runner")
+    def test_external_probe_checks_tls_http_and_exit_status_once(self):
+        workflow = (ROOT / ".github/workflows/deploy-production.yml").read_text()
+        step = workflow.split("      - name: Verify external HTTPS", 1)[1].split("      - name: Report outcome", 1)[0]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            curl = root / "curl"
+            curl.write_text('#!/bin/bash\necho call >> "$CALLS"\nprintf "%s" "$HTTP_CODE"\nexit "$CURL_EXIT"\n')
+            curl.chmod(0o755)
+            for code, exit_code, succeeds in [("200", "0", True), ("301", "0", False),
+                                               ("000", "60", False), ("200", "18", False)]:
+                calls = root / "calls"
+                calls.write_text("")
+                env = dict(os.environ, PATH=temp + os.pathsep + os.environ["PATH"],
+                           CALLS=str(calls), HTTP_CODE=code, CURL_EXIT=exit_code)
+                result = subprocess.run(["bash", "-c", script], env=env, capture_output=True)
+                self.assertEqual(result.returncode == 0, succeeds)
+                self.assertEqual(calls.read_text().splitlines(), ["call"])
 
     def test_iam_only_allows_fixed_document_and_instance(self):
         policy = json.loads((ROOT / "deploy/aws/github-permissions.json").read_text())

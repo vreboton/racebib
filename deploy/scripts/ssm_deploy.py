@@ -37,7 +37,7 @@ def wait(command_id, instance, *, client=aws, sleep=time.sleep, clock=time.monot
             if status == "Success":
                 if value.get("ResponseCode") != 0:
                     raise RuntimeError("SSM success had a nonzero response code")
-                return
+                return value
             if status not in {"Pending", "InProgress", "Delayed", "Cancelling"}:
                 raise RuntimeError("SSM deployment ended: " + status + "; inspect host maintenance state")
         sleep(10)
@@ -49,8 +49,12 @@ def main():
     instance = os.environ["INSTANCE_ID"]
     if not re.fullmatch(r"i-[0-9a-f]{17}", instance):
         raise ValueError("A single EC2 instance ID is required")
+    document_hash = os.environ.get("DOCUMENT_SHA256", "")
+    if not re.fullmatch(r"[0-9a-f]{64}", document_hash):
+        raise ValueError("An independently approved SSM document SHA256 is required")
     result = aws("send-command", "--instance-ids", instance,
                  "--document-name", os.environ["DOCUMENT_NAME"], "--document-version", "1",
+                 "--document-hash", document_hash, "--document-hash-type", "Sha256",
                  "--timeout-seconds", "120", "--parameters", json.dumps(values),
                  "--comment", "RaceBib approved immutable release deployment")
     command_id = result["Command"]["CommandId"]
@@ -59,8 +63,26 @@ def main():
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
             stream.write("SSM command ID: `" + command_id + "`\n")
     # Raw remote stdout/stderr may contain operational secrets; never print it.
-    wait(command_id, instance)
-    print("SSM deployment and host state verification succeeded")
+    result = wait(command_id, instance)
+    output("remote_command", "succeeded")
+    verify_receipt(result.get("StandardOutputContent", ""), os.environ["SOURCE"])
+    output("host_state", "verified")
+    print("Remote deployment succeeded; host release state verified. External HTTPS availability is a separate check.")
+
+
+def output(key, value):
+    if os.environ.get("GITHUB_OUTPUT"):
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+            stream.write(key + "=" + value + "\n")
+
+
+def verify_receipt(stdout, source):
+    receipts = [line[len("RACEBIB_RESULT "):] for line in stdout.splitlines() if line.startswith("RACEBIB_RESULT ")]
+    if len(receipts) != 1:
+        raise RuntimeError("Remote command completed but host release-state receipt is missing or ambiguous")
+    value = json.loads(receipts[0])
+    if value != {"deployment": "succeeded", "host_state": "verified", "source_sha": source}:
+        raise RuntimeError("Remote command completed but target host release state was not verified")
 
 
 if __name__ == "__main__":

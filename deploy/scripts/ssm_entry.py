@@ -37,3 +37,4 @@ def main():
     inspect_state(source if result.returncode == 0 else None)
     if result.returncode:
         raise RuntimeError("Deployment failed; inspect root-only log and use existing recovery procedure")
+    print("RACEBIB_RESULT " + json.dumps({"deployment": "succeeded", "host_state": "verified", "source_sha": source}))

@@ -8,6 +8,10 @@ on:
       release_tag:
         description: Optional explicit immutable recovery tag for this source SHA
         required: false
+      verify_external_https:
+        description: Probe HTTPS only when this runner is already permitted by production ingress policy
+        type: boolean
+        default: false
 permissions:
   contents: read
   actions: read
@@ -47,13 +51,17 @@ jobs:
           allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
           unset-current-credentials: true
       - name: Invoke restricted SSM document and await terminal result
+        id: remote
         env:
           SOURCE: ${{ inputs.source_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           INSTANCE_ID: ${{ vars.AWS_INSTANCE_ID }}
           DOCUMENT_NAME: RaceBib-DeployVerifiedRelease
+          DOCUMENT_SHA256: ${{ vars.AWS_SSM_DOCUMENT_SHA256 }}
         run: python3 -B deploy/scripts/ssm_deploy.py
-      - name: Verify public HTTPS health
+      - name: Verify external HTTPS availability from an authorized runner
+        id: external
+        if: inputs.verify_external_https
         run: |
           set -euo pipefail
           status=$(curl --fail --silent --show-error --proto '=https' --max-time 30 --output /dev/null --write-out '%{http_code}' https://racebib.vreboton.com/health)
@@ -62,6 +70,12 @@ jobs:
         if: always()
         env:
           RESULT: ${{ job.status }}
+          REMOTE: ${{ steps.remote.outputs.remote_command || 'not-confirmed' }}
+          HOST_STATE: ${{ steps.remote.outputs.host_state || 'not-confirmed' }}
+          EXTERNAL: ${{ steps.external.outcome }}
         run: |
-          echo "Deployment job: $RESULT" >> "$GITHUB_STEP_SUMMARY"
-          echo 'Inspect the SSM command and host state before retrying a failure. Cancellation or timeout does not prove the remote command stopped. Never clear a maintenance barrier or auto-rollback.' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "Deployment job: $RESULT"
+            echo "Remote SSM command: $REMOTE; host release state: $HOST_STATE; external HTTPS probe: $EXTERNAL"
+            echo 'A skipped external probe means availability was not verified from this runner. Restricted HTTPS ingress is intentional; verify from the trusted IP. External failure does not undo a verified deployment. Never automatically retry, change ingress, clear maintenance state, or roll back. After uncertain remote outcomes inspect the command and host before retrying.'
+          } >> "$GITHUB_STEP_SUMMARY"
