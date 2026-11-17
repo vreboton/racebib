@@ -18,8 +18,19 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
+      - run: dotnet tool restore
       - run: dotnet restore backend/RaceTiming.sln
       - run: dotnet build backend/RaceTiming.sln --configuration Release --no-restore
+      - name: Check EF Core model and migration consistency
+        env:
+          ConnectionStrings__DefaultConnection: Server=127.0.0.1;Port=3306;Database=racebib_design_time;User=racebib_test;Password=design-time-only
+          Jwt__SigningKey: ci-design-time-only-signing-key-not-a-secret-value
+        run: >-
+          dotnet ef migrations has-pending-model-changes
+          --project backend/RaceTiming.Infrastructure
+          --startup-project backend/RaceTiming.Api
+          --configuration Release
+          --no-build
       - name: Run backend tests
         run: >-
           dotnet test backend/RaceTiming.sln
