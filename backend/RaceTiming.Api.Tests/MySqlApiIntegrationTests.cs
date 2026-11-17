@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using MySqlConnector;
 using RaceTiming.Domain.Entities;
 using RaceTiming.Domain.Enums;
@@ -96,6 +97,7 @@ public sealed class MySqlApiFactory : WebApplicationFactory<Program>
     public const string ConnectionEnvironmentVariable = "RACEBIB_MYSQL_TEST_CONNECTION";
     public const string RequiredEnvironmentVariable = "RACEBIB_MYSQL_TEST_REQUIRED";
     private readonly string connectionString;
+    private readonly string jwtSigningKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48));
 
     public static bool IsRequiredInCurrentEnvironment =>
         string.Equals(Environment.GetEnvironmentVariable(RequiredEnvironmentVariable), "true", StringComparison.OrdinalIgnoreCase);
@@ -105,15 +107,21 @@ public sealed class MySqlApiFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
-        builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(
+    }
+
+    protected override IHost CreateHost(IHostBuilder builder)
+    {
+        builder.ConfigureHostConfiguration(configuration => configuration.AddInMemoryCollection(
             new Dictionary<string, string?>
             {
                 ["ConnectionStrings:DefaultConnection"] = connectionString,
-                ["Jwt:SigningKey"] = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48)),
+                ["Jwt:SigningKey"] = jwtSigningKey,
                 ["Jwt:Issuer"] = "RaceBib.IntegrationTests",
                 ["Jwt:Audience"] = "RaceBib.IntegrationTests",
                 ["Jwt:AccessTokenMinutes"] = "15",
             }));
+
+        return base.CreateHost(builder);
     }
 
     public static string ValidateTestConnection(string connection)
@@ -293,6 +301,19 @@ public sealed class MySqlIntegrationFactAttribute : FactAttribute
 [Trait("Category", "MySqlSafety")]
 public sealed class MySqlConnectionSafetyTests
 {
+    [Fact]
+    public void WebApplicationFactorySuppliesStartupConfigurationBeforeProgramRuns()
+    {
+        const string connection = "Server=127.0.0.1;Port=3306;Database=racebib_test_ci;User=racebib_test;Password=test-only";
+        using var factory = new MySqlApiFactory(connection);
+
+        var configuration = factory.Services.GetRequiredService<IConfiguration>();
+
+        Assert.Equal(connection, configuration.GetConnectionString("DefaultConnection"));
+        Assert.Equal("RaceBib.IntegrationTests", configuration["Jwt:Issuer"]);
+        Assert.False(string.IsNullOrWhiteSpace(configuration["Jwt:SigningKey"]));
+    }
+
     [Fact]
     public void AllowsOnlyTheDedicatedLocalTestTarget()
     {
