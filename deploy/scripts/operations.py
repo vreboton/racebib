@@ -4,6 +4,7 @@ Unit tests inject a temporary root/backend; the command line cannot override the
 """
 import argparse
 import contextlib
+import copy
 import gzip
 import hashlib
 import ipaddress
@@ -340,6 +341,36 @@ class Operations:
             raise
         print("Verified release:", verified["manifest"]["source_sha"], verified["manifest_digest"])
 
+    def provision_admin(self, current, values):
+        """State-changing phase after CLI configuration and credential validation."""
+        self.state.begin("administrator-provisioning", current)
+        commit_checkpoint = None
+        try:
+            self.stop_writers() # Avoid a fourth simultaneous container on the 1 GiB host.
+            backup = self.backup()
+            self.state.stage("administrator-provisioning", backup=backup)
+            self.oneoff("--provision-admin", extra_env=values)
+            schema_hash = self.schema()
+            self.application_ready(schema_hash)
+            self.state.stage("application-verified")
+            commit_checkpoint = copy.deepcopy(self.state.value)
+            self.state.commit(current, schema_hash)
+        except BaseException:
+            try:
+                self.stop_writers()
+            except BaseException:
+                pass # Match deploy(): cleanup must not mask the original failure.
+            if commit_checkpoint is not None:
+                # commit() clears its in-memory barrier before saving. Reinstate the last
+                # maintenance state even if a failed directory fsync followed file replacement.
+                self.state.value = commit_checkpoint
+                try:
+                    self.state.save()
+                except BaseException:
+                    pass # Failed storage requires incident recovery; never report success.
+            raise
+        print("Administrator provisioned. Remove admin.env and retain the credential only in the approved password manager.")
+
     def initialize_database(self, adopt=False):
         self.state.require_idle()
         require(not (self.root / "state/database.json").exists(), "Database already initialized; use database-start or maintenance")
@@ -492,16 +523,7 @@ def main():
                 require(separator and key in ("SeedAdmin__Email", "SeedAdmin__Password") and key not in values, "Invalid admin.env keys")
                 values[key] = value
             require(all(values.get(k) for k in ("SeedAdmin__Email", "SeedAdmin__Password")), "Missing bootstrap credentials")
-            ops.state.begin("administrator-provisioning", current)
-            ops.stop_writers() # Avoid a fourth simultaneous container on the 1 GiB host.
-            backup = ops.backup()
-            ops.state.stage("administrator-provisioning", backup=backup)
-            ops.oneoff("--provision-admin", extra_env=values)
-            schema_hash = ops.schema()
-            ops.application_ready(schema_hash)
-            ops.state.stage("application-verified")
-            ops.state.commit(current, schema_hash)
-            print("Administrator provisioned. Remove admin.env and retain the credential only in the approved password manager.")
+            ops.provision_admin(current, values)
         elif args.command == "database-maintenance":
             require(len(args.reason.strip()) >= 12, "A meaningful non-secret maintenance reason is required")
             ops.database_maintenance(verify_release(args.sha), args.reason)
