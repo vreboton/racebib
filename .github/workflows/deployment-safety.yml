@@ -14,6 +14,8 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 -B -m unittest discover -s deploy/tests -v
+      - name: Rehearse HTTPS proxy and Certbot webroot routing in an isolated container
+        run: python3 -B deploy/tests/nginx_https_rehearsal.py
       - run: for script in deploy/scripts/*.sh deploy/install-server.sh; do bash -n "$script"; done
       - name: Validate database and production overlays with synthetic values
         env:
