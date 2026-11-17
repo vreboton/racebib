@@ -69,6 +69,15 @@ def private_file(path):
     require(stat.S_IMODE(info.st_mode) == 0o600 and info.st_uid == 0, "Configuration must be root-owned, mode 600")
 
 
+def byte_count(value):
+    # Compose JSON may encode bytes as decimal strings; inspect uses integers.
+    require(type(value) is int or isinstance(value, str) and re.fullmatch(r"[0-9]{1,19}", value),
+            "Invalid MySQL resource limit: expected a positive integer byte count")
+    result = int(value)
+    require(0 < result <= 2**63 - 1, "Invalid MySQL resource limit: expected a positive integer byte count")
+    return result
+
+
 class Operations:
     def __init__(self, root=Path("/opt/racebib"), runner=run):
         self.root = Path(root)
@@ -128,8 +137,9 @@ class Operations:
                 json.loads(self.run(["docker", "network", "inspect", network]))[0].get("Internal") is True,
                 "MySQL must use only the approved internal network")
         require(value["HostConfig"]["RestartPolicy"]["Name"] == "unless-stopped", "MySQL restart policy differs")
-        require(value["HostConfig"]["Memory"] == mysql["mem_limit"] and
-                value["HostConfig"]["MemorySwap"] == mysql["memswap_limit"], "MySQL runtime resource limits differ")
+        limits = [(byte_count(value["HostConfig"].get(actual)), byte_count(mysql.get(expected)))
+                  for actual, expected in (("Memory", "mem_limit"), ("MemorySwap", "memswap_limit"))]
+        require(all(actual == expected for actual, expected in limits), "MySQL runtime resource limits differ")
         volume = config["volumes"]["mysql_data"]["name"]
         require(any(m.get("Name") == volume and m["Destination"] == "/var/lib/mysql" for m in value["Mounts"]),
                 "Unexpected MySQL data volume")
@@ -371,14 +381,23 @@ class Operations:
             raise
         print("Administrator provisioned. Remove admin.env and retain the credential only in the approved password manager.")
 
-    def initialize_database(self, adopt=False):
-        self.state.require_idle()
+    def initialize_database(self, adopt=False, *, resume=False, reason=None):
+        if resume:
+            pending = self.state.value["inflight"] or {}
+            require(adopt and pending.get("kind") == "database-initialization" and
+                    pending.get("stage") == "prepared" and pending.get("target") is None and
+                    self.state.value["current"] is None and self.state.value["previous"] is None and
+                    not self.state.value["history"],
+                    "Resume requires adoption of an interrupted first database initialization")
+            require(reason and len(reason.strip()) >= 12, "A meaningful non-secret initialization recovery reason is required")
+        else:
+            self.state.require_idle()
         require(not (self.root / "state/database.json").exists(), "Database already initialized; use database-start or maintenance")
         config = self.db_configuration()
         self.no_oneoff()
         volumes = self.run(["docker", "volume", "ls", "--filter", "name=^" + config["volumes"]["mysql_data"]["name"] + "$", "--quiet"])
         require(adopt or not volumes.strip(), "Existing data volume found; review it and explicitly adopt, never reset it")
-        self.state.begin("database-initialization")
+        self.state.begin("database-initialization", reason=reason, recovery=resume)
         if adopt:
             self.db_runtime(config, healthy=False) # Adoption must not silently replace the existing image/config.
             self.dc("start", "--wait", "--wait-timeout", "420", "mysql", database=True)
@@ -476,6 +495,8 @@ def main():
     sub.add_parser("database-start")
     p = sub.add_parser("database-init")
     p.add_argument("--adopt-existing", action="store_true")
+    p.add_argument("--resume-initialization", action="store_true")
+    p.add_argument("--reason")
     p = sub.add_parser("restore")
     p.add_argument("backup")
     p.add_argument("--clean-target", action="store_true", required=True)
@@ -489,7 +510,7 @@ def main():
     with operation_lock(root / ".deployment.lock"):
         ops = Operations(root)
         if args.command == "database-init":
-            ops.initialize_database(args.adopt_existing)
+            ops.initialize_database(args.adopt_existing, resume=args.resume_initialization, reason=args.reason)
         elif args.command == "database-start":
             ops.database_start()
         elif args.command == "backup":
