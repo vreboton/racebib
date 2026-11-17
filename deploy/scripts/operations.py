@@ -191,7 +191,7 @@ class Operations:
             template = (self.root / "nginx/racebib-https.conf.example").read_text().replace("__DOMAIN__", hostname)
             active = Path("/etc/nginx/sites-enabled/racebib")
             require(active.is_file() and active.read_text() == template,
-                    "HTTPS requires the reviewed TLS template: port 80 redirects and never proxies authentication")
+                    "HTTPS requires the reviewed TLS template: port 80 serves only ACME files or redirects to HTTPS")
             self.run(["systemctl", "reload", "nginx"])
             try:
                 # A first deployment has no web service yet. Verify TLS now; HTTP readiness after startup.
