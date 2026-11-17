@@ -466,6 +466,7 @@ def main():
     for name in ("deploy", "recover", "database-maintenance"):
         p = sub.add_parser(name)
         p.add_argument("sha")
+        p.add_argument("--release-tag")
         if name != "database-maintenance":
             p.add_argument("--migrate" if name == "deploy" else "--resume-migrations", action="store_true")
         if name != "deploy":
@@ -501,7 +502,7 @@ def main():
             ops.restore_clean(args.backup, args.reason)
         elif args.command == "rollback":
             target = ops.state.rollback_target()
-            verified = verify_release(target["manifest"]["source_sha"])
+            verified = verify_release(target["manifest"]["source_sha"], release_tag=target.get("release_tag"))
             require(verified["manifest_digest"] == target["manifest_digest"], "Rollback manifest changed")
             ops.deploy(verified)
         elif args.command == "provision-admin":
@@ -526,9 +527,9 @@ def main():
             ops.provision_admin(current, values)
         elif args.command == "database-maintenance":
             require(len(args.reason.strip()) >= 12, "A meaningful non-secret maintenance reason is required")
-            ops.database_maintenance(verify_release(args.sha), args.reason)
+            ops.database_maintenance(verify_release(args.sha, release_tag=args.release_tag), args.reason)
         else:
-            ops.deploy(verify_release(args.sha), migrate=getattr(args, "migrate", False) or getattr(args, "resume_migrations", False),
+            ops.deploy(verify_release(args.sha, release_tag=args.release_tag), migrate=getattr(args, "migrate", False) or getattr(args, "resume_migrations", False),
                        recovery=args.command == "recover", reason=getattr(args, "reason", None))
 
 

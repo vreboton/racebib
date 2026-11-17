@@ -1,0 +1,48 @@
+name: recover-publication
+run-name: recover publication ${{ inputs.source_sha }}
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full original source SHA with a retained non-immutable source release
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: publication-recovery-${{ inputs.source_sha }}
+  cancel-in-progress: false
+jobs:
+  recover:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+      packages: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Validate legacy manifest, actual publisher outputs and exact GHCR objects
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GHCR_TOKEN: ${{ github.token }}
+          GHCR_USERNAME: ${{ github.actor }}
+          SOURCE: ${{ inputs.source_sha }}
+        run: python3 -B deploy/scripts/release.py prepare-recovery "$SOURCE" --output-dir "$RUNNER_TEMP/racebib-recovery" >> "$GITHUB_OUTPUT"
+      - name: Create only a fresh tag and immutable recovery release; never replace source artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ inputs.source_sha }}
+          RELEASE_TAG: ${{ steps.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_TAG" == "racebib-$SOURCE-recovery-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" ]]
+          # POST fails if the ref exists; no PATCH, force, overwrite, delete or image pushes.
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$RELEASE_TAG" -f sha="$SOURCE" > /dev/null
+          gh release create "$RELEASE_TAG" "$RUNNER_TEMP/racebib-recovery/release.json" "$RUNNER_TEMP/racebib-recovery/recovery.json" --verify-tag --draft --title "$RELEASE_TAG" --notes "Recovery of existing source manifest without rebuilding or changing image digests."
+          gh release edit "$RELEASE_TAG" --draft=false
+          python3 -B deploy/scripts/release.py check-recovery "$SOURCE" --release-tag "$RELEASE_TAG" --output-dir "$RUNNER_TEMP/racebib-recovery"

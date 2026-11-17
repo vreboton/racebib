@@ -5,6 +5,9 @@ on:
       source_sha:
         description: Source SHA of an immutable published RaceBib release
         required: true
+      release_tag:
+        description: Optional explicit immutable recovery tag for this source SHA
+        required: false
       migrate:
         description: Apply reviewed migrations after backup (cannot override a recovery barrier)
         type: boolean
@@ -12,6 +15,7 @@ on:
 permissions:
   contents: read
   actions: read
+  packages: read
 concurrency:
   group: racebib-production
   cancel-in-progress: false
@@ -27,8 +31,11 @@ jobs:
       - name: Verify immutable manifest, source, attempts and both publishing jobs
         env:
           GH_TOKEN: ${{ github.token }}
+          GHCR_TOKEN: ${{ github.token }}
+          GHCR_USERNAME: ${{ github.actor }}
           SOURCE: ${{ inputs.source_sha }}
-        run: python3 -B deploy/scripts/release.py verify "$SOURCE"
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: python3 -B deploy/scripts/release.py verify "$SOURCE" --release-tag "$RELEASE_TAG"
       - name: Deploy through dedicated forced-command SSH identity
         env:
           SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -36,6 +43,7 @@ jobs:
           HOST: ${{ secrets.DEPLOY_HOST }}
           USER: ${{ secrets.DEPLOY_USER }}
           SOURCE: ${{ inputs.source_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
           MIGRATE: ${{ inputs.migrate }}
         run: |
           set -euo pipefail
@@ -45,8 +53,10 @@ jobs:
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           trap 'rm -f ~/.ssh/racebib' EXIT
           [[ "$SOURCE" =~ ^[0-9a-f]{40}$ ]]
+          [[ -z "$RELEASE_TAG" || "$RELEASE_TAG" =~ ^racebib-$SOURCE-recovery-[1-9][0-9]*-[1-9][0-9]*$ ]]
           [[ "$HOST" =~ ^[a-zA-Z0-9.-]+$ && "$USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
           option=''
           if [[ "$MIGRATE" == true ]]; then option=' --migrate'; fi
+          if [[ -n "$RELEASE_TAG" ]]; then option+=" --release-tag $RELEASE_TAG"; fi
           # The root-owned server independently fetches/verifies the manifest again.
           ssh -i ~/.ssh/racebib -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 "$USER@$HOST" "deploy $SOURCE$option"
