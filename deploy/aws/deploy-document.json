@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "2.2",
+  "description": "Deploy an existing verified RaceBib release without migrations",
+  "parameters": {
+    "SourceSha": {"type": "String", "allowedPattern": "^[0-9a-f]{40}$", "interpolationType": "ENV_VAR"},
+    "ReleaseTag": {"type": "String", "default": "", "allowedPattern": "^$|^racebib-[0-9a-f]{40}-recovery-[1-9][0-9]*-[1-9][0-9]*$", "interpolationType": "ENV_VAR"}
+  },
+  "mainSteps": [{
+    "action": "aws:runShellScript",
+    "name": "deployVerifiedRelease",
+    "inputs": {
+      "timeoutSeconds": "3600",
+      "runCommand": ["exec /usr/bin/python3 -I -B /opt/racebib/scripts/ssm_bootstrap.py"]
+    }
+  }]
+}

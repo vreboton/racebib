@@ -8,10 +8,6 @@ on:
       release_tag:
         description: Optional explicit immutable recovery tag for this source SHA
         required: false
-      migrate:
-        description: Apply reviewed migrations after backup (cannot override a recovery barrier)
-        type: boolean
-        default: false
 permissions:
   contents: read
   actions: read
@@ -23,6 +19,12 @@ jobs:
   deploy:
     if: github.ref == 'refs/heads/main'
     environment: production
+    timeout-minutes: 80
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+      id-token: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -36,27 +38,30 @@ jobs:
           SOURCE: ${{ inputs.source_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: python3 -B deploy/scripts/release.py verify "$SOURCE" --release-tag "$RELEASE_TAG"
-      - name: Deploy through dedicated forced-command SSH identity
+      - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-duration-seconds: 7200
+          role-session-name: racebib-${{ github.run_id }}-${{ github.run_attempt }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          unset-current-credentials: true
+      - name: Invoke restricted SSM document and await terminal result
         env:
-          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-          HOST: ${{ secrets.DEPLOY_HOST }}
-          USER: ${{ secrets.DEPLOY_USER }}
           SOURCE: ${{ inputs.source_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
-          MIGRATE: ${{ inputs.migrate }}
+          INSTANCE_ID: ${{ vars.AWS_INSTANCE_ID }}
+          DOCUMENT_NAME: RaceBib-DeployVerifiedRelease
+        run: python3 -B deploy/scripts/ssm_deploy.py
+      - name: Verify public HTTPS health
         run: |
           set -euo pipefail
-          umask 077
-          mkdir -p ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/racebib
-          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          trap 'rm -f ~/.ssh/racebib' EXIT
-          [[ "$SOURCE" =~ ^[0-9a-f]{40}$ ]]
-          [[ -z "$RELEASE_TAG" || "$RELEASE_TAG" =~ ^racebib-$SOURCE-recovery-[1-9][0-9]*-[1-9][0-9]*$ ]]
-          [[ "$HOST" =~ ^[a-zA-Z0-9.-]+$ && "$USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
-          option=''
-          if [[ "$MIGRATE" == true ]]; then option=' --migrate'; fi
-          if [[ -n "$RELEASE_TAG" ]]; then option+=" --release-tag $RELEASE_TAG"; fi
-          # The root-owned server independently fetches/verifies the manifest again.
-          ssh -i ~/.ssh/racebib -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 "$USER@$HOST" "deploy $SOURCE$option"
+          status=$(curl --fail --silent --show-error --proto '=https' --max-time 30 --output /dev/null --write-out '%{http_code}' https://racebib.vreboton.com/health)
+          test "$status" = 200
+      - name: Report outcome
+        if: always()
+        env:
+          RESULT: ${{ job.status }}
+        run: |
+          echo "Deployment job: $RESULT" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Inspect the SSM command and host state before retrying a failure. Cancellation or timeout does not prove the remote command stopped. Never clear a maintenance barrier or auto-rollback.' >> "$GITHUB_STEP_SUMMARY"
