@@ -1,0 +1,29 @@
+name: racebib-production
+services:
+  mysql:
+    image: ${MYSQL_IMAGE:?Pin mysql:8.4@sha256:digest}
+    restart: unless-stopped
+    mem_limit: 448m
+    memswap_limit: 768m
+    cpus: 1.0
+    command: ["--innodb-buffer-pool-size=128M", "--max-connections=30", "--performance-schema=OFF", "--temptable-max-ram=16M", "--innodb-log-buffer-size=8M", "--binlog-expire-logs-seconds=604800"]
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?required}
+      MYSQL_USER: ${MYSQL_USER:?required}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?required}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?required}
+    volumes: ["mysql_data:/var/lib/mysql"]
+    networks: [database]
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql --protocol=TCP -h127.0.0.1 -u\"$$MYSQL_USER\" \"$$MYSQL_DATABASE\" -Nse 'SELECT 1' >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 36
+      start_period: 60s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+networks:
+  database: {internal: true}
+volumes:
+  mysql_data: {}

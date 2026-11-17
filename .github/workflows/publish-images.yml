@@ -1,0 +1,134 @@
+name: publish-images
+run-name: publish ${{ github.event.workflow_run.head_sha }}
+on:
+  workflow_run:
+    workflows: [build]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: publish-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+jobs:
+  preflight:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    outputs:
+      safety_run_id: ${{ steps.gate.outputs.safety_run_id }}
+      safety_attempt: ${{ steps.gate.outputs.safety_attempt }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - run: python3 -B -m unittest discover -s deploy/tests -v
+      - name: Verify every required build job and reject an existing SHA mapping
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ github.event.workflow_run.head_sha }}
+          BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
+          BUILD_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: python3 -B deploy/scripts/release.py preflight "$SOURCE" >> "$GITHUB_OUTPUT"
+  publish-api:
+    needs: preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        id: build
+        with:
+          context: backend
+          file: backend/RaceTiming.Api/Dockerfile
+          platforms: linux/amd64
+          push: true
+          # Attempt-qualified convenience tag; consumers ONLY use the manifest digest.
+          tags: ghcr.io/vreboton/racebib-api:${{ github.event.workflow_run.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/vreboton/racebib
+            org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha }}
+          cache-from: type=gha,scope=racebib-api
+          cache-to: type=gha,mode=max,scope=racebib-api
+  publish-web:
+    needs: preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        id: build
+        with:
+          context: frontend/race-timing-web
+          file: frontend/race-timing-web/Dockerfile
+          platforms: linux/amd64
+          push: true
+          # Attempt-qualified convenience tag; consumers ONLY use the manifest digest.
+          tags: ghcr.io/vreboton/racebib-web:${{ github.event.workflow_run.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/vreboton/racebib
+            org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha }}
+          cache-from: type=gha,scope=racebib-web
+          cache-to: type=gha,mode=max,scope=racebib-web
+  release:
+    needs: [preflight, publish-api, publish-web]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Publish the source-to-digests mapping exactly once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ github.event.workflow_run.head_sha }}
+          BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
+          BUILD_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          API_DIGEST: ${{ needs.publish-api.outputs.digest }}
+          WEB_DIGEST: ${{ needs.publish-web.outputs.digest }}
+          SAFETY_RUN_ID: ${{ needs.preflight.outputs.safety_run_id }}
+          SAFETY_ATTEMPT: ${{ needs.preflight.outputs.safety_attempt }}
+        run: |
+          set -euo pipefail
+          python3 -B deploy/scripts/release.py preflight "$SOURCE"
+          python3 -B deploy/scripts/release.py manifest "$SOURCE" > release.json
+          tag="racebib-$SOURCE"
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$tag" -f sha="$SOURCE" > /dev/null
+          gh release create "$tag" release.json --verify-tag --draft --title "$tag" --notes "Pinned API/web digests and CI provenance."
+          gh release edit "$tag" --draft=false
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq '.immutable' | grep -qx true

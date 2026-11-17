@@ -109,6 +109,32 @@ builder.Services.AddHealthChecks();
 
 var app = builder.Build();
 
+// Explicit one-shot maintenance; never run migrations during normal startup.
+if (args.Contains("--migrate"))
+{
+    using var scope = app.Services.CreateScope();
+    await scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>().Database.MigrateAsync();
+    await SchemaReadiness.VerifyAsync(scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>());
+    return;
+}
+if (args.Contains("--verify-schema"))
+{
+    using var scope = app.Services.CreateScope();
+    var result = await SchemaReadiness.VerifyAsync(scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>());
+    Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(result, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)));
+    return;
+}
+if (args.Contains("--provision-admin"))
+{
+    using var scope = app.Services.CreateScope();
+    await SchemaReadiness.VerifyAsync(scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>());
+    if (string.IsNullOrWhiteSpace(builder.Configuration["SeedAdmin:Email"]) ||
+        string.IsNullOrWhiteSpace(builder.Configuration["SeedAdmin:Password"]))
+        throw new InvalidOperationException("Administrator credentials are required for provisioning.");
+    await DevelopmentIdentitySeeder.SeedAsync(app.Services, app.Configuration, allowExistingAccountPromotion: false);
+    return;
+}
+
 if (app.Environment.IsDevelopment())
     await DevelopmentIdentitySeeder.SeedAsync(app.Services, app.Configuration);
 
@@ -137,6 +163,12 @@ app.UseAuthorization();
 app.UseRateLimiter();
 app.MapControllers();
 app.MapHealthChecks("/health");
+// Internal Docker-network readiness. Frontend Nginx never proxies this path to the API.
+app.MapGet("/health/ready", async (RaceTimingDbContext db, CancellationToken ct) =>
+{
+    try { return Results.Ok(await SchemaReadiness.VerifyAsync(db, ct)); }
+    catch { return Results.Json(new { status = "not-ready" }, statusCode: 503); }
+}).ExcludeFromDescription();
 app.Run();
 
 public partial class Program;

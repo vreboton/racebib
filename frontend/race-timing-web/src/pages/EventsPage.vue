@@ -43,7 +43,7 @@
     <v-alert v-if="pageError" type="error" variant="tonal" class="ma-4" closable @click:close="pageError = ''">
       {{ pageError }}
     </v-alert>
-    <v-skeleton-loader v-if="loading" type="table-row@6" />
+    <v-skeleton-loader v-if="loading" type="table-row@6" role="status" aria-label="Loading events" />
     <template v-else-if="events.length">
       <v-table>
         <thead>
