@@ -396,7 +396,7 @@ class ProvenanceTests(unittest.TestCase):
         def response(path):
             if path.startswith("/releases/tags/"):
                 return {"id": 30, "immutable": True, "draft": False, "tag_name": "racebib-" + "a" * 40,
-                        "assets": [{"name": "release.json", "state": "uploaded", "size": len(raw), "digest": asset_digest}]}
+                        "assets": [{"id": 1, "name": "release.json", "state": "uploaded", "size": len(raw), "digest": asset_digest}]}
             if path.startswith("/git/ref/"):
                 return {"object": {"type": "commit", "sha": "a" * 40}}
             if path.startswith("/compare/"):
@@ -411,8 +411,8 @@ class ProvenanceTests(unittest.TestCase):
                     "status": "completed", "conclusion": "success", "head_branch": "main", "head_sha": "a" * 40,
                     "display_title": "publish " + "a" * 40, "repository": {"full_name": "vreboton/racebib"},
                     "head_repository": {"full_name": "vreboton/racebib"}}
-        with patch("release.request", side_effect=response), patch("release.urllib.request.urlopen") as download:
-            download.return_value.__enter__.return_value.read.return_value = raw
+        with patch("release.request", side_effect=response), patch("release.auth", return_value={"github_token": None}), \
+             patch("release.read_url", return_value=(raw, {})):
             verified = verify_release("a" * 40)
             self.assertEqual(verified["manifest_digest"], digest)
             asset_digest = "sha256:" + "0" * 64

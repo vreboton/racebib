@@ -22,6 +22,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("backup")
     parser.add_argument("source_sha")
+    parser.add_argument("--release-tag")
     parser.add_argument("--mysql-image", required=True)
     parser.add_argument("--confirm-disposable-host", required=True, action="store_true")
     args = parser.parse_args()
@@ -35,7 +36,7 @@ def main():
     metadata = json.loads(Path(str(backup) + ".json").read_text())
     with backup.open("rb") as source:
         require("sha256:" + hashlib.file_digest(source, "sha256").hexdigest() == metadata["digest"], "Backup checksum mismatch")
-    verified = verify_release(args.source_sha)
+    verified = verify_release(args.source_sha, release_tag=args.release_tag)
     project = "racebib-rehearsal-" + uuid.uuid4().hex[:12]
     # Unique project means fresh volume/network; no existing database is reset.
     with tempfile.TemporaryDirectory(prefix="racebib-rehearsal-") as temporary:
