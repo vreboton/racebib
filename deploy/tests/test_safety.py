@@ -260,6 +260,134 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(stopped, ["web-id", "api-id"])
 
 
+class ProvisioningOperations(FakeOperations):
+    def __init__(self, root, fail=None):
+        super().__init__(root, fail)
+        self.writers_running = False
+
+    def stop_writers(self):
+        super().stop_writers()
+        self.writers_running = False
+
+    def application_ready(self, schema):
+        # The real readiness method can fail after both containers have started.
+        self.writers_running = True
+        super().application_ready(schema)
+
+
+class AdministratorProvisioningTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.ops = ProvisioningOperations(self.root)
+        self.ops.deploy(release("a"))
+        self.ops.deploy(release("b"))
+        self.before = copy.deepcopy(self.ops.state.value)
+        self.ops.events = []
+        self.values = {"SeedAdmin__Email": "bootstrap@example.test", "SeedAdmin__Password": "test-only"}
+
+    def assert_failed_closed(self):
+        self.assertFalse(self.ops.writers_running)
+        self.assertEqual(self.ops.events[-1], "stop")
+        persisted = ReleaseState(self.ops.state.path)
+        for field in ("current", "previous", "history"):
+            self.assertEqual(persisted.value[field], self.before[field])
+        self.assertEqual(persisted.value["inflight"]["kind"], "administrator-provisioning")
+        with self.assertRaises(SafetyError):
+            persisted.require_idle()
+        with self.assertRaises(SafetyError):
+            persisted.rollback_target()
+        restarted = ProvisioningOperations(self.root)
+        with self.assertRaises(SafetyError):
+            restarted.deploy(release("b"))
+        with self.assertRaises(SafetyError):
+            restarted.provision_admin(release("b"), self.values)
+        self.assertEqual(restarted.events, [])
+
+    def test_readiness_failure_after_restart_stops_writers_and_preserves_barrier(self):
+        self.ops.fail = "application"
+        with self.assertRaisesRegex(SafetyError, "Injected application failure"):
+            self.ops.provision_admin(release("b"), self.values)
+        self.assertIn("application", self.ops.events)
+        self.assertEqual(self.ops.events.count("stop"), 2)
+        self.assert_failed_closed()
+
+    def test_state_stage_write_failure_after_restart_stops_writers(self):
+        replace = os.replace
+        def fail_verified_stage(source, destination):
+            value = json.loads(Path(source).read_text())
+            if value["inflight"] and value["inflight"]["stage"] == "application-verified":
+                raise OSError("injected stage persistence failure")
+            return replace(source, destination)
+        with patch("release_state.os.replace", side_effect=fail_verified_stage):
+            with self.assertRaisesRegex(OSError, "stage persistence failure"):
+                self.ops.provision_admin(release("b"), self.values)
+        self.assertIn("application", self.ops.events)
+        self.assert_failed_closed()
+
+    def test_success_state_write_failure_stops_writers_and_restores_checkpoint(self):
+        replace = os.replace
+        def fail_success_commit(source, destination):
+            if json.loads(Path(source).read_text())["inflight"] is None:
+                raise OSError("injected success persistence failure")
+            return replace(source, destination)
+        with patch("release_state.os.replace", side_effect=fail_success_commit):
+            with self.assertRaisesRegex(OSError, "success persistence failure"):
+                self.ops.provision_admin(release("b"), self.values)
+        self.assertIsNotNone(self.ops.state.value["inflight"])
+        self.assert_failed_closed()
+
+    def test_failure_after_success_file_replacement_reinstates_persistent_barrier(self):
+        def fail_after_replacement(path, value):
+            atomic_json(path, value)
+            if value["inflight"] is None:
+                raise OSError("injected post-replacement durability failure")
+        with patch("release_state.atomic_json", side_effect=fail_after_replacement):
+            with self.assertRaisesRegex(OSError, "post-replacement durability failure"):
+                self.ops.provision_admin(release("b"), self.values)
+        self.assert_failed_closed()
+
+    def test_cleanup_failure_does_not_mask_original_readiness_error(self):
+        self.ops.fail = "application"
+        stop = self.ops.stop_writers
+        def fail_cleanup():
+            stop()
+            if "application" in self.ops.events:
+                raise OSError("injected cleanup failure")
+        with patch.object(self.ops, "stop_writers", side_effect=fail_cleanup):
+            with self.assertRaisesRegex(SafetyError, "Injected application failure"):
+                self.ops.provision_admin(release("b"), self.values)
+        self.assert_failed_closed()
+
+    def test_successful_provisioning_verifies_and_commits_without_stopping_again(self):
+        with patch.object(self.ops, "oneoff", wraps=self.ops.oneoff) as oneoff:
+            self.ops.provision_admin(release("b"), self.values)
+        oneoff.assert_called_once_with("--provision-admin", extra_env=self.values)
+        self.assertEqual(self.ops.events, ["stop", "backup", "--provision-admin", "schema", "application"])
+        self.assertTrue(self.ops.writers_running)
+        persisted = ReleaseState(self.ops.state.path).value
+        self.assertIsNone(persisted["inflight"])
+        self.assertEqual(persisted["current"], self.before["current"])
+        self.assertEqual(persisted["previous"], self.before["previous"])
+        self.assertEqual(persisted["history"][:-1], self.before["history"])
+        self.assertEqual(persisted["history"][-1]["operation"]["kind"], "administrator-provisioning")
+        self.assertNotIn(self.values["SeedAdmin__Password"], self.ops.state.path.read_text())
+
+    def test_explicit_successful_recovery_is_required_to_resume_after_failure(self):
+        self.ops.fail = "application"
+        with self.assertRaises(SafetyError):
+            self.ops.provision_admin(release("b"), self.values)
+        self.assert_failed_closed()
+        restarted = ProvisioningOperations(self.root)
+        restarted.deploy(release("b"), recovery=True, reason="Reviewed failed administrator provisioning and verified recovery")
+        persisted = ReleaseState(restarted.state.path).value
+        self.assertIsNone(persisted["inflight"])
+        self.assertTrue(restarted.writers_running)
+        self.assertEqual(persisted["previous"], self.before["previous"])
+        self.assertEqual(persisted["history"][-1]["operation"]["prior"]["kind"], "administrator-provisioning")
+
+
 class ProvenanceTests(unittest.TestCase):
     def test_complete_provenance_is_required_and_asset_digest_is_verified(self):
         raw = canonical(release("a")["manifest"]) + b"\n"
