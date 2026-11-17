@@ -1,0 +1,52 @@
+name: deploy-production-manual
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Source SHA of an immutable published RaceBib release
+        required: true
+      migrate:
+        description: Apply reviewed migrations after backup (cannot override a recovery barrier)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: racebib-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Verify immutable manifest, source, attempts and both publishing jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ inputs.source_sha }}
+        run: python3 -B deploy/scripts/release.py verify "$SOURCE"
+      - name: Deploy through dedicated forced-command SSH identity
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+          SOURCE: ${{ inputs.source_sha }}
+          MIGRATE: ${{ inputs.migrate }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/racebib
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          trap 'rm -f ~/.ssh/racebib' EXIT
+          [[ "$SOURCE" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$HOST" =~ ^[a-zA-Z0-9.-]+$ && "$USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          option=''
+          if [[ "$MIGRATE" == true ]]; then option=' --migrate'; fi
+          # The root-owned server independently fetches/verifies the manifest again.
+          ssh -i ~/.ssh/racebib -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 "$USER@$HOST" "deploy $SOURCE$option"

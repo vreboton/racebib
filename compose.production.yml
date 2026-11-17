@@ -1,0 +1,61 @@
+# Overlay: combine with compose.database.yml. Images come from a verified release manifest.
+name: racebib-production
+services:
+  api:
+    image: ${API_IMAGE:?Verified API digest required; use deploy.sh}
+    user: app
+    restart: unless-stopped
+    mem_limit: 256m
+    memswap_limit: 512m
+    cpus: 1.0
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      DOTNET_GCHeapHardLimit: "0xA000000"
+      ConnectionStrings__DefaultConnection: Server=mysql;Port=3306;Database=${MYSQL_DATABASE:?required};User=${MYSQL_USER:?required};Password=${MYSQL_PASSWORD:?required};MaximumPoolSize=20
+      Jwt__Issuer: ${JWT_ISSUER:-RaceBib}
+      Jwt__Audience: ${JWT_AUDIENCE:-RaceBib.Clients}
+      Jwt__SigningKey: ${JWT_SIGNING_KEY:?required}
+      Application__BaseUrl: ${APPLICATION_BASE_URL:?required}
+      Deployment__AccessMode: ${DEPLOYMENT_ACCESS_MODE:?Set https or restricted-http}
+      Email__Smtp__Host: ${SMTP_HOST:-}
+      Email__Smtp__Port: ${SMTP_PORT:-587}
+      Email__Smtp__EnableSsl: ${SMTP_ENABLE_SSL:-true}
+      Email__Smtp__From: ${SMTP_FROM:-}
+      Email__Smtp__Username: ${SMTP_USERNAME:-}
+      Email__Smtp__Password: ${SMTP_PASSWORD:-}
+    networks: [database, application]
+    depends_on:
+      mysql: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "--max-time", "90", "http://127.0.0.1:8080/health/ready"]
+      interval: 30s
+      timeout: 95s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+  web:
+    image: ${WEB_IMAGE:?Verified web digest required; use deploy.sh}
+    restart: unless-stopped
+    mem_limit: 64m
+    memswap_limit: 128m
+    cpus: 0.5
+    security_opt: [no-new-privileges:true]
+    ports: ["127.0.0.1:8080:80"]
+    networks: [application]
+    depends_on:
+      api: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+networks:
+  application: {}

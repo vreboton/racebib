@@ -5,6 +5,9 @@
 **/.vite/
 .env
 .env.*
+*.env
+**/__pycache__/
+*.py[cod]
 !.env.example
 *.user
 *.suo

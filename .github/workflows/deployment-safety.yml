@@ -1,0 +1,40 @@
+name: deployment-safety
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  deployment-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: python3 -B -m unittest discover -s deploy/tests -v
+      - run: for script in deploy/scripts/*.sh deploy/install-server.sh; do bash -n "$script"; done
+      - name: Validate database and production overlays with synthetic values
+        env:
+          MYSQL_IMAGE: mysql:8.4@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+          MYSQL_DATABASE: racebib_test_ci
+          MYSQL_USER: racebib_test
+          MYSQL_PASSWORD: test-only-no-real-secret
+          MYSQL_ROOT_PASSWORD: test-only-no-real-root-secret
+          JWT_SIGNING_KEY: test-only-no-real-signing-key
+          APPLICATION_BASE_URL: http://192.0.2.1
+          DEPLOYMENT_ACCESS_MODE: restricted-http
+          API_IMAGE: ghcr.io/vreboton/racebib-api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          WEB_IMAGE: ghcr.io/vreboton/racebib-web@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+        run: |
+          docker compose -f compose.database.yml config --quiet
+          docker compose -f compose.database.yml -f compose.production.yml config --quiet
+      - run: docker build --check -f backend/RaceTiming.Api/Dockerfile backend
+      - run: docker build --check -f frontend/race-timing-web/Dockerfile frontend/race-timing-web
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: 8.0.x
+      - run: dotnet build backend/RaceTiming.sln --configuration Release
+      - name: Rehearse schema drift, bootstrap and synthetic clean-target restoration
+        run: python3 -B deploy/tests/mysql_rehearsal.py --api-dll backend/RaceTiming.Api/bin/Release/net8.0/RaceTiming.Api.dll
