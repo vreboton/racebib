@@ -1,6 +1,6 @@
 # RaceBib AWS EC2 deployment and recovery
 
-Milestone 2.4.2 replaces routine CI SSH deployment with [approved OIDC/SSM deployment](github-actions-ssm.md). Follow that runbook for current GitHub variables, IAM policies, approval prerequisites and first deployment. SSH configuration below is retained for legacy/manual access; the current workflow uses no SSH secrets and exposes no migration option.
+Milestone 2.4.3 uses the [Windows local deployment controller](windows-local-deployment.md), with explicit local operator authorization and restricted SSH. No self-hosted runner is registered. The SSM workflow is retained but inactive; GitHub production approval authorizes only the separate approval-test workflow, not local deployment. Existing engine, backup, schema, maintenance and rollback safeguards remain mandatory.
 
 RaceBib is under active development. This system prepares controlled staging/production-readiness deployment; it does not certify the race timing platform. No AWS resources, deployment, or GitHub settings are changed by adding these files.
 
@@ -39,7 +39,7 @@ Clean-target import uses a named 128 MiB MySQL client (256 MiB combined memory+s
 3. Publishing uses commit-pinned official actions and `GITHUB_TOKEN`: preflight has contents/actions read; image jobs have contents read and packages write; finalization alone has contents write/actions read for tags and immutable manifest release creation. It verifies all three required build jobs executed successfully on the same main push and attempt, then waits up to 15 minutes for the source-matched main-push deployment-safety workflow (including the MySQL rehearsal). The two explicit publishing jobs must both succeed. Feature/PR runs never publish deployable releases. Maintain the reviewed action pins through normal dependency review.
 4. After initial image publication, make **each** package `racebib-api` and `racebib-web` public in Package settings. A public repository does not imply public packages. Link packages to vreboton/racebib and permit its Actions access. Verify anonymous pulls. No GHCR credential is needed on EC2 for public packages.
 5. Create the GitHub environment `production`, restrict it to main, require a reviewer and prevent self-review where supported. This external setting cannot be enforced by YAML alone. Keep workflow dispatch as the only deployment trigger. No automatic deployment is enabled.
-6. Configure the environment variables and restricted OIDC/SSM role in [the current CI/CD runbook](github-actions-ssm.md). The workflow no longer reads `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY` or `DEPLOY_KNOWN_HOSTS`. Retire legacy CI access only after approved SSM validation; preserve protected administrator recovery access.
+6. Configure the ACL-protected local key/configuration and restricted SSH entry in [the Windows controller runbook](windows-local-deployment.md). Do not store local deployment credentials in GitHub environment secrets or register a runner. The production approval-test workflow remains intact and grants no local deployment authority.
 7. Archive CI/publication records for the rollback period. The verifier rejects unavailable or non-successful attempts and does not accept workflow summaries or display titles alone as publication evidence.
 
 Interrupted publication leaves its source tag/draft or non-immutable release untouched and blocks ordinary publication reruns. Do not delete, overwrite or republish these artifacts. Enabling immutability applies to future releases; it does not repair old releases. Use the reviewed, manually dispatched `recover-publication.yml` procedure in [Publication recovery](publication-recovery.md). It creates only a fresh `racebib-SHA-recovery-RUN-ATTEMPT` tag/release, copies the original `release.json` bytes unchanged and adds a separate recovery receipt. It never rebuilds, pushes or retags an image. Both original image jobs, source checks, logged digest outputs and registry objects must verify. A failed/skipped publisher or missing source manifest is not recoverable through this path.
@@ -167,7 +167,7 @@ sudo bash /opt/racebib/scripts/rollback.sh
 
 The default rollback is the previous distinct successful manifest, not a mutable tag. Repeating the current release preserves that previous release. Rollback never applies migrations and rejects incompatible histories/structures; an unsuccessful attempt keeps the last successful history and leaves a recovery barrier. Recovery to the current compatible release may be needed to resume service. No silent automatic rollback is attempted.
 
-GitHub: Actions -> deploy-production-manual -> Run workflow on main -> verified source_sha and optional matching immutable recovery release_tag -> independent production environment approval. The workflow uses restricted OIDC/SSM and has no migration option. Leave external HTTPS verification off on hosted runners because production 443 is restricted to a trusted IP; verify external availability separately from that IP. The summary separates remote command, host-state receipt and external availability outcomes. No external failure triggers retries, state changes or rollback. See [the current setup and recovery procedure](github-actions-ssm.md).
+Local deployment: use the reviewed PowerShell controller with a full verified immutable SHA and optional matching recovery selector. Provenance and both image digests are checked before local confirmation. Exact host release-state evidence and trusted-PC HTTPS must both succeed; neither SSH exit status nor HTTP 200 alone is enough. See [the controller setup and recovery procedure](windows-local-deployment.md). The retained SSM workflow cannot execute; the GitHub production approval test does not authorize this local path.
 
 For a recovered publication, append `--release-tag EXACT_RECOVERY_TAG` to `deploy.sh`, `recover.sh`, the application target of `database-maintenance.sh`, or `restore_rehearsal.py`. Install the reviewed verifier, operations script and forced-command entry point together before using this option. Successful state stores the explicit tag; `rollback.sh` re-verifies that tag automatically. The unchanged original manifest digest prevents recovery from silently remapping a source SHA or resetting release history. This option does not bypass schema checks, maintenance barriers, backups, HTTPS restrictions or production approvals.
 
@@ -256,16 +256,16 @@ On the disposable deployment VM additionally rehearse initial recovery, ordinary
 
 ## SSH least privilege and operations
 
-Use a dedicated Ed25519 CI key, never the administrator PEM. Create racebib-deploy without password login or Docker group membership. Root-control authorized_keys and all entry points. The installer gives /usr/local/sbin/racebib-ssh and racebib-deploy mode 755/root ownership. Authorized key:
+Use a dedicated Ed25519 local deployment key, never the administrator PEM. Create racebib-deploy without password login or Docker group membership. Root-control authorized_keys and all entry points. The installer gives the dispatcher and separate racebib-ssh-deploy wrapper mode 755/root ownership. Remove any older CI sudo grant for the general racebib-deploy wrapper; it is reserved for administrators. Authorized key:
 
 ```text
-restrict,command="/usr/local/sbin/racebib-ssh" ssh-ed25519 PUBLIC_KEY racebib-ci
+from="TRUSTED_PC_IP/32",restrict,command="/usr/local/sbin/racebib-ssh" ssh-ed25519 PUBLIC_KEY racebib-local-deploy
 ```
 
 Use visudo -f /etc/sudoers.d/racebib-deploy:
 
 ```text
-racebib-deploy ALL=(root) NOPASSWD: /usr/local/sbin/racebib-deploy
+racebib-deploy ALL=(root) NOPASSWD: /usr/local/sbin/racebib-ssh-deploy
 ```
 
 The exact root-owned command may receive arguments; both forced-command regex and argparse validate them. No recovery/restore/maintenance/provisioning operation is granted to this identity. Prevent alternate unrestricted keys or account access; test SSH rejection of shell, forwarding and uploaded commands. Rotate independently of administrator access.

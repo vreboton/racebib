@@ -1,4 +1,4 @@
-"""Invoked with Python isolated mode; imports only root-owned installed scripts."""
+"""INACTIVE historical SSM bootstrap; not invoked by the production workflow."""
 import sys
 
 sys.path.insert(0, "/opt/racebib/scripts")

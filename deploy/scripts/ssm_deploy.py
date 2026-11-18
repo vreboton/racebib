@@ -1,4 +1,4 @@
-"""Runner-side SSM client. Transmits parameters, never remote shell text or secrets."""
+"""INACTIVE historical SSM client. The production workflow uses SSH as of 2.4.3."""
 import json
 import os
 import re

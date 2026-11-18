@@ -1,4 +1,4 @@
-name: deploy-production-manual
+name: deploy-production-manual-INACTIVE-SSM
 on:
   workflow_dispatch:
     inputs:
@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   deploy:
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'disabled_ssm_transport' # Impossible with workflow_dispatch-only trigger; inactive history.
     environment: production
     timeout-minutes: 80
     permissions:

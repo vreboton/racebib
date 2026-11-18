@@ -1,0 +1,3 @@
+# Inactive historical SSM templates
+
+These Milestone 2.4.2 IAM/SSM templates are retained for audit and rollback of the **transport implementation**, not enabled deployment configuration. Milestone 2.4.3 uses [the Windows local deployment controller](../../docs/deployment/windows-local-deployment.md). The historical SSM workflow retains its steps for audit but its job is permanently inactive under its configured dispatch trigger; no runner or local-controller execution is wired to it. Do not apply these templates for the active workflow. Existing AWS resources/credentials are not changed or revoked by this code change; administrators must separately review any later cleanup.
