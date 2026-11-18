@@ -16,3 +16,6 @@ jobs:
       - name: Windows ACL, pinned-host argument parser and mocked deployment checks
         shell: pwsh
         run: ./deploy/tests/Test-LocalDeployment.ps1
+      - name: Isolated staging automation and private CA mock rehearsal
+        shell: pwsh
+        run: ./deploy/tests/Test-StagingRehearsal.ps1

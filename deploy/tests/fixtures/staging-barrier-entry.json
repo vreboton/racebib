@@ -1,0 +1,243 @@
+[
+  {
+    "scenario": "maintenance",
+    "result": {
+      "ExitCode": 1,
+      "Stdout": "Root-only deployment log: ssh-deployment-fixture0.log\n",
+      "Stderr": "Deployment unconfirmed; inspect host maintenance state and root-only logs before retrying.\n"
+    },
+    "proof": {
+      "failure_id": "racebib-stage-backup-v1",
+      "nonce": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "run_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "instance_id": "i-aaaaaaaaaaaaaaaaa",
+      "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "release_tag": "racebib-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state_digest": "dfd3558676c01d05db89603ef209224d1cf679f736eddb7c2e908d52fbad1f73"
+    },
+    "probe_nonce": "ffffffffffffffffffffffffffffffff",
+    "receipt": {
+      "protocol": "racebib-stage-barrier-v2",
+      "deployment": "rejected",
+      "reason": "maintenance-barrier",
+      "run_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "instance_id": "i-aaaaaaaaaaaaaaaaa",
+      "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "release_tag": "racebib-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "failure_nonce": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "probe_nonce": "ffffffffffffffffffffffffffffffff",
+      "state_digest": "dfd3558676c01d05db89603ef209224d1cf679f736eddb7c2e908d52fbad1f73",
+      "log_name": "ssh-deployment-fixture0.log",
+      "log_digest": "fec40a45589f05c1cb93cefc77ad494ae72fddccef6b48230f95d14455ad38b7"
+    }
+  },
+  {
+    "scenario": "unrelated",
+    "result": {
+      "ExitCode": 1,
+      "Stdout": "Root-only deployment log: ssh-deployment-fixture0.log\n",
+      "Stderr": "Deployment unconfirmed; inspect host maintenance state and root-only logs before retrying.\n"
+    },
+    "proof": {
+      "failure_id": "racebib-stage-backup-v1",
+      "nonce": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "run_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "instance_id": "i-aaaaaaaaaaaaaaaaa",
+      "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "release_tag": "racebib-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state_digest": "dfd3558676c01d05db89603ef209224d1cf679f736eddb7c2e908d52fbad1f73"
+    },
+    "probe_nonce": "ffffffffffffffffffffffffffffffff",
+    "receipt": null
+  },
+  {
+    "scenario": "generic",
+    "result": {
+      "ExitCode": 1,
+      "Stdout": "Root-only deployment log: ssh-deployment-fixture0.log\n",
+      "Stderr": "Deployment unconfirmed; inspect host maintenance state and root-only logs before retrying.\n"
+    },
+    "proof": {
+      "failure_id": "racebib-stage-backup-v1",
+      "nonce": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "run_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "instance_id": "i-aaaaaaaaaaaaaaaaa",
+      "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "release_tag": "racebib-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state_digest": "dfd3558676c01d05db89603ef209224d1cf679f736eddb7c2e908d52fbad1f73"
+    },
+    "probe_nonce": "ffffffffffffffffffffffffffffffff",
+    "receipt": null
+  },
+  {
+    "scenario": "spoofed-terminal",
+    "result": {
+      "ExitCode": 1,
+      "Stdout": "Root-only deployment log: ssh-deployment-fixture0.log\n",
+      "Stderr": "Deployment unconfirmed; inspect host maintenance state and root-only logs before retrying.\n"
+    },
+    "proof": {
+      "failure_id": "racebib-stage-backup-v1",
+      "nonce": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "run_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "instance_id": "i-aaaaaaaaaaaaaaaaa",
+      "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "release_tag": "racebib-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state_digest": "dfd3558676c01d05db89603ef209224d1cf679f736eddb7c2e908d52fbad1f73"
+    },
+    "probe_nonce": "ffffffffffffffffffffffffffffffff",
+    "receipt": null
+  },
+  {
+    "scenario": "success",
+    "result": {
+      "ExitCode": 0,
+      "Stdout": "Root-only deployment log: ssh-deployment-fixture0.log\nRACEBIB_RESULT {\"deployment\": \"succeeded\", \"host_state\": \"verified\", \"source_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"release_tag\": \"racebib-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"manifest_digest\": \"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\", \"api\": \"ghcr.io/vreboton/racebib-api@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\", \"web\": \"ghcr.io/vreboton/racebib-web@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\", \"schema_hash\": \"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"}\n",
+      "Stderr": ""
+    },
+    "proof": {
+      "failure_id": "racebib-stage-backup-v1",
+      "nonce": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "run_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "instance_id": "i-aaaaaaaaaaaaaaaaa",
+      "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "release_tag": "racebib-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state_digest": "dfd3558676c01d05db89603ef209224d1cf679f736eddb7c2e908d52fbad1f73"
+    },
+    "probe_nonce": "ffffffffffffffffffffffffffffffff",
+    "receipt": null
+  },
+  {
+    "scenario": "stale-log",
+    "result": {
+      "ExitCode": 1,
+      "Stdout": "Root-only deployment log: ssh-deployment-fixture0.log\n",
+      "Stderr": "Deployment unconfirmed; inspect host maintenance state and root-only logs before retrying.\n"
+    },
+    "proof": {
+      "failure_id": "racebib-stage-backup-v1",
+      "nonce": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "run_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "instance_id": "i-aaaaaaaaaaaaaaaaa",
+      "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "release_tag": "racebib-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state_digest": "dfd3558676c01d05db89603ef209224d1cf679f736eddb7c2e908d52fbad1f73"
+    },
+    "probe_nonce": "ffffffffffffffffffffffffffffffff",
+    "receipt": null
+  },
+  {
+    "scenario": "symlink",
+    "result": {
+      "ExitCode": 1,
+      "Stdout": "Root-only deployment log: ssh-deployment-fixture0.log\n",
+      "Stderr": "Deployment unconfirmed; inspect host maintenance state and root-only logs before retrying.\n"
+    },
+    "proof": {
+      "failure_id": "racebib-stage-backup-v1",
+      "nonce": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "run_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "instance_id": "i-aaaaaaaaaaaaaaaaa",
+      "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "release_tag": "racebib-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state_digest": "dfd3558676c01d05db89603ef209224d1cf679f736eddb7c2e908d52fbad1f73"
+    },
+    "probe_nonce": "ffffffffffffffffffffffffffffffff",
+    "receipt": null
+  },
+  {
+    "scenario": "wrong-mode",
+    "result": {
+      "ExitCode": 1,
+      "Stdout": "Root-only deployment log: ssh-deployment-fixture0.log\n",
+      "Stderr": "Deployment unconfirmed; inspect host maintenance state and root-only logs before retrying.\n"
+    },
+    "proof": {
+      "failure_id": "racebib-stage-backup-v1",
+      "nonce": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "run_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "instance_id": "i-aaaaaaaaaaaaaaaaa",
+      "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "release_tag": "racebib-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state_digest": "dfd3558676c01d05db89603ef209224d1cf679f736eddb7c2e908d52fbad1f73"
+    },
+    "probe_nonce": "ffffffffffffffffffffffffffffffff",
+    "receipt": null
+  },
+  {
+    "scenario": "changed-state",
+    "result": {
+      "ExitCode": 1,
+      "Stdout": "Root-only deployment log: ssh-deployment-fixture0.log\n",
+      "Stderr": "Deployment unconfirmed; inspect host maintenance state and root-only logs before retrying.\n"
+    },
+    "proof": {
+      "failure_id": "racebib-stage-backup-v1",
+      "nonce": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "run_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "instance_id": "i-aaaaaaaaaaaaaaaaa",
+      "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "release_tag": "racebib-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state_digest": "dfd3558676c01d05db89603ef209224d1cf679f736eddb7c2e908d52fbad1f73"
+    },
+    "probe_nonce": "ffffffffffffffffffffffffffffffff",
+    "receipt": null
+  },
+  {
+    "scenario": "old-log",
+    "result": {
+      "ExitCode": 1,
+      "Stdout": "Root-only deployment log: ssh-deployment-fixture0.log\n",
+      "Stderr": "Deployment unconfirmed; inspect host maintenance state and root-only logs before retrying.\n"
+    },
+    "proof": {
+      "failure_id": "racebib-stage-backup-v1",
+      "nonce": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "run_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "instance_id": "i-aaaaaaaaaaaaaaaaa",
+      "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "release_tag": "racebib-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state_digest": "dfd3558676c01d05db89603ef209224d1cf679f736eddb7c2e908d52fbad1f73"
+    },
+    "probe_nonce": "ffffffffffffffffffffffffffffffff",
+    "receipt": null
+  },
+  {
+    "scenario": "same-message-wrong-origin",
+    "result": {
+      "ExitCode": 1,
+      "Stdout": "Root-only deployment log: ssh-deployment-fixture0.log\n",
+      "Stderr": "Deployment unconfirmed; inspect host maintenance state and root-only logs before retrying.\n"
+    },
+    "proof": {
+      "failure_id": "racebib-stage-backup-v1",
+      "nonce": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "run_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "instance_id": "i-aaaaaaaaaaaaaaaaa",
+      "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "release_tag": "racebib-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state_digest": "dfd3558676c01d05db89603ef209224d1cf679f736eddb7c2e908d52fbad1f73"
+    },
+    "probe_nonce": "ffffffffffffffffffffffffffffffff",
+    "receipt": null
+  },
+  {
+    "scenario": "engine-exception",
+    "result": {
+      "ExitCode": 1,
+      "Stdout": "Root-only deployment log: ssh-deployment-fixture0.log\n",
+      "Stderr": "Deployment unconfirmed; inspect host maintenance state and root-only logs before retrying.\n"
+    },
+    "proof": {
+      "failure_id": "racebib-stage-backup-v1",
+      "nonce": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "run_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "instance_id": "i-aaaaaaaaaaaaaaaaa",
+      "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "release_tag": "racebib-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state_digest": "dfd3558676c01d05db89603ef209224d1cf679f736eddb7c2e908d52fbad1f73"
+    },
+    "probe_nonce": "ffffffffffffffffffffffffffffffff",
+    "receipt": null
+  }
+]

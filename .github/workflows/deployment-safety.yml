@@ -14,6 +14,18 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 -B -m unittest discover -s deploy/tests -v
+      - name: Rehearse real SSH entry and maintenance rejection without network
+        run: >-
+          docker run --rm --network none -e RACEBIB_BARRIER_FIXTURE=1
+          --mount type=bind,source="${{ github.workspace }}",target=/repo,readonly -w /repo
+          python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
+          python3 -B deploy/tests/staging_barrier_entry_rehearsal.py
+      - name: Root proof and recovery-concurrency tests without network
+        run: >-
+          docker run --rm --network none
+          --mount type=bind,source="${{ github.workspace }}",target=/repo,readonly -w /repo
+          python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
+          python3 -B -m unittest discover -s deploy/tests -v
       - name: Rehearse HTTPS proxy and Certbot webroot routing in an isolated container
         run: python3 -B deploy/tests/nginx_https_rehearsal.py
       - run: for script in deploy/scripts/*.sh deploy/install-server.sh; do bash -n "$script"; done
