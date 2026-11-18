@@ -1,0 +1,18 @@
+name: local-controller-safety
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  windows-mock-rehearsal:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Windows ACL, pinned-host argument parser and mocked deployment checks
+        shell: pwsh
+        run: ./deploy/tests/Test-LocalDeployment.ps1

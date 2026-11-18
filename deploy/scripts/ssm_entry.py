@@ -1,4 +1,4 @@
-"""Root-owned SSM entry point; all mutation uses the installed deployment engine."""
+"""INACTIVE historical SSM entry point, retained for audit; active transport is SSH."""
 import json
 import os
 from pathlib import Path

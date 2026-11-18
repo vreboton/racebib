@@ -307,16 +307,22 @@ class ForcedCommandTests(unittest.TestCase):
             sudo.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
             sudo.chmod(0o700)
             env = dict(os.environ, PATH=root + os.pathsep + os.environ["PATH"])
-            for migrate in ("", " --migrate"):
-                env["SSH_ORIGINAL_COMMAND"] = f"deploy {source}{migrate} --release-tag {tag}"
-                result = subprocess.run(["bash", str(dispatcher)], env=env, capture_output=True, text=True)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout.splitlines(), ["-n", "/usr/local/sbin/racebib-deploy", source] +
-                                 (["--migrate"] if migrate else []) + ["--release-tag", tag])
+            # Replace only the absolute external sudo boundary in this disposable test copy.
+            stub = Path(root) / "dispatcher.sh"
+            stub.write_text(dispatcher.read_text().replace("/usr/bin/sudo", str(sudo)))
+            env["SSH_ORIGINAL_COMMAND"] = f"deploy {source} --release-tag {tag}"
+            result = subprocess.run(["bash", str(stub)], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(), ["-n", "/usr/local/sbin/racebib-ssh-deploy", source,
+                                                         "--release-tag", tag])
             for command in (f"deploy {source} --release-tag racebib-{'b' * 40}-recovery-30-2",
-                            f"deploy {source} --release-tag {tag}; id", f"deploy {source} --release-tag latest"):
+                            f"deploy {source} --release-tag {tag}; id", f"deploy {source} --release-tag latest",
+                            f"deploy {source} --migrate", f"deploy {source} --migrate --release-tag {tag}",
+                            "", "bash", "sftp", "scp -t /tmp/file", f"deploy {source}; id",
+                            f"deploy {source}\nid", f"deploy {source}\n", f"deploy {source} ",
+                            f"deploy {source} --release-tag {tag} --migrate"):
                 env["SSH_ORIGINAL_COMMAND"] = command
-                result = subprocess.run(["bash", str(dispatcher)], env=env, capture_output=True, text=True)
+                result = subprocess.run(["bash", str(stub)], env=env, capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(result.stdout, "")
 

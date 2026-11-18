@@ -103,7 +103,7 @@ class SsmTests(unittest.TestCase):
         self.assertNotIn("  push:", workflow)
         self.assertNotIn("  workflow_run:", workflow)
         self.assertIn("environment: production", workflow)
-        self.assertIn("github.ref == 'refs/heads/main'", workflow)
+        self.assertIn("github.event_name == 'disabled_ssm_transport'", workflow)
         self.assertIn("id-token: write", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
         for forbidden in ["--migrate", "DEPLOY_SSH_KEY", "StrictHostKeyChecking=no", "curl -k"]:

@@ -1,5 +1,7 @@
 # Milestone 2.4.2 — approved GitHub Actions deployment over SSM
 
+**INACTIVE / HISTORICAL as of Milestone 2.4.3.** Use the [Windows local deployment controller](windows-local-deployment.md); do not register a runner. The SSM scripts and `deploy/aws/` templates are retained for historical review; the retained SSM workflow is explicitly marked inactive with an impossible trigger/job condition. Do not provision AWS roles, instance profiles or SSM documents from this archived procedure for the current pipeline. Descriptions below refer to the earlier implementation.
+
 Implementation only: no AWS/GitHub settings or production files have been changed and no production deployment has been executed. Work is on `feature/milestone-2.4.2-aws-cicd`. The reported production baseline is `899f0d6a22cdafad3a691c52d3956ffbeb2bbcee`; do not infer that its current release/registry provenance has been verified in this session.
 
 ## Architecture and audit

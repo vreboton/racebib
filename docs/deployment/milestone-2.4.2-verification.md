@@ -1,5 +1,7 @@
 # Milestone 2.4.2 verification — November 17, 2026
 
+Historical implementation record. Milestone 2.4.3 replaces the active transport with restricted SSH; see [current verification](milestone-2.4.3-verification.md). Earlier SSM setup and workflow descriptions below are inactive history.
+
 ## Review remediation (current)
 
 Fetched `origin/main` and inspected its only new commit, `71e687fc35930e695a694c53bcba6fa4a2da5e74`, which merges the Certbot/HTTPS changes already in the feature branch. Rebased `feature/milestone-2.4.2-aws-cicd` onto it without conflicts; the original feature commit is now `0652c3d`. Main is an ancestor and its deployment engine, release verifier, Nginx templates and safeguards are preserved. No merge or push was performed. The existing remote feature history was not rewritten remotely; any later publication must account for the local rebase and review remote changes first.
