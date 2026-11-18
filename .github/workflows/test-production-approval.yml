@@ -1,0 +1,16 @@
+name: test-production-approval
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-approval:
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm production approval
+        run: echo 'RaceBib production approval gate verified'
