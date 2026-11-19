@@ -1,3 +1,4 @@
+using System.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -88,7 +89,9 @@ public sealed class EventsController(
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(Guid id, UpdateEventRequest request, CancellationToken ct)
     {
-        var item = await db.Events.FirstOrDefaultAsync(x => x.Id == id, ct);
+        await using var transaction = db.Database.IsRelational()
+            ? await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct) : null;
+        var item = await RaceConfigurationController.FindEventForWrite(db, id, ct);
         if (item is null) return NotFound();
         if (!await organizerAuthorization.CanAccessAsync(User, item.OrganizerId, true, ct)) return Forbid();
         if (item.Status is EventStatus.Live or EventStatus.Completed or EventStatus.Cancelled)
@@ -100,27 +103,62 @@ public sealed class EventsController(
         if (await db.Events.AnyAsync(x => x.Id != id && x.OrganizerId == item.OrganizerId && x.Slug == slug, ct))
             return Conflict(new ProblemDetails { Status = 409, Title = "Event slug is already in use for this organizer." });
 
+        if (await db.Races.AnyAsync(x => x.EventId == id && x.Status == RecordStatus.Active &&
+            (x.StartAtUtc < request.StartDateUtc || x.StartAtUtc > request.EndDateUtc ||
+             x.StartWaves.Any(w => w.Status == RecordStatus.Active &&
+                 (w.StartAtUtc < request.StartDateUtc || w.StartAtUtc > request.EndDateUtc))), ct))
+            return Conflict(new ProblemDetails { Status = 409, Title = "The event window must contain every active race and wave start." });
+
         item.Name = request.Name.Trim(); item.Slug = slug; item.Description = request.Description?.Trim();
         item.OrganizerName = request.OrganizerName.Trim(); item.Venue = request.Venue?.Trim();
         item.Location = request.Location?.Trim(); item.StartDate = DateTime.SpecifyKind(request.StartDateUtc, DateTimeKind.Utc);
         item.EndDate = DateTime.SpecifyKind(request.EndDateUtc, DateTimeKind.Utc);
         item.TimeZoneId = request.TimeZoneId.Trim(); item.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
+        if (transaction is not null) await transaction.CommitAsync(ct);
         return Ok(item);
     }
 
     [HttpPatch("{id:guid}/status")]
     public async Task<IActionResult> ChangeStatus(Guid id, ChangeStatusRequest request, CancellationToken ct)
     {
-        var item = await db.Events.FirstOrDefaultAsync(x => x.Id == id, ct);
+        await using var transaction = db.Database.IsRelational()
+            ? await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct) : null;
+        var item = await RaceConfigurationController.FindEventForWrite(db, id, ct);
         if (item is null) return NotFound();
         if (!await organizerAuthorization.CanAccessAsync(User, item.OrganizerId, true, ct)) return Forbid();
         if (!EventLifecycle.CanTransition(item.Status, request.Status))
             return Conflict(new ProblemDetails { Status = 409, Title = $"Transition from {item.Status} to {request.Status} is not allowed." });
+        if (request.Status == EventStatus.Ready)
+        {
+            var races = await db.Races.Where(x => x.EventId == id && x.Status == RecordStatus.Active)
+                .Include(x => x.Course).ThenInclude(x => x.Checkpoints)
+                .Include(x => x.StartWaves).AsSplitQuery().ToListAsync(ct);
+            var configured = races.Count > 0 ||
+                await db.Courses.AnyAsync(x => x.EventId == id, ct) ||
+                await db.Races.AnyAsync(x => x.EventId == id, ct);
+            if ((configured && races.Count == 0) || races.Any(x => !RaceConfigurationController.IsUsable(x.Course) ||
+                x.DistanceKm != x.Course.DistanceKm || x.StartAtUtc < item.StartDate || x.StartAtUtc > item.EndDate ||
+                x.CutoffDurationSeconds <= 0 || !HasValidWaveSchedule(x, item.EndDate)))
+                return Conflict(new ProblemDetails { Status = 409, Title = "Configure an active race with a usable course and valid schedule before moving to Ready." });
+        }
         item.Status = request.Status;
         item.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
+        if (transaction is not null) await transaction.CommitAsync(ct);
         return Ok(new { item.Id, item.Status, item.UpdatedAt });
+    }
+
+    private static bool HasValidWaveSchedule(Race race, DateTime eventEnd)
+    {
+        var previousStart = race.StartAtUtc;
+        foreach (var wave in race.StartWaves.Where(x => x.Status == RecordStatus.Active).OrderBy(x => x.Sequence))
+        {
+            if (wave.Sequence <= 0 || wave.Capacity <= 0 || wave.StartAtUtc < previousStart || wave.StartAtUtc > eventEnd)
+                return false;
+            previousStart = wave.StartAtUtc;
+        }
+        return true;
     }
 
     private static object ToDto(Event item) => new
