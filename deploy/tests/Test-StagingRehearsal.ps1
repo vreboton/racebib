@@ -10,7 +10,57 @@ try {
         $script:Checks=0
         function Assert-True($value,$message) { if (-not $value) { throw ('TEST FAILED: '+$message) }; $script:Checks++ }
         function Assert-Throws([scriptblock]$Body,$message) { $failed=$false; try { & $Body | Out-Null } catch { $failed=$true }; Assert-True $failed $message }
-        New-StageDirectory $Fixture
+        # Model runner-like default ownership without changing the process token or granting permissions.
+        # The real staging helper and production validator run unchanged against this metadata boundary.
+        $global:RaceBibStagingOwnerProbe=@{Path=(Join-Path $Fixture 'local-staging-marker');WrongOwner=$true;Reads=0;Writes=0}
+        $getAclProbe={
+            param([string]$LiteralPath)
+            $acl=Microsoft.PowerShell.Security\Get-Acl -LiteralPath $LiteralPath
+            if ($LiteralPath -ceq $global:RaceBibStagingOwnerProbe.Path -and $global:RaceBibStagingOwnerProbe.WrongOwner) {
+                $global:RaceBibStagingOwnerProbe.Reads++
+                $acl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+            }
+            return $acl
+        }
+        Set-Item Function:script:Get-Acl -Value $getAclProbe
+        & $script:Core { param($probe) Set-Item Function:script:Get-Acl -Value $probe } $getAclProbe
+        function script:Set-Acl {
+            param([string]$LiteralPath,$AclObject)
+            if ($LiteralPath -ceq $global:RaceBibStagingOwnerProbe.Path) {
+                Assert-True ($AclObject.GetOwner([Security.Principal.SecurityIdentifier]).Value -ceq [Security.Principal.WindowsIdentity]::GetCurrent().User.Value) 'Repair assigns only the current operator as owner'
+                $global:RaceBibStagingOwnerProbe.Writes++
+                Microsoft.PowerShell.Security\Set-Acl -LiteralPath $LiteralPath -AclObject $AclObject
+                $global:RaceBibStagingOwnerProbe.WrongOwner=$false
+            } else { Microsoft.PowerShell.Security\Set-Acl -LiteralPath $LiteralPath -AclObject $AclObject }
+        }
+        try {
+            New-StageDirectory $Fixture
+            $marker=Join-Path $Fixture 'local-staging-marker'
+            Assert-True ($global:RaceBibStagingOwnerProbe.Reads -ge 2 -and $global:RaceBibStagingOwnerProbe.Writes -eq 1) 'Wrong default owner reaches strict rejection and explicit staging ownership repair'
+            Protect-StageFile $marker
+            Assert-True ($global:RaceBibStagingOwnerProbe.Writes -eq 1) 'Already owned protected file never requests WRITE_OWNER'
+            $inherited=Join-Path $Fixture 'owned-inherited-fixture'
+            [IO.File]::WriteAllText($inherited,'synthetic-fixture')
+            $acl=Microsoft.PowerShell.Security\Get-Acl -LiteralPath $inherited
+            $acl.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User)
+            $acl.SetAccessRuleProtection($false,$false)
+            Microsoft.PowerShell.Security\Set-Acl -LiteralPath $inherited -AclObject $acl
+            $global:RaceBibStagingOwnerProbe.Path=$inherited
+            Assert-Throws { & $script:Core { param($p) Assert-RaceBibPrivateFile $p } $inherited } 'Strict validator still rejects inherited fixture ACLs'
+            Protect-StageFile $inherited
+            Assert-True ($global:RaceBibStagingOwnerProbe.Writes -eq 1) 'Inheritance repair for an operator-owned file does not request WRITE_OWNER'
+            [void](& $script:Core { param($p) Assert-RaceBibPrivateFile $p } $inherited)
+        } finally {
+            Remove-Item Function:Get-Acl,Function:Set-Acl
+            & $script:Core { Remove-Item Function:Get-Acl }
+            Remove-Variable RaceBibStagingOwnerProbe -Scope Global -ErrorAction SilentlyContinue
+        }
+        foreach ($name in @('local-staging-marker','execution.lock')) {
+            $path=Join-Path $Fixture $name
+            [void](& $script:Core { param($p) Assert-RaceBibPrivateFile $p } $path)
+            $acl=Get-Acl -LiteralPath $path
+            Assert-True ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ceq [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -and $acl.AreAccessRulesProtected) 'Actual startup fixture has explicit operator ownership and disabled inheritance'
+        }
         $source='a'*40; $runId='b'*32
         $script:Evidence=@{source_sha=$source;release_tag=('racebib-'+$source);manifest_digest=('sha256:'+('c'*64));api=('ghcr.io/vreboton/racebib-api@sha256:'+('d'*64));web=('ghcr.io/vreboton/racebib-web@sha256:'+('e'*64))}
         $script:Target=@{run_id=$runId;instance_id=('i-'+('a'*17));public_ip='8.8.4.4';domain=('stage-'+$runId+'.racebib.invalid');host_key='';ca_pem='Y2E='}

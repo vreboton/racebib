@@ -12,6 +12,13 @@ function Protect-StageFile([string]$Path) {
     # Validate path ancestry/reparse points before changing any ACL.
     [void](& $script:Core { param($p) Get-RaceBibLocalFile $p } $Path)
     $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl=Get-Acl -LiteralPath $Path
+    # Elevated Windows tokens can create files owned by Administrators rather than the operator.
+    # Do not request WRITE_OWNER for files that already have the required owner (including OpenSSH keys).
+    if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) {
+        $acl.SetOwner($sid)
+        Set-Acl -LiteralPath $Path -AclObject $acl
+    }
     $icacls=Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)) 'System32/icacls.exe'
     foreach ($aclArguments in @(@('/reset'),@('/inheritance:r','/grant:r',('*'+$sid.Value+':(F)')))) {
         & $icacls $Path @aclArguments 2>&1 | Out-Null
