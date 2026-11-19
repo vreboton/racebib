@@ -10,6 +10,7 @@ import { useAuthStore } from '../stores/auth'
 const router = createRouter({
   history: createWebHistory(),
   routes: [
+    { path: '/public/events/:id/participants', name: 'public-participants', component: () => import('../pages/PublicParticipantsPage.vue'), meta: { public: true } },
     { path: '/login', name: 'login', component: () => import('../pages/LoginPage.vue'), meta: { public: true } },
     { path: '/accept-invitation', name: 'accept-invitation', component: () => import('../pages/AcceptInvitationPage.vue'), meta: { public: true } },
     {
