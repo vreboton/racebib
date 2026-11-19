@@ -101,6 +101,11 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Equal(latest, after.GetProperty("courseId").GetGuid());
         using var downgrade = await client.PutAsJsonAsync(racePath, request);
         Assert.Equal(HttpStatusCode.BadRequest, downgrade.StatusCode);
+        var legacyCopyId = await CreatedId(await client.PostAsync($"{coursePath}/duplicate", null));
+        var legacyCopy = (await client.GetFromJsonAsync<JsonElement>(path + "/configuration")).GetProperty("courses")
+            .EnumerateArray().Single(x => x.GetProperty("id").GetGuid() == legacyCopyId);
+        Assert.Equal(1, legacyCopy.GetProperty("version").GetInt32());
+        Assert.Equal("TRAIL (Copy)", legacyCopy.GetProperty("name").GetString());
     }
 
     [MySqlIntegrationFact]
@@ -143,9 +148,9 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Equal(HttpStatusCode.BadRequest, naive.StatusCode);
         var raceId = await CreatedId(await client.PostAsJsonAsync(path + "/races", raceRequest));
         var racePath = $"{path}/races/{raceId}";
-        using var assignedCourse = await client.PutAsJsonAsync($"{path}/courses/{courseId}/checkpoints",
-            new { distanceKm = 10, checkpoints = points });
-        Assert.Equal(HttpStatusCode.Conflict, assignedCourse.StatusCode);
+        using var incompleteAssignedCourse = await client.PutAsJsonAsync($"{path}/courses/{courseId}/checkpoints",
+            new { distanceKm = 10, checkpoints = points.Take(1) });
+        Assert.Equal(HttpStatusCode.BadRequest, incompleteAssignedCourse.StatusCode);
         var revisionId = await CreatedId(await client.PostAsync($"{path}/courses/{courseId}/revisions", null));
         using var invalidAges = await client.PostAsJsonAsync(racePath + "/categories",
             new { name = "Masters", minimumAge = 60, maximumAge = 40 });
@@ -296,6 +301,135 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Equal(HttpStatusCode.OK, allowed.StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, blocked.StatusCode);
         Assert.Equal(EventStatus.RegistrationClosed, await db.Events.Where(x => x.Id == courseOnly).Select(x => x.Status).SingleAsync());
+    }
+
+    [MySqlIntegrationFact]
+    [Trait("Category", "MySqlIntegration")]
+    public async Task DuplicateCourseIsIndependentAndAssignedCourseEditsRespectRegistrationHistory()
+    {
+        await using var data = new MySqlTestData(Services);
+        var account = await data.CreateAccountAsync();
+        var organizerId = await data.CreateOrganizerAsync(account, OrganizerRole.RaceDirector);
+        var eventId = await data.CreateEventAsync(organizerId);
+        var siblingEvent = await data.CreateEventAsync(organizerId);
+        var foreignEvent = await data.CreateEventAsync(await data.CreateOrganizerAsync());
+        using var client = Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await LoginAsync(client, account));
+        var path = $"/api/v1/events/{eventId}";
+
+        var metadata = new { name = "Summit", description = "Trail route", distanceKm = 10, elevationGainMeters = 800 };
+        var courseId = await CreatedId(await client.PostAsJsonAsync(path + "/courses", metadata));
+        var coursePath = $"{path}/courses/{courseId}";
+        var duplicatePath = coursePath + "/duplicate";
+        using var anonymous = Factory.CreateClient();
+        using var denied = await anonymous.PostAsync(duplicatePath, null);
+        using var foreign = await client.PostAsync($"/api/v1/events/{foreignEvent}/courses/{courseId}/duplicate", null);
+        using var sibling = await client.PostAsync($"/api/v1/events/{siblingEvent}/courses/{courseId}/duplicate", null);
+        Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, foreign.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, sibling.StatusCode);
+        await CreatedId(await client.PostAsJsonAsync(path + "/courses", metadata with { name = "SUMMIT (copy)" }));
+
+        var points = new[]
+        {
+            new { id = (Guid?)null, name = "Start", code = "S", sequence = 1, distanceFromStartKm = 0,
+                isStart = true, isFinish = false, elevationMeters = 100, isMandatory = true, hasCutoff = false,
+                cutoffDurationSeconds = (int?)null, description = "Start gate" },
+            new { id = (Guid?)null, name = "Water", code = "A", sequence = 2, distanceFromStartKm = 5,
+                isStart = false, isFinish = false, elevationMeters = 400, isMandatory = true, hasCutoff = true,
+                cutoffDurationSeconds = (int?)3600, description = "Aid station" },
+            new { id = (Guid?)null, name = "Aid", code = "B", sequence = 3, distanceFromStartKm = 5,
+                isStart = false, isFinish = false, elevationMeters = 420, isMandatory = false, hasCutoff = false,
+                cutoffDurationSeconds = (int?)null, description = "Drop bag" },
+            new { id = (Guid?)null, name = "Finish", code = "F", sequence = 4, distanceFromStartKm = 10,
+                isStart = false, isFinish = true, elevationMeters = 200, isMandatory = true, hasCutoff = false,
+                cutoffDurationSeconds = (int?)null, description = "Finish gate" },
+        };
+        using var route = await client.PutAsJsonAsync(coursePath + "/checkpoints", new { distanceKm = 10, checkpoints = points });
+        Assert.Equal(HttpStatusCode.NoContent, route.StatusCode);
+        async Task<JsonElement> Configuration() => await client.GetFromJsonAsync<JsonElement>(path + "/configuration");
+        static JsonElement Course(JsonElement config, Guid id) => config.GetProperty("courses").EnumerateArray()
+            .Single(x => x.GetProperty("id").GetGuid() == id);
+        var original = Course(await Configuration(), courseId);
+
+        var duplicates = await Task.WhenAll(Enumerable.Range(0, 2).Select(async _ => await CreatedId(await client.PostAsync(duplicatePath, null))));
+        var copied = await Configuration();
+        Assert.Equal(new[] { "Summit (Copy 2)", "Summit (Copy 3)" },
+            duplicates.Select(id => Course(copied, id).GetProperty("name").GetString()).Order());
+        Assert.Equal(2, duplicates.Distinct().Count());
+        var duplicate = Course(copied, duplicates[0]);
+        Assert.Equal(1, duplicate.GetProperty("version").GetInt32());
+        Assert.Equal(800, duplicate.GetProperty("elevationGainMeters").GetInt32());
+        Assert.Equal("Trail route", duplicate.GetProperty("description").GetString());
+        Assert.Equal(10m, duplicate.GetProperty("distanceKm").GetDecimal());
+        foreach (var (source, copy) in original.GetProperty("checkpoints").EnumerateArray().Zip(duplicate.GetProperty("checkpoints").EnumerateArray()))
+        {
+            Assert.NotEqual(source.GetProperty("id").GetGuid(), copy.GetProperty("id").GetGuid());
+            foreach (var field in source.EnumerateObject().Where(x => x.Name != "id"))
+                Assert.Equal(field.Value.GetRawText(), copy.GetProperty(field.Name).GetRawText());
+        }
+        using var renamedCopy = await client.PutAsJsonAsync($"{path}/courses/{duplicates[0]}", metadata with { name = "Independent" });
+        Assert.Equal(HttpStatusCode.OK, renamedCopy.StatusCode);
+
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+        var evt = await db.Events.SingleAsync(x => x.Id == eventId);
+        var startAt = evt.StartDate.AddMinutes(10).ToString("yyyy-MM-ddTHH:mm:ss") + "Z";
+        var first = await CreatedId(await client.PostAsJsonAsync(path + "/races", new { name = "First", courseId, startAt }));
+        var second = await CreatedId(await client.PostAsJsonAsync(path + "/races", new { name = "Second", courseId, startAt }));
+        await CreatedId(await client.PostAsJsonAsync(path + "/races", new { name = "Independent race", courseId = duplicates[0], startAt }));
+        using var independentSwitch = await client.PutAsJsonAsync($"{path}/races/{first}", new { name = "First", courseId = duplicates[0], startAt });
+        Assert.Equal(HttpStatusCode.BadRequest, independentSwitch.StatusCode);
+
+        Assert.False(Course(await Configuration(), courseId).GetProperty("immutable").GetBoolean());
+        using var edited = await client.PutAsJsonAsync(coursePath, metadata with { name = "Summit trail" });
+        Assert.Equal(HttpStatusCode.OK, edited.StatusCode);
+        using var mismatchedDistance = await client.PutAsJsonAsync(coursePath, metadata with { name = "Summit trail", distanceKm = 12 });
+        Assert.Equal(HttpStatusCode.BadRequest, mismatchedDistance.StatusCode);
+        var ids = original.GetProperty("checkpoints").EnumerateArray().Select(x => x.GetProperty("id").GetGuid()).ToArray();
+        var updates = points.Select((p, index) => p with { id = ids[index] }).ToArray();
+        updates[1] = updates[1] with { sequence = 3, name = "Water stop" };
+        updates[2] = updates[2] with { sequence = 2 };
+        updates[3] = updates[3] with { distanceFromStartKm = 12 };
+        using var changed = await client.PutAsJsonAsync(coursePath + "/checkpoints", new { distanceKm = 12, checkpoints = updates });
+        Assert.Equal(HttpStatusCode.NoContent, changed.StatusCode);
+        var saved = await Configuration();
+        Assert.Equal(12m, Course(saved, courseId).GetProperty("distanceKm").GetDecimal());
+        Assert.Equal(new[] { ids[0], ids[2], ids[1], ids[3] },
+            Course(saved, courseId).GetProperty("checkpoints").EnumerateArray().Select(x => x.GetProperty("id").GetGuid()));
+        foreach (var race in saved.GetProperty("races").EnumerateArray())
+        {
+            var id = race.GetProperty("id").GetGuid();
+            Assert.Equal(id == first || id == second ? 12m : 10m, race.GetProperty("distanceKm").GetDecimal());
+        }
+
+        updates[2] = updates[2] with { code = "Á" };
+        updates[3] = updates[3] with { distanceFromStartKm = 13 };
+        using var rollback = await client.PutAsJsonAsync(coursePath + "/checkpoints", new { distanceKm = 13, checkpoints = updates });
+        Assert.Equal(HttpStatusCode.Conflict, rollback.StatusCode);
+        Assert.Equal(saved.GetRawText(), (await Configuration()).GetRawText());
+
+        db.Registrations.Add(new Registration
+        {
+            EventId = eventId, OrganizerId = organizerId, RaceId = second, BibNumber = "123",
+            Runner = new Runner { OrganizerId = organizerId, FirstName = "Synthetic", LastName = "Runner" }
+        });
+        await db.SaveChangesAsync();
+        Assert.Equal("registrations", Course(await Configuration(), courseId).GetProperty("editBlock").GetString());
+        using var lockedMetadata = await client.PutAsJsonAsync(coursePath, metadata with { name = "Locked" });
+        using var lockedRoute = await client.PutAsJsonAsync(coursePath + "/checkpoints", new { distanceKm = 13, checkpoints = updates });
+        Assert.Equal(HttpStatusCode.Conflict, lockedMetadata.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, lockedRoute.StatusCode);
+        await CreatedId(await client.PostAsync(duplicatePath, null));
+
+        evt.Status = EventStatus.RegistrationClosed;
+        await db.SaveChangesAsync();
+        using var ready = await client.PatchAsJsonAsync(path + "/status", new { status = "Ready" });
+        Assert.Equal(HttpStatusCode.OK, ready.StatusCode);
+        using var readyEdit = await client.PutAsJsonAsync($"{path}/courses/{duplicates[0]}", metadata);
+        using var readyDuplicate = await client.PostAsync(duplicatePath, null);
+        Assert.Equal(HttpStatusCode.Conflict, readyEdit.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, readyDuplicate.StatusCode);
     }
 
     private static async Task<Guid> CreatedId(HttpResponseMessage response)

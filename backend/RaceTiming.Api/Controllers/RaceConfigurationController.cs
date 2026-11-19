@@ -73,12 +73,11 @@ public sealed partial class RaceConfigurationController(
             .Include(x => x.Checkpoints).OrderBy(x => x.Name).ThenBy(x => x.Version).ToListAsync(ct);
         var races = await db.Races.AsNoTracking().Where(x => x.EventId == eventId)
             .Include(x => x.Categories).Include(x => x.StartWaves).AsSplitQuery().OrderBy(x => x.Name).ToListAsync(ct);
-        var historicalCourseIds = await db.Courses.Where(x => x.EventId == eventId &&
-            db.Courses.Any(other => other.EventId == x.EventId && other.Name == x.Name && other.Version > x.Version))
-            .Select(x => x.Id).ToListAsync(ct);
+        var historicalCourseIds = (await HistoricalCourses(eventId).ToListAsync(ct)).ToHashSet();
         var history = await db.Registrations.Where(x => x.EventId == eventId)
             .Select(x => new { x.RaceId, x.RaceCategoryId, x.StartWaveId }).Distinct().ToListAsync(ct);
         var registeredRaceIds = history.Select(x => x.RaceId).ToHashSet();
+        var registeredCourseIds = races.Where(x => registeredRaceIds.Contains(x.Id)).Select(x => x.CourseId).ToHashSet();
         var categoryIds = history.Select(x => x.RaceCategoryId).ToHashSet();
         var waveIds = history.Select(x => x.StartWaveId).ToHashSet();
         var newerRevisions = (await (
@@ -94,7 +93,10 @@ public sealed partial class RaceConfigurationController(
             courses = courses.Select(x => new
             {
                 x.Id, x.Name, x.Version, x.Description, x.DistanceKm, x.ElevationGainMeters, x.Status,
-                immutable = races.Any(r => r.CourseId == x.Id) || historicalCourseIds.Contains(x.Id),
+                immutable = historicalCourseIds.Contains(x.Id) || registeredCourseIds.Contains(x.Id),
+                editBlock = historicalCourseIds.Contains(x.Id) ? "historical" :
+                    registeredCourseIds.Contains(x.Id) ? "registrations" : null,
+                usable = IsUsable(x),
                 checkpoints = x.Checkpoints.OrderBy(c => c.Sequence).Select(c => new
                 {
                     c.Id, c.Name, c.Code, c.Sequence, c.DistanceFromStartKm, c.ElevationMeters,

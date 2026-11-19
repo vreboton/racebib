@@ -16,7 +16,7 @@
         <p v-if="!configuration.courses.length">No courses yet.</p>
         <v-expansion-panels multiple>
           <v-expansion-panel v-for="course in configuration.courses" :key="course.id"
-            :title="`${course.name} · Revision ${course.version} · ${course.distanceKm} km`">
+            :title="courseLabel(course)">
             <v-expansion-panel-text>
               <p v-if="course.description" class="mb-2">{{ course.description }}</p>
               <p v-if="!course.checkpoints.length">No checkpoints yet.</p>
@@ -26,10 +26,16 @@
                   {{ point.isStart ? '· Start' : '' }} {{ point.isFinish ? '· Finish' : '' }}
                 </li>
               </ol>
+              <p v-if="course.editBlock === 'registrations'" class="text-medium-emphasis">
+                A race using this course has registrations. Duplicate the course to make an editable copy.
+              </p>
+              <p v-else-if="course.editBlock === 'historical'" class="text-medium-emphasis">
+                This historical revision is read-only. Duplicate the course to make an editable copy.
+              </p>
               <div v-if="configuration.canEdit" class="d-flex flex-wrap ga-2 mt-3">
                 <v-btn v-if="!course.immutable" variant="text" @click="editCourse(course)">Edit course</v-btn>
                 <v-btn v-if="!course.immutable" variant="text" @click="editRoute(course)">Edit checkpoints</v-btn>
-                <v-btn variant="text" :disabled="busy" @click="mutate(`courses/${course.id}/revisions`, 'post')">Clone revision</v-btn>
+                <v-btn variant="text" :disabled="busy" @click="duplicateCourse(course)">Duplicate course</v-btn>
               </div>
             </v-expansion-panel-text>
           </v-expansion-panel>
@@ -94,6 +100,9 @@
           </v-alert>
           <template v-if="editor.kind === 'route'">
             <v-text-field v-model="editor.distanceKm" type="number" step="0.001" min="0.001" required label="Course distance (km)" />
+            <p class="text-body-2 text-medium-emphasis mb-3">
+              Put Finish last and match its distance from start to the course distance. Saving a new distance updates races using this course.
+            </p>
             <fieldset v-for="(point, index) in editor.checkpoints" :key="point.key" class="pa-3 mb-3">
               <legend>Checkpoint {{ index + 1 }}</legend>
               <div class="d-flex flex-wrap ga-2 mb-2">
@@ -119,14 +128,17 @@
             <v-btn variant="tonal" @click="addPoint">Add checkpoint</v-btn>
           </template>
           <template v-else>
-            <v-text-field v-model="editor.name" label="Name" required :maxlength="editor.kind === 'course' ? 160 : 120" />
+            <v-text-field v-model="editor.name" label="Name" required :maxlength="editor.kind === 'course' ? 160 : 120"
+              :readonly="editor.kind === 'course' && editor.nameLocked" />
             <v-textarea v-if="editor.kind !== 'wave'" v-model="editor.description" label="Description" rows="2" />
             <template v-if="editor.kind === 'course'">
-              <v-text-field v-model="editor.distanceKm" type="number" min="0.001" step="0.001" required label="Distance (km)" />
+              <v-text-field v-model="editor.distanceKm" type="number" min="0.001" step="0.001" required label="Distance (km)"
+                :readonly="editor.hasFinish" :hint="editor.hasFinish ? 'Use Edit checkpoints to change the course and Finish distances together.' : undefined"
+                :persistent-hint="editor.hasFinish" />
               <v-text-field v-model="editor.elevationGainMeters" type="number" min="0" label="Elevation gain (m)" />
             </template>
             <template v-if="editor.kind === 'race'">
-              <v-select v-model="editor.courseId" :items="editor.courses" label="Course revision" required />
+              <v-select v-model="editor.courseId" :items="editor.courses" label="Course" required />
               <v-text-field v-model="editor.cutoffDurationSeconds" type="number" min="1" label="Cutoff (seconds)" />
             </template>
             <ScheduleInput v-if="editor.kind === 'race' || editor.kind === 'wave'" :key="editor.path"
@@ -169,7 +181,8 @@ type DraftPoint = Omit<Checkpoint, 'distanceFromStartKm' | 'elevationMeters' | '
   key: number; distanceFromStartKm: Numeric; elevationMeters: Numeric; cutoffDurationSeconds: Numeric
 }
 type Editor = EditorBase & (
-  | { kind: 'course'; name: string; description: string | null; distanceKm: Numeric; elevationGainMeters: Numeric }
+  | { kind: 'course'; name: string; description: string | null; distanceKm: Numeric; elevationGainMeters: Numeric;
+    nameLocked: boolean; hasFinish: boolean }
   | { kind: 'route'; distanceKm: Numeric; checkpoints: DraftPoint[] }
   | { kind: 'race'; name: string; description: string | null; courseId: string; originalCourse: string;
     startAt: string; cutoffDurationSeconds: Numeric; courses: { title: string; value: string }[] }
@@ -178,8 +191,7 @@ type Editor = EditorBase & (
 )
 const editor = ref<Editor>()
 let pointKey = 0
-const usableCourses = computed(() => configuration.value?.courses.filter(c => c.status === 'Active' &&
-  c.checkpoints[0]?.isStart && c.checkpoints.at(-1)?.isFinish) ?? [])
+const usableCourses = computed(() => configuration.value?.courses.filter(c => c.usable) ?? [])
 watch(() => props.eventId, reload, { immediate: true })
 
 function displayStart(value: string) {
@@ -199,15 +211,27 @@ async function reload() {
   catch (failure) { error.value = getApiError(failure, 'Unable to load race configuration.') }
   finally { busy.value = false }
 }
-async function mutate(path: string, method: 'post' | 'put' | 'delete', payload?: unknown) {
+function courseLabel(course: Course) {
+  const revision = course.version > 1 || course.editBlock === 'historical' ? ` · Revision ${course.version}` : ''
+  return `${course.name}${revision} · ${course.distanceKm} km`
+}
+async function mutate(path: string, method: 'post' | 'put' | 'delete', payload?: unknown,
+  onSaved?: (id: string) => void) {
   busy.value = true
   error.value = ''
   try {
-    await saveConfiguration(props.eventId, path, method, payload)
+    const result = await saveConfiguration<{ id?: string } | undefined>(props.eventId, path, method, payload)
     await reload()
+    if (result?.id && !error.value) onSaved?.(result.id)
   } catch (failure) {
     error.value = getApiError(failure, 'Unable to save race configuration.')
   } finally { busy.value = false }
+}
+function duplicateCourse(course: Course) {
+  void mutate(`courses/${course.id}/duplicate`, 'post', undefined, id => {
+    const copy = configuration.value?.courses.find(item => item.id === id)
+    if (copy && configuration.value?.canEdit && !copy.immutable) editCourse(copy)
+  })
 }
 function retire(name: string, path: string) {
   if (window.confirm(`Retire ${name}? Existing records will remain available.`)) void mutate(path, 'delete')
@@ -219,7 +243,8 @@ function base(title: string, path: string, id?: string): EditorBase {
 function editCourse(course?: Course) {
   editor.value = { ...base(course ? 'Edit course' : 'Add course', 'courses', course?.id), kind: 'course',
     name: course?.name ?? '', description: course?.description ?? null, distanceKm: course?.distanceKm ?? null,
-    elevationGainMeters: course?.elevationGainMeters ?? null }
+    elevationGainMeters: course?.elevationGainMeters ?? null, nameLocked: (course?.version ?? 1) > 1,
+    hasFinish: course?.checkpoints.some(point => point.isFinish) ?? false }
 }
 function editRoute(course: Course) {
   error.value = ''
@@ -245,7 +270,7 @@ function editRace(race?: Race) {
   editor.value = { ...base(race ? 'Edit race' : 'Add race', 'races', race?.id), kind: 'race',
     name: race?.name ?? '', description: race?.description ?? null, courseId: race?.courseId ?? courses[0]?.id ?? '',
     originalCourse: race?.courseId ?? '', startAt: race?.startAt ?? '', cutoffDurationSeconds: race?.cutoffDurationSeconds ?? null,
-    courses: courses.map(c => ({ title: `${c.name} · Revision ${c.version} · ${c.distanceKm} km`, value: c.id })) }
+    courses: courses.map(c => ({ title: courseLabel(c), value: c.id })) }
 }
 function editCategory(race: Race, category?: Category) {
   editor.value = { ...base(category ? 'Edit category' : 'Add category', `races/${race.id}/categories`, category?.id),
@@ -282,7 +307,7 @@ function submit() {
       break
     case 'race':
       if (form.originalCourse && form.originalCourse !== form.courseId &&
-          !window.confirm('Switch this race to the selected course revision?')) return
+          !window.confirm('Switch this race to the selected course?')) return
       payload = { name: form.name, description: form.description, courseId: form.courseId,
         startAt: form.startAt, cutoffDurationSeconds: number(form.cutoffDurationSeconds) }
       break

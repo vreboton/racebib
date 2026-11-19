@@ -2,7 +2,7 @@ import { flushPromises, shallowMount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import RaceConfigurationPanel from './RaceConfigurationPanel.vue'
 import { loadConfiguration, saveConfiguration } from '../../services/raceConfiguration'
-import type { Configuration } from '../../services/raceConfiguration'
+import type { Configuration, Course } from '../../services/raceConfiguration'
 
 vi.mock('../../services/raceConfiguration', async importOriginal => ({
   ...await importOriginal<typeof import('../../services/raceConfiguration')>(),
@@ -13,7 +13,7 @@ vi.mock('../../services/raceConfiguration', async importOriginal => ({
 const slot = { template: '<div><slot /></div>' }
 const stubs = {
   ...Object.fromEntries(['v-card', 'v-card-title', 'v-card-text', 'v-expansion-panel', 'v-expansion-panels',
-    'v-expansion-panel-text', 'v-alert', 'v-dialog', 'v-card-actions', 'v-spacer', 'v-textarea', 'v-select']
+    'v-expansion-panel-text', 'v-alert', 'v-dialog', 'v-card-actions', 'v-spacer', 'v-textarea', 'v-select', 'v-checkbox']
     .map(name => [name, slot])),
   'v-btn': { template: '<button v-bind="$attrs"><slot /></button>' },
   'v-form': { template: '<form><slot /></form>' },
@@ -28,6 +28,12 @@ const raceId = 'race-1'
 const category = {
   id: 'category-1', name: 'Masters', status: 'Active' as const, description: null,
   minimumAge: 40, maximumAge: null, hasRegistrations: true,
+}
+
+const course: Course = {
+  id: 'course-1', name: 'Summit', status: 'Active', version: 1, description: 'Trail route',
+  distanceKm: 10, elevationGainMeters: 800, usable: true, immutable: false, editBlock: null,
+  checkpoints: [],
 }
 
 function configuration(categories: Configuration['races'][number]['categories'] = []): Configuration {
@@ -50,6 +56,69 @@ async function mountPanel() {
 
 describe('race configuration actions', () => {
   beforeEach(() => vi.resetAllMocks())
+
+  it('duplicates an attached course and opens the independent copy for editing', async () => {
+    const attached = { ...configuration(), courses: [course] }
+    const copy = { ...course, id: 'copy-1', name: 'Summit (Copy)' }
+    vi.mocked(loadConfiguration).mockResolvedValueOnce(attached)
+      .mockResolvedValueOnce({ ...attached, courses: [course, copy] })
+    vi.mocked(saveConfiguration).mockResolvedValueOnce({ id: copy.id })
+    const { wrapper, button } = await mountPanel()
+
+    expect(button('Edit course')).toBeDefined()
+    expect(button('Edit checkpoints')).toBeDefined()
+    expect(button('Clone revision')).toBeUndefined()
+    await button('Duplicate course')!.trigger('click')
+    await flushPromises()
+    expect(saveConfiguration).toHaveBeenCalledWith('event-1', 'courses/course-1/duplicate', 'post', undefined)
+    expect(loadConfiguration).toHaveBeenCalledTimes(2)
+    expect((wrapper.get('input[aria-label="Name"]').element as HTMLInputElement).value).toBe('Summit (Copy)')
+    await wrapper.get('input[aria-label="Name"]').setValue('New route')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(saveConfiguration).toHaveBeenLastCalledWith('event-1', 'courses/copy-1', 'put',
+      { name: 'New route', description: 'Trail route', distanceKm: 10, elevationGainMeters: 800 })
+    wrapper.unmount()
+  })
+
+  it('saves an attached course distance together with the updated Finish checkpoint', async () => {
+    const finish = {
+      id: 'finish-1', name: 'Finish', code: 'F', sequence: 2, distanceFromStartKm: 10, isFinish: true,
+      isStart: false, elevationMeters: null, isMandatory: true, hasCutoff: false, cutoffDurationSeconds: null,
+      description: null,
+    }
+    const start = { ...finish, id: 'start-1', name: 'Start', code: 'S', sequence: 1, distanceFromStartKm: 0,
+      isStart: true, isFinish: false }
+    const attached = { ...configuration(), courses: [{ ...course, checkpoints: [start, finish] }] }
+    vi.mocked(loadConfiguration).mockResolvedValue(attached)
+    const { wrapper, button } = await mountPanel()
+
+    await button('Edit checkpoints')!.trigger('click')
+    await wrapper.get('input[aria-label="Course distance (km)"]').setValue('12')
+    await wrapper.findAll('input[aria-label="Distance from start (km)"]')[1].setValue('12')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(saveConfiguration).toHaveBeenCalledWith('event-1', 'courses/course-1/checkpoints', 'put',
+      { distanceKm: 12, checkpoints: [start, { ...finish, distanceFromStartKm: 12 }] })
+    wrapper.unmount()
+  })
+
+  it('explains registration and history locks while keeping duplication available', async () => {
+    vi.mocked(loadConfiguration).mockResolvedValueOnce({
+      ...configuration(), courses: [
+        { ...course, immutable: true, editBlock: 'registrations' },
+        { ...course, id: 'historical', immutable: true, editBlock: 'historical' },
+      ],
+    })
+    const { wrapper, button } = await mountPanel()
+    expect(button('Edit course')).toBeUndefined()
+    expect(button('Edit checkpoints')).toBeUndefined()
+    expect(wrapper.text()).toContain('A race using this course has registrations.')
+    expect(wrapper.text()).toContain('This historical revision is read-only.')
+    expect(wrapper.findAll('button').filter(item => item.text() === 'Duplicate course')).toHaveLength(2)
+    wrapper.unmount()
+  })
 
   it('creates a category and refreshes the persisted list', async () => {
     vi.mocked(loadConfiguration).mockResolvedValueOnce(configuration()).mockResolvedValueOnce(configuration([category]))
