@@ -20,6 +20,30 @@ public sealed partial class RaceConfigurationController
     public Task<IActionResult> UpdateCourse(Guid eventId, Guid courseId, CourseInput input, CancellationToken ct) =>
         SaveCourse(eventId, courseId, input, ct);
 
+    [HttpDelete("courses/{courseId:guid}")]
+    public Task<IActionResult> DeleteCourse(Guid eventId, Guid courseId, CancellationToken ct) =>
+        WithEvent(eventId, true, ct, async _ =>
+        {
+            var course = await FindCourse(eventId, courseId, ct);
+            if (course is null) return NotFound();
+            if (await db.Races.AnyAsync(x => x.EventId == eventId && x.CourseId == courseId, ct))
+                return ConflictProblem("This course is referenced by a race and cannot be permanently deleted.");
+            if (await CoursesWithRevisionHistory(eventId).ContainsAsync(courseId, ct))
+                return ConflictProblem("Courses with revision history cannot be permanently deleted.");
+
+            db.CourseCheckpoints.RemoveRange(course.Checkpoints);
+            db.Courses.Remove(course);
+            try
+            {
+                await db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateException error) when (error.GetBaseException() is MySqlConnector.MySqlException { Number: 1451 })
+            {
+                return ConflictProblem("This course or one of its checkpoints is still referenced and cannot be permanently deleted.");
+            }
+            return NoContent();
+        });
+
     public sealed record CourseStatusInput(RecordStatus? Status);
 
     [HttpPatch("courses/{courseId:guid}/status")]
@@ -189,6 +213,11 @@ public sealed partial class RaceConfigurationController
 
     private Task<Course?> FindCourse(Guid eventId, Guid courseId, CancellationToken ct) =>
         db.Courses.Include(x => x.Checkpoints).SingleOrDefaultAsync(x => x.EventId == eventId && x.Id == courseId, ct);
+
+    private IQueryable<Guid> CoursesWithRevisionHistory(Guid eventId) =>
+        db.Courses.Where(x => x.EventId == eventId && (x.Version != 1 ||
+            db.Courses.Any(other => other.EventId == eventId && other.Id != x.Id && other.Name == x.Name)))
+            .Select(x => x.Id);
 
     private IQueryable<Guid> HistoricalCourses(Guid eventId) =>
         db.Courses.Where(x => x.EventId == eventId &&

@@ -30,6 +30,7 @@ export interface Course extends Entry {
   editBlock: 'historical' | 'registrations' | 'inactive' | null
   usable: boolean
   hasActiveRaces: boolean
+  canDelete: boolean
   checkpoints: Checkpoint[]
 }
 

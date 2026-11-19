@@ -425,6 +425,8 @@ public sealed class MySqlTestData(IServiceProvider services) : IAsyncDisposable
             (record.OrganizerId.HasValue && organizerIdList.Contains(record.OrganizerId.Value))).ToListAsync();
         db.AuditRecords.RemoveRange(auditRecords);
         db.Registrations.RemoveRange(await db.Registrations.Where(item => organizerIdList.Contains(item.OrganizerId)).ToListAsync());
+        db.Races.RemoveRange(await db.Races.Where(item => organizerIdList.Contains(item.Event.OrganizerId)).ToListAsync());
+        await db.SaveChangesAsync();
         db.Events.RemoveRange(await db.Events.Where(item => organizerIdList.Contains(item.OrganizerId)).ToListAsync());
         db.Runners.RemoveRange(await db.Runners.Where(item => organizerIdList.Contains(item.OrganizerId)).ToListAsync());
         db.OrganizerMemberships.RemoveRange(await db.OrganizerMemberships.Where(item => organizerIdList.Contains(item.OrganizerId)).ToListAsync());

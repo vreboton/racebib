@@ -948,7 +948,7 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                         .WithMany("Races")
                         .HasForeignKey("CourseId", "EventId")
                         .HasPrincipalKey("Id", "EventId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.Navigation("Course");
