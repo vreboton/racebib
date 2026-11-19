@@ -56,3 +56,37 @@ it('requires a fresh CSV preview after column mapping changes and resubmits the 
   expect(wrapper.text()).toContain('Imported 1 registrations.')
   wrapper.unmount()
 })
+
+it('explains the public registered-name fallback and switches the hint for a pseudonym', async () => {
+  vi.mocked(loadConfiguration).mockResolvedValue({ canEdit: true, timeZoneId: 'UTC', courses: [], races: [] })
+  vi.mocked(api.get).mockImplementation(async (url) => ({
+    data: { items: String(url).endsWith('/runners') ? [{ id: 'runner-1', firstName: 'María', lastName: 'Cruz' }] : [], total: 0 },
+  }) as Awaited<ReturnType<typeof api.get>>)
+  const slot = { template: '<div><slot /></div>' }
+  const textField = { name: 'FixtureTextField', props: ['label', 'hint', 'persistentHint'],
+    emits: ['update:modelValue'], template: '<div />' }
+  const runnerSelect = { name: 'FixtureRunnerSelect', emits: ['update:modelValue'], template: '<div />' }
+  const wrapper = shallowMount(RegistrationPanel, {
+    props: { eventId: 'event-1', organizerId: 'org-1' },
+    global: { stubs: {
+      ...Object.fromEntries(['v-card', 'v-card-title', 'v-card-text', 'v-form', 'v-alert', 'v-list', 'v-select',
+        'v-card-actions', 'v-dialog', 'v-table', 'v-pagination', 'v-checkbox', 'v-spacer', 'v-list-item',
+        'v-file-input'].map(name => [name, slot])),
+      'v-btn': { template: '<button><slot /></button>' },
+      'v-text-field': textField,
+      'v-autocomplete': runnerSelect,
+    } },
+  })
+  await flushPromises()
+  await wrapper.findAll('button').find(button => button.text() === 'Register runner')!.trigger('click')
+  await flushPromises()
+  wrapper.findComponent({ name: 'FixtureRunnerSelect' }).vm.$emit('update:modelValue', 'runner-1')
+  await flushPromises()
+  const field = wrapper.findAllComponents({ name: 'FixtureTextField' }).find(item => item.props('label') === 'Name on Bib')!
+  expect(field.props('hint')).toBe('Blank publishes the registered full name: María Cruz.')
+  expect(wrapper.text()).toContain('Runner ID for CSV matching runner-1')
+  field.vm.$emit('update:modelValue', 'Pseudonym')
+  await flushPromises()
+  expect(field.props('hint')).toBe('Printed bibs and public participant outputs use this name.')
+  wrapper.unmount()
+})

@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using RaceTiming.Domain.Enums;
+using RaceTiming.Domain.Entities;
 using RaceTiming.Infrastructure.Persistence;
 
 namespace RaceTiming.Api.Controllers;
@@ -26,9 +27,9 @@ public sealed class PublicParticipantsController(RaceTimingDbContext db) : Contr
                 && x.Event.Organizer.IsActive && !x.Event.Organizer.IsSuspended)
             .OrderBy(x => x.BibNumber).ThenBy(x => x.Id)
             .Skip((Math.Clamp(page, 1, 100_000) - 1) * 100).Take(100)
-            .Select(x => new Participant(x.BibDisplayName == null || x.BibDisplayName == ""
-                ? x.Runner.FirstName + " " + x.Runner.LastName : x.BibDisplayName, x.BibNumber, x.Race.Name))
+            .Select(x => new { x.BibDisplayName, x.Runner.FirstName, x.Runner.LastName, x.BibNumber, Race = x.Race.Name })
             .ToListAsync(ct);
-        return Ok(rows);
+        return Ok(rows.Select(x => new Participant(Registration.DisplayName(x.BibDisplayName, x.FirstName, x.LastName),
+            x.BibNumber, x.Race)));
     }
 }

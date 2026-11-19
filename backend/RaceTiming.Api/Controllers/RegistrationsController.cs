@@ -106,13 +106,15 @@ public sealed partial class RegistrationsController(
         if (id.HasValue && entry is null) return NotFound();
         if (entry is not null && entry.RunnerId != input.RunnerId)
             return BadRequest("The runner on an existing registration is fixed.");
+        await RunnerProfileWriteLock.Acquire(db, item.OrganizerId, ct);
         var runner = await db.Runners.SingleOrDefaultAsync(x => x.Id == input.RunnerId
             && x.OrganizerId == item.OrganizerId, ct);
         if (runner is null) return BadRequest("Select a runner from this organizer.");
         if (entry is null && await db.Registrations.AnyAsync(x => x.EventId == item.Id && x.RunnerId == runner.Id, ct))
             return Conflict("This runner already has a registration for this event.");
 
-        var error = await Validate(item, runner, input, entry, ct);
+        var race = await RacesWithRegistrationOptions(item.Id).SingleOrDefaultAsync(x => x.Id == input.RaceId, ct);
+        var error = Validate(item, race, runner, input, entry);
         if (error is not null) return BadRequest(error);
         var previousBib = entry?.BibNumber;
         var assignment = input.Assignment ?? new();
@@ -138,7 +140,10 @@ public sealed partial class RegistrationsController(
         return id.HasValue ? Ok(Admin(entry)) : CreatedAtAction(nameof(Get), new { eventId = item.Id, id = entry.Id }, Admin(entry));
     }
 
-    private async Task<string?> Validate(Event item, Runner runner, RegistrationInput input, Registration? existing, CancellationToken ct)
+    private IQueryable<Race> RacesWithRegistrationOptions(Guid eventId) => db.Races.AsNoTracking().AsSplitQuery()
+        .Include(x => x.Categories).Include(x => x.StartWaves).Where(x => x.EventId == eventId);
+
+    private static string? Validate(Event item, Race? race, Runner runner, RegistrationInput input, Registration? existing)
     {
         if (!Enum.IsDefined(input.Status) || !Enum.IsDefined(input.PaymentStatus))
             return "Select valid registration and payment statuses.";
@@ -146,12 +151,11 @@ public sealed partial class RegistrationsController(
             (input.BibDisplayName is string name && (new StringInfo(name.Trim()).LengthInTextElements > 60 || name.Any(char.IsControl))))
             return "Name on Bib must be at most 60 printed characters without control characters.";
         if (input.Team?.Trim().Length > 100) return "Team must be at most 100 characters.";
-        var race = await db.Races.AsNoTracking().SingleOrDefaultAsync(x => x.Id == input.RaceId && x.EventId == item.Id, ct);
         if (race is null || (race.Status != RecordStatus.Active && existing?.RaceId != race.Id))
             return "Select an active race from this event.";
         if (input.CategoryId is Guid categoryId)
         {
-            var category = await db.RaceCategories.AsNoTracking().SingleOrDefaultAsync(x => x.Id == categoryId && x.RaceId == race.Id, ct);
+            var category = race.Categories.FirstOrDefault(x => x.Id == categoryId);
             if (category is null || (category.Status != RecordStatus.Active && existing?.RaceCategoryId != categoryId))
                 return "Select an active category from this race.";
             if (category.MinimumAge.HasValue || category.MaximumAge.HasValue)
@@ -159,7 +163,7 @@ public sealed partial class RegistrationsController(
                 var zone = TimeZoneInfo.FindSystemTimeZoneById(item.TimeZoneId);
                 var date = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(
                     DateTime.SpecifyKind(race.StartAtUtc, DateTimeKind.Utc), zone));
-                if (runner.Birthdate is not DateOnly birth || birth > date)
+                if (runner.Birthdate is not DateOnly birth || birth > date || birth > DateOnly.FromDateTime(DateTime.UtcNow))
                     return "This category requires a valid birthdate.";
                 var age = date.Year - birth.Year;
                 if (birth.AddYears(age) > date) age--;
@@ -168,8 +172,8 @@ public sealed partial class RegistrationsController(
             }
         }
         var allowedWave = existing?.StartWaveId;
-        if (input.WaveId is Guid waveId && !await db.StartWaves.AnyAsync(x => x.Id == waveId && x.RaceId == race.Id
-            && (x.Status == RecordStatus.Active || allowedWave == x.Id), ct))
+        if (input.WaveId is Guid waveId && !race.StartWaves.Any(x => x.Id == waveId
+            && (x.Status == RecordStatus.Active || allowedWave == x.Id)))
             return "Select an active start wave from this race.";
         return null;
     }

@@ -71,6 +71,9 @@ public sealed class RunnersController(
             || request.MobileNumber?.Trim().Length > 40 || request.EmergencyContact?.Trim().Length > 250)
             return BadRequest("Check the birthdate and contact field lengths.");
 
+        await using var transaction = db.Database.IsRelational()
+            ? await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted, ct) : null;
+        await RunnerProfileWriteLock.Acquire(db, organizerId, ct);
         var runner = new Runner
         {
             OrganizerId = organizerId,
@@ -84,6 +87,7 @@ public sealed class RunnersController(
         db.Runners.Add(runner);
         audit?.Record(User, "Runner.Created", "Runner", runner.Id.ToString(), organizerId);
         await db.SaveChangesAsync(ct);
+        if (transaction is not null) await transaction.CommitAsync(ct);
         return CreatedAtAction(nameof(Get), new { organizerId, id = runner.Id }, ToDto(runner));
     }
 
@@ -97,6 +101,9 @@ public sealed class RunnersController(
             || request.MobileNumber?.Trim().Length > 40 || request.EmergencyContact?.Trim().Length > 250)
             return BadRequest("Check the birthdate and contact field lengths.");
 
+        await using var transaction = db.Database.IsRelational()
+            ? await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted, ct) : null;
+        await RunnerProfileWriteLock.Acquire(db, organizerId, ct);
         var runner = await db.Runners.FirstOrDefaultAsync(
             x => x.OrganizerId == organizerId && x.Id == id, ct);
         if (runner is null) return NotFound();
@@ -111,6 +118,7 @@ public sealed class RunnersController(
         runner.EmergencyContact = NormalizeOptional(request.EmergencyContact);
         audit?.Record(User, "Runner.Updated", "Runner", runner.Id.ToString(), organizerId);
         await db.SaveChangesAsync(ct);
+        if (transaction is not null) await transaction.CommitAsync(ct);
         return Ok(ToDto(runner));
     }
 

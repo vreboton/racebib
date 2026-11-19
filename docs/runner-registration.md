@@ -8,7 +8,7 @@ Choose a category or wave from the selected race. Age-limited categories use age
 
 ## Name on Bib and publication
 
-Name on Bib belongs to the registration and accepts a Unicode preferred name, nickname or pseudonym. The limit is 60 text elements and 120 UTF-16 code units. Blank values use the registered full name. Edit the value from **Registration details**. Print an assigned bib from those details.
+Name on Bib belongs to the registration and accepts a Unicode preferred name, nickname or pseudonym. The limit is 60 text elements and 120 UTF-16 code units. A blank value publishes the registered full name on printed bibs and public participant outputs. The RD editor shows the exact fallback once a profile is selected. Edit the value from **Registration details**. Print an assigned bib from those details.
 
 The public participants page and its downloadable CSV expose bib number, effective Name on Bib and race for confirmed registrations in a published, active organizer event. Use the same public identity contract when integrating results, leaderboards or live timing. This repository currently has no public results, leaderboard or live timing presentation to update. Registered names and profile contact fields are available in organizer management views. A fallback full name is part of the public identity only when Name on Bib is blank.
 
@@ -22,9 +22,18 @@ The RD or registration provider administers the applicable Registration Guidelin
 4. Map missing fields, review row outcomes and proposed bibs, and validate again after changes. Download the error report if needed. Correct the errors in the original file and upload it again.
 5. Confirm a valid preview within 20 minutes. Confirmation rechecks the source and proposed assignments against current records. If anything changed, preview again. If confirmation succeeds, the result shows the committed row count.
 
-Map **First Name**, **Last Name** and **Race**. A race cell may contain an exact race name or an unambiguous numeric distance in km. Category and wave cells use names from that race. Optional fields include Name on Bib, Gender, Birthdate, Email, Mobile Number, Category, Start Wave, Bib Number, Team / Club, Emergency Contact, Registration Status and Payment Status. Supported name aliases include Bib Name, Display Name and Preferred Name. Enter dates as YYYY-MM-DD or M/D/YYYY. Enter status names as listed in the API below.
+Map **First Name**, **Last Name** and **Race**. A race cell may contain an exact race name or an unambiguous numeric distance in km. Category and wave cells use names from that race. Optional fields include Runner ID, Name on Bib, Gender, Birthdate, Email, Mobile Number, Category, Start Wave, Bib Number, Team / Club, Emergency Contact, Registration Status and Payment Status. Supported name aliases include Bib Name, Display Name and Preferred Name. Enter dates as YYYY-MM-DD or M/D/YYYY. Enter status names as listed in the API below.
 
-The importer matches a profile by case-insensitive first and last names and compatible email. It rejects ambiguous matches and repeated event registrations, including cancelled ones. It preserves existing profile data and Name on Bib on re-import. Review profiles manually before importing homonyms. Confirmation is all-or-nothing. Error reports contain row numbers and predefined messages. Public CSV export escapes spreadsheet formula prefixes.
+The importer accepts either of these ways to link an existing organizer profile.
+
+- The RD supplies its **Runner ID** and the registered names and any supplied email agree with the profile. To find the ID, select a verified profile in the registration form. If two people share a name, verify or create the correct profiles first and specify their IDs in the CSV.
+- The supplied email matches exactly one profile in the organizer and its first and last names also agree. Matching is case-insensitive.
+
+If no profile matches the name or supplied email, the importer can create a new profile, including one without email. A name collision, an ambiguous email, or conflicting details produce row errors. New rows with repeated names or email must be resolved before import. Duplicate registrations are rejected by resolved Runner ID, including cancelled registrations. Re-import does not change an existing registration or Name on Bib.
+
+An existing profile's birthdate is authoritative for age limits. If the CSV supplies a different date, verify the discrepancy and correct the CSV or update the profile. If the profile lacks a birthdate and the category has age limits, verify and save the date on the profile, or choose a category without age limits. A valid CSV date may populate a new profile. Imports do not update existing profile fields.
+
+Confirmation is all-or-nothing. Error reports contain row numbers and predefined messages. Public CSV export escapes spreadsheet formula prefixes.
 
 ## Bib assignment
 
@@ -57,10 +66,14 @@ The import routes accept a multipart file, optional mapping JSON with canonical 
 
 ## Migration and verification
 
-AddRunnerRegistrationManagement makes BibNumber nullable and adds the event-scoped display and payment data, profile details and an event/runner lookup index. Existing bibs are retained and existing payment states become Unspecified. The runner lookup index is non-unique so legacy data can be migrated without deleting duplicate history. All new manual creates and CSV confirms use the event write lock to enforce the one-runner-per-event policy. Before a downgrade, assign a unique bib to each unassigned registration. A downgrade also removes the milestone fields, so preserve any needed data separately.
+AddRunnerRegistrationManagement makes BibNumber nullable and adds registration display and payment data and runner profile fields. Existing bibs are retained and existing payment states become Unspecified. Before downgrading that migration, assign a unique bib to each unassigned registration and preserve any needed milestone data.
+
+EnforceEventRunnerRegistration replaces the non-unique event/runner index with a unique MySQL index on the event, runner and a database-owned slot. The migration retains one indexed slot per historical pair and marks additional legacy rows with a null slot. Every registration remains intact. New application and ordinary SQL inserts use the reserved slot by default. The slot is never writable through the API. Direct database maintenance must preserve the slot and keep all historical records for a pair together.
+
+The API checks all registrations for a runner, including legacy duplicates. It continues to take the parent event lock so duplicate validation, bib allocation and confirmation are atomic. Manual registration and import confirmation take the organizer lock after the event lock before reading runner identity and eligibility. Runner profile writes take only the organizer lock. This keeps profile edits and other imports from changing the organizer's identity data between final validation and commit.
 
 Validate the migration on a disposable MySQL 8.4 database and run the backend unit and MySQL integration suites and frontend tests and production build. The MySQL tests cover organizer scope, invalid references, public DTO shape, Unicode, cancellation, audit, stale and repeated imports and concurrent allocation. Use a local or CI database with a racebib_test_ prefix as described in the repository's CI setup.
 
-Local acceptance checks used the .NET 8 SDK and a disposable MySQL 8.4 container. The Release build and EF model check succeeded, and 53 backend unit and 17 MySQL integration tests passed. The integration suite exercised the migration, organizer denial, public identity, replay and stale preview rejection, concurrent allocation and database rollback.
+Local acceptance checks used the .NET 8 SDK and a disposable MySQL 8.4 container. The Release build and EF model check succeeded, and 53 backend unit and 20 MySQL integration tests passed. The integration suite exercised the migration, organizer denial, public identity, replay and stale preview rejection, concurrent allocation and database rollback. The migration was rehearsed with two legacy registrations for the same pair and preserved both rows, bibs, statuses and the pseudonym. The HTTP suite covers conflicting identities and birthdates, stale eligibility, and concurrent manual and CSV writers for one runner.
 
-On Node.js 22, all 25 frontend tests passed and the TypeScript and Vite production build succeeded. Vite reported its bundle-size warning.
+On Node.js 22, all 26 frontend tests passed and the TypeScript and Vite production build succeeded. Vite reported its bundle-size warning. A headless Chrome check against the local production bundle and disposable API verified the public table and CSV identities, the printed fallback, and the authenticated editor hints.

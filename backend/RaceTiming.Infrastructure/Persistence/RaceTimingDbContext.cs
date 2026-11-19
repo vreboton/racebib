@@ -152,7 +152,12 @@ public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> op
         b.Entity<Registration>(e =>
         {
             e.HasIndex(x => new { x.EventId, x.BibNumber }).IsUnique();
-            e.HasIndex(x => new { x.EventId, x.RunnerId });
+            // The migration reserves NULL solely for grandfathered duplicates.
+            e.Property<bool?>("EventRunnerUniquenessSlot").HasDefaultValue(true);
+            e.HasIndex(nameof(Registration.EventId), nameof(Registration.RunnerId), "EventRunnerUniquenessSlot")
+                .IsUnique().HasDatabaseName("UX_Registrations_Event_Runner_Slot");
+            e.ToTable(table => table.HasCheckConstraint("CK_Registrations_EventRunnerSlot",
+                "EventRunnerUniquenessSlot IS NULL OR EventRunnerUniquenessSlot = 1"));
             e.Property(x => x.BibNumber).HasMaxLength(32);
             e.Property(x => x.BibDisplayName).HasMaxLength(120);
             e.Property(x => x.Team).HasMaxLength(100);

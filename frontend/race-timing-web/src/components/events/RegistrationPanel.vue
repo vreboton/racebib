@@ -41,12 +41,13 @@
           </div>
           <v-autocomplete v-if="!editing" v-model="draft.runnerId" :items="runners" :item-title="runnerLabel"
             item-value="id" label="Runner profile" clearable />
+          <p v-if="draft.runnerId" class="text-caption mb-2">Runner ID for CSV matching <code>{{ draft.runnerId }}</code></p>
           <v-btn class="mb-4" variant="outlined" @click="openProfile">{{ editing ? 'Edit runner profile' : 'Create runner profile' }}</v-btn>
           <v-select v-model="draft.raceId" :items="races" item-title="name" item-value="id" label="Race"
             @update:model-value="draft.categoryId = null; draft.waveId = null" />
           <v-select v-model="draft.categoryId" :items="selectedRace?.categories ?? []" item-title="name" item-value="id" label="Category" clearable />
           <v-select v-model="draft.waveId" :items="selectedRace?.waves ?? []" item-title="name" item-value="id" label="Start wave" clearable />
-          <v-text-field v-model="draft.bibDisplayName" label="Name on Bib" hint="Defaults to the registered full name" />
+          <v-text-field v-model="draft.bibDisplayName" label="Name on Bib" :hint="bibNameHint" persistent-hint />
           <v-text-field v-model="draft.team" label="Team / Club" />
           <v-select v-model="draft.status" :items="statuses" label="Registration status" />
           <v-select v-model="draft.paymentStatus" :items="payments" label="Payment status" />
@@ -101,6 +102,7 @@
     <v-card title="Import runner registrations">
       <v-card-text>
         <v-alert v-if="error" type="error" class="mb-3">{{ error }}</v-alert>
+        <p class="mb-2">For a name shared by multiple runners, verify the profile and map a Runner ID column.</p>
         <v-file-input label="Registration CSV" accept=".csv,text/csv" :model-value="csvFile"
           @update:model-value="selectFile" />
         <v-select v-model="importAssignment.mode" :items="modes" label="Bib assignment" @update:model-value="invalidate" />
@@ -211,6 +213,13 @@ const submitted = ref<{ mapping?: string; assignment: string } | null>(null)
 const mapping = ref<Record<string, number>>({})
 const importAssignment = ref(assignment())
 const selectedRace = computed(() => races.value.find(race => race.id === draft.value.raceId))
+const bibNameHint = computed(() => {
+  if (draft.value.bibDisplayName?.trim()) return 'Printed bibs and public participant outputs use this name.'
+  const runner = editing.value?.runner ?? runners.value.find(item => item.id === draft.value.runnerId)
+  return runner
+    ? 'Blank publishes the registered full name: ' + runner.firstName + ' ' + runner.lastName + '.'
+    : 'Blank publishes the runner’s registered full name.'
+})
 const headers = computed(() => preview.value?.headers.map((title, value) => ({ title, value })) ?? [])
 const runnerLabel = (value: Profile) => value.firstName + ' ' + value.lastName + (value.email ? ' · ' + value.email : '')
 

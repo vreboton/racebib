@@ -20,7 +20,7 @@ public sealed partial class RegistrationsController
     private static readonly string[] Columns =
     [
         "First Name", "Last Name", "Name on Bib", "Gender", "Birthdate", "Email", "Mobile Number",
-        "Race", "Category", "Start Wave", "Bib Number", "Team", "Emergency Contact", "Registration Status", "Payment Status"
+        "Race", "Category", "Start Wave", "Bib Number", "Team", "Emergency Contact", "Registration Status", "Payment Status", "Runner ID"
     ];
     private sealed record ImportRow(int Row, string? Error, string? NameOnBib = null, string? BibNumber = null);
     private sealed record ImportPlan(string[] Headers, Dictionary<string, int> Mapping,
@@ -67,6 +67,7 @@ public sealed partial class RegistrationsController
                     && x.TargetEntityType == "RegistrationImport" && x.TargetEntityId == receipt, ct))
                 return Conflict("This preview was already imported.");
             var bytes = await ReadUpload(file, ct);
+            await RunnerProfileWriteLock.Acquire(db, item.OrganizerId, ct);
             var plan = await Prepare(item, bytes, mapping, assignment, ct);
             if (plan.Error is not null || plan.Entries.Count == 0 || plan.Rows.Any(x => x.Error is not null)
                 || ticket.Hash != Fingerprint(bytes, mapping, assignment, plan.Entries))
@@ -112,11 +113,15 @@ public sealed partial class RegistrationsController
             || mapping.Keys.Except(Columns).Any() || !Columns.Take(2).Append("Race").All(mapping.ContainsKey))
             return plan with { Error = "Map First Name, Last Name and Race to distinct columns." };
 
-        var races = await db.Races.AsNoTracking().Include(x => x.Categories).Include(x => x.StartWaves)
-            .Where(x => x.EventId == item.Id && x.Status == RecordStatus.Active).ToListAsync(ct);
-        var existing = await Entries(item.Id).ToListAsync(ct);
+        var races = await RacesWithRegistrationOptions(item.Id)
+            .Where(x => x.Status == RecordStatus.Active).ToListAsync(ct);
+        var existing = await db.Registrations.Where(x => x.EventId == item.Id)
+            .Select(x => new { x.RunnerId, x.BibNumber }).ToListAsync(ct);
         var runners = await db.Runners.Where(x => x.OrganizerId == item.OrganizerId).ToListAsync(ct);
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var registered = existing.Select(x => x.RunnerId).ToHashSet();
+        var seen = new HashSet<Guid>();
+        var newNames = new HashSet<(string First, string Last)>();
+        var newEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         while (csv.Read())
         {
             if (rows.Count >= MaxRows) throw new InvalidDataException();
@@ -142,7 +147,7 @@ public sealed partial class RegistrationsController
 
                 if (first is null || last is null || first.Length > 100 || last.Length > 100)
                     error = "First and last names are required and limited to 100 characters each.";
-                else if (email?.Length > 254 || (email is not null && !System.Net.Mail.MailAddress.TryCreate(email, out _))
+                else if (email?.Length > 254 || (email is not null && (!System.Net.Mail.MailAddress.TryCreate(email, out var address) || !Same(email, address.Address)))
                     || mobile?.Length > 40 || gender?.Length > 40 || emergency?.Length > 250)
                     error = "Check the format or length of the runner contact fields.";
                 else if ((date is not null && birth is null) || birth > DateOnly.FromDateTime(DateTime.UtcNow))
@@ -157,22 +162,33 @@ public sealed partial class RegistrationsController
                     var race = raceMatches[0];
                     var category = race.Categories.FirstOrDefault(x => Same(x.Name, Value("Category")));
                     var wave = race.StartWaves.FirstOrDefault(x => Same(x.Name, Value("Start Wave")));
-                    var matches = runners.Where(x => Same(first, x.FirstName) && Same(last, x.LastName)
-                        && (email is null || x.Email is null || Same(email, x.Email))).ToArray();
-                    if (matches.Length > 1)
-                        error = "Runner matches multiple profiles.";
+                    var (profile, identityError) = ResolveProfile(runners, Value("Runner ID"), first, last, email);
+                    if (identityError is not null)
+                        error = identityError;
                     else if ((category is null && Value("Category") is not null) || (wave is null && Value("Start Wave") is not null))
                         error = "Category or wave does not belong to this race.";
+                    else if (profile is not null && birth.HasValue && profile.Birthdate != birth)
+                        error = profile.Birthdate.HasValue
+                            ? "CSV birthdate differs from the runner profile. Verify both sources, then correct the CSV or update the profile before importing."
+                            : "The runner profile has no verified birthdate. Verify and save the birthdate on the profile before importing it.";
+                    else if (profile is not null && !profile.Birthdate.HasValue &&
+                        (category?.MinimumAge.HasValue == true || category?.MaximumAge.HasValue == true))
+                        error = "This category requires a birthdate on the runner profile. Verify and save it, or choose a category without age limits.";
                     else
                     {
-                        var runner = matches.SingleOrDefault() ?? new Runner { OrganizerId = item.OrganizerId,
+                        var runner = profile ?? new Runner { OrganizerId = item.OrganizerId,
                             FirstName = first, LastName = last, Email = email, Birthdate = birth, Gender = gender,
                             MobileNumber = mobile, EmergencyContact = emergency };
-                        var identity = $"{first}\0{last}\0{email}";
                         var input = new RegistrationInput(race.Id, runner.Id, category?.Id, wave?.Id,
                             Value("Name on Bib"), Value("Bib Number"), Value("Team"), status, payment, options);
-                        error = existing.Any(x => x.RunnerId == runner.Id) || !seen.Add(identity)
-                            ? "Duplicate registration." : await Validate(item, runner, input, null, ct);
+                        var newName = (first.ToUpperInvariant(), last.ToUpperInvariant());
+                        if (registered.Contains(runner.Id) || !seen.Add(runner.Id))
+                            error = "Duplicate registration. This runner is already registered for this event or appears earlier in the file.";
+                        else if (profile is null && (!newNames.Add(newName) || (email is not null && !newEmails.Add(email))))
+                            error = "Duplicate or ambiguous new runner in the CSV. Verify the rows and use distinct verified Runner IDs for different people.";
+                        else
+                            error = Validate(item, race, runner, input, null);
+
                         if (error is null)
                         {
                             entry = new Registration { EventId = item.Id, OrganizerId = item.OrganizerId, Runner = runner, RunnerId = runner.Id };
@@ -196,6 +212,36 @@ public sealed partial class RegistrationsController
             assigned++;
         }
         return plan;
+    }
+
+    private static (Runner? Profile, string? Error) ResolveProfile(
+        IReadOnlyList<Runner> profiles, string? runnerId, string first, string last, string? email)
+    {
+        bool SameName(Runner profile) => Same(profile.FirstName, first) && Same(profile.LastName, last);
+
+        if (runnerId is not null)
+        {
+            var selected = Guid.TryParse(runnerId, out var id) ? profiles.FirstOrDefault(x => x.Id == id) : null;
+            if (selected is null)
+                return (null, "Runner ID does not identify a profile in this organizer. Copy the ID from the verified runner profile.");
+            if (!SameName(selected) || (email is not null && !Same(selected.Email, email)))
+                return (null, "Name or email conflicts with the selected Runner ID. Verify the profile and correct the CSV.");
+            return (selected, null);
+        }
+
+        if (email is not null)
+        {
+            var matches = profiles.Where(x => Same(x.Email, email)).Take(2).ToArray();
+            if (matches.Length == 1 && SameName(matches[0]))
+                return (matches[0], null);
+            if (matches.Length > 0)
+                return (null, "Email matches an ambiguous or differently named profile. Verify the runner and use their Runner ID.");
+        }
+
+        if (profiles.Any(SameName))
+            return (null, "An existing profile has this name, but the email is missing or does not match. Verify the runner and use their Runner ID, or create a separate profile for a different person.");
+
+        return (null, null);
     }
 
     private static bool Same(string? a, string? b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
@@ -224,7 +270,7 @@ public sealed partial class RegistrationsController
 
     private string Actor() => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "";
     private static ITimeLimitedDataProtector Protector(IDataProtectionProvider protection) =>
-        protection.CreateProtector("RaceBib.Registration.Import.v1").ToTimeLimitedDataProtector();
+        protection.CreateProtector("RaceBib.Registration.Import.v2").ToTimeLimitedDataProtector();
 
     private string Fingerprint(byte[] bytes, string? mapping, string? assignment, IEnumerable<Registration> entries) =>
         Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new

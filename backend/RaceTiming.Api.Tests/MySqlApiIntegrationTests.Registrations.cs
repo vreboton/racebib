@@ -60,6 +60,8 @@ public sealed partial class MySqlApiIntegrationTests
             var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
             foreach (var item in await db.Events.Where(x => x.Id == eventId || x.Id == secondEventId).ToListAsync())
                 item.Status = EventStatus.Published;
+            // The public projection also falls back for legacy whitespace stored outside the API.
+            (await db.Registrations.SingleAsync(x => x.EventId == secondEventId)).BibDisplayName = "\t\u00A0";
             await db.SaveChangesAsync();
         }
         var participant = (await publicClient.GetFromJsonAsync<JsonElement>(publicPath))[0];
@@ -172,6 +174,159 @@ public sealed partial class MySqlApiIntegrationTests
         using var result2 = results[1];
         Assert.Single(results, response => response.StatusCode == HttpStatusCode.Created);
         Assert.Single(results, response => response.StatusCode == HttpStatusCode.Conflict);
+    }
+
+    [MySqlIntegrationFact]
+    [Trait("Category", "MySqlIntegration")]
+    public async Task CsvRequiresExplicitResolutionForHomonymsAndEmailConflicts()
+    {
+        await using var data = new MySqlTestData(Services);
+        var account = await data.CreateAccountAsync();
+        var organizerId = await data.CreateOrganizerAsync(account, OrganizerRole.RaceDirector);
+        var eventId = await data.CreateEventAsync(organizerId);
+        using var client = Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await LoginAsync(client, account));
+        await SeedRegistrationRace(client, eventId);
+        var profiles = $"/api/v1/organizers/{organizerId}/runners";
+        var path = $"/api/v1/events/{eventId}/registrations";
+        var withoutEmail = await CreatedId(await client.PostAsJsonAsync(profiles, new { firstName = "Lin", lastName = "Santos" }));
+
+        var missing = await PreviewRegistrationCsv(client, path, "First Name,Last Name,Race\nLin,Santos,10");
+        Assert.Contains("Runner ID", missing.GetProperty("errorCsv").GetString());
+        var unrelatedEmail = await PreviewRegistrationCsv(client, path,
+            "First Name,Last Name,Email,Race\nLin,Santos,unmatched@example.test,10");
+        Assert.Contains("email is missing or does not match", unrelatedEmail.GetProperty("errorCsv").GetString());
+
+        var withEmail = await CreatedId(await client.PostAsJsonAsync(profiles,
+            new { firstName = "Lin", lastName = "Santos", email = "lin-b@example.test" }));
+        var conflictingEmail = await PreviewRegistrationCsv(client, path,
+            "First Name,Last Name,Email,Race\nLian,Santos,lin-b@example.test,10");
+        Assert.Contains("differently named profile", conflictingEmail.GetProperty("errorCsv").GetString());
+        var conflictingId = await PreviewRegistrationCsv(client, path,
+            $"First Name,Last Name,Email,Runner ID,Race\nLin,Santos,lin-b@example.test,{withoutEmail},10");
+        Assert.Contains("conflicts with the selected Runner ID", conflictingId.GetProperty("errorCsv").GetString());
+
+        const string header = "First Name,Last Name,Email,Runner ID,Race\n";
+        var explicitRow = $"Lin,Santos,,{withoutEmail},10";
+        var verifiedRow = "Lin,Santos,lin-b@example.test,,10";
+        var repeated = await PreviewRegistrationCsv(client, path, header + verifiedRow + $"\nLin,Santos,,{withEmail},10");
+        Assert.Contains("Duplicate registration", repeated.GetProperty("errorCsv").GetString());
+        var file = header + explicitRow + "\n" + verifiedRow;
+        var preview = await PreviewRegistrationCsv(client, path, file);
+        Assert.True(preview.GetProperty("valid").GetBoolean());
+        using var form = ImportForm(file, token: preview.GetProperty("token").GetString());
+        using var imported = await client.PostAsync(path + "/import/confirm", form);
+        Assert.Equal(HttpStatusCode.OK, imported.StatusCode);
+        var registrations = (await client.GetFromJsonAsync<JsonElement>(path)).GetProperty("items");
+        Assert.Equal(new[] { withoutEmail, withEmail }.Order(),
+            registrations.EnumerateArray().Select(x => x.GetProperty("runnerId").GetGuid()).Order());
+        var reimport = await PreviewRegistrationCsv(client, path, file);
+        Assert.Contains("Duplicate registration", reimport.GetProperty("errorCsv").GetString());
+    }
+
+    [MySqlIntegrationFact]
+    [Trait("Category", "MySqlIntegration")]
+    public async Task CsvCategoryEligibilityUsesVerifiedProfileBirthdates()
+    {
+        await using var data = new MySqlTestData(Services);
+        var account = await data.CreateAccountAsync();
+        var organizerId = await data.CreateOrganizerAsync(account, OrganizerRole.RaceDirector);
+        var eventId = await data.CreateEventAsync(organizerId);
+        using var client = Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await LoginAsync(client, account));
+        var raceId = await SeedRegistrationRace(client, eventId);
+        var eventPath = $"/api/v1/events/{eventId}";
+        await CreatedId(await client.PostAsJsonAsync($"{eventPath}/races/{raceId}/categories",
+            new { name = "Masters", minimumAge = 40 }));
+        var path = eventPath + "/registrations";
+        var profiles = $"/api/v1/organizers/{organizerId}/runners";
+        var runnerId = await CreatedId(await client.PostAsJsonAsync(profiles,
+            new { firstName = "Alex", lastName = "Cruz", email = "alex@example.test", gender = "Original" }));
+        await CreatedId(await client.PostAsJsonAsync(profiles,
+            new { firstName = "Sam", lastName = "Cruz", email = "sam@example.test", birthdate = "2008-01-03" }));
+
+        const string header = "First Name,Last Name,Email,Birthdate,Gender,Race,Category\n";
+        const string withoutBirthdate = header + "Alex,Cruz,alex@example.test,,CSV value,10,Masters";
+        var missing = await PreviewRegistrationCsv(client, path, withoutBirthdate);
+        Assert.Contains("requires a birthdate on the runner profile", missing.GetProperty("errorCsv").GetString());
+        var backfill = await PreviewRegistrationCsv(client, path,
+            header + "Alex,Cruz,alex@example.test,1970-01-03,,10,Masters");
+        Assert.Contains("save the birthdate on the profile", backfill.GetProperty("errorCsv").GetString());
+        var underage = await PreviewRegistrationCsv(client, path, header + "Sam,Cruz,sam@example.test,,,10,Masters");
+        Assert.Contains("outside the category age limits", underage.GetProperty("errorCsv").GetString());
+
+        async Task SetBirthdate(string date)
+        {
+            using var updated = await client.PutAsJsonAsync($"{profiles}/{runnerId}", new
+            {
+                firstName = "Alex", lastName = "Cruz", email = "alex@example.test", birthdate = date, gender = "Original"
+            });
+            Assert.Equal(HttpStatusCode.OK, updated.StatusCode);
+        }
+
+        await SetBirthdate("1970-01-03");
+        var conflict = await PreviewRegistrationCsv(client, path, header + "Alex,Cruz,alex@example.test,1975-01-03,,10,Masters");
+        Assert.Contains("CSV birthdate differs", conflict.GetProperty("errorCsv").GetString());
+        var preview = await PreviewRegistrationCsv(client, path, withoutBirthdate);
+        Assert.True(preview.GetProperty("valid").GetBoolean());
+        await SetBirthdate("1971-01-03");
+        using var stale = ImportForm(withoutBirthdate, token: preview.GetProperty("token").GetString());
+        using var rejected = await client.PostAsync(path + "/import/confirm", stale);
+        Assert.Equal(HttpStatusCode.Conflict, rejected.StatusCode);
+        preview = await PreviewRegistrationCsv(client, path, withoutBirthdate);
+        using var form = ImportForm(withoutBirthdate, token: preview.GetProperty("token").GetString());
+        using var imported = await client.PostAsync(path + "/import/confirm", form);
+        Assert.Equal(HttpStatusCode.OK, imported.StatusCode);
+        var stored = await client.GetFromJsonAsync<JsonElement>($"{profiles}/{runnerId}");
+        Assert.Equal("1971-01-03", stored.GetProperty("birthdate").GetString());
+        Assert.Equal("Original", stored.GetProperty("gender").GetString());
+        var newRunner = await PreviewRegistrationCsv(client, path, header + "New,Runner,,1970-04-02,,10,Masters");
+        Assert.True(newRunner.GetProperty("valid").GetBoolean());
+    }
+
+    [MySqlIntegrationFact]
+    [Trait("Category", "MySqlIntegration")]
+    public async Task ConcurrentManualAndCsvRegistrationsKeepOneEventRunnerPair()
+    {
+        await using var data = new MySqlTestData(Services);
+        var account = await data.CreateAccountAsync();
+        var organizerId = await data.CreateOrganizerAsync(account, OrganizerRole.RaceDirector);
+        var eventId = await data.CreateEventAsync(organizerId);
+        using var client = Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await LoginAsync(client, account));
+        var raceId = await SeedRegistrationRace(client, eventId);
+        var profiles = $"/api/v1/organizers/{organizerId}/runners";
+        var path = $"/api/v1/events/{eventId}/registrations";
+        var runnerId = await CreatedId(await client.PostAsJsonAsync(profiles, new { firstName = "Dee", lastName = "Reyes" }));
+        var file = $"First Name,Last Name,Runner ID,Race\nDee,Reyes,{runnerId},10";
+        var previewA = await PreviewRegistrationCsv(client, path, file);
+        var previewB = await PreviewRegistrationCsv(client, path, file);
+        using var formA = ImportForm(file, token: previewA.GetProperty("token").GetString());
+        using var formB = ImportForm(file, token: previewB.GetProperty("token").GetString());
+        var responses = await Task.WhenAll(client.PostAsJsonAsync(path, new { raceId, runnerId }),
+            client.PostAsJsonAsync(path, new { raceId, runnerId }),
+            client.PostAsync(path + "/import/confirm", formA), client.PostAsync(path + "/import/confirm", formB));
+        try
+        {
+            Assert.Single(responses, x => x.IsSuccessStatusCode);
+            Assert.Equal(3, responses.Count(x => x.StatusCode == HttpStatusCode.Conflict));
+        }
+        finally
+        {
+            foreach (var response in responses) response.Dispose();
+        }
+
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+        Assert.Equal(1, await db.Registrations.CountAsync(x => x.EventId == eventId && x.RunnerId == runnerId));
+        db.Registrations.Add(new RaceTiming.Domain.Entities.Registration
+        {
+            EventId = eventId, OrganizerId = organizerId, RaceId = raceId, RunnerId = runnerId
+        });
+        var error = await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+        var duplicate = Assert.IsType<MySqlConnector.MySqlException>(error.InnerException);
+        Assert.Equal(1062, duplicate.Number);
+        Assert.Contains("UX_Registrations_Event_Runner_Slot", duplicate.Message);
     }
 
     private async Task<Guid> SeedRegistrationRace(HttpClient client, Guid eventId)

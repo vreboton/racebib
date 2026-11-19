@@ -606,6 +606,11 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("EventId")
                         .HasColumnType("char(36)");
 
+                    b.Property<bool?>("EventRunnerUniquenessSlot")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("tinyint(1)")
+                        .HasDefaultValue(true);
+
                     b.Property<Guid>("OrganizerId")
                         .HasColumnType("char(36)");
 
@@ -642,8 +647,6 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("EventId", "OrganizerId");
 
-                    b.HasIndex("EventId", "RunnerId");
-
                     b.HasIndex("RaceCategoryId", "RaceId");
 
                     b.HasIndex("RaceId", "EventId");
@@ -652,7 +655,14 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("StartWaveId", "RaceId");
 
-                    b.ToTable("Registrations");
+                    b.HasIndex("EventId", "RunnerId", "EventRunnerUniquenessSlot")
+                        .IsUnique()
+                        .HasDatabaseName("UX_Registrations_Event_Runner_Slot");
+
+                    b.ToTable("Registrations", t =>
+                        {
+                            t.HasCheckConstraint("CK_Registrations_EventRunnerSlot", "EventRunnerUniquenessSlot IS NULL OR EventRunnerUniquenessSlot = 1");
+                        });
                 });
 
             modelBuilder.Entity("RaceTiming.Domain.Entities.Runner", b =>
