@@ -592,8 +592,11 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("char(36)");
 
+                    b.Property<string>("BibDisplayName")
+                        .HasMaxLength(120)
+                        .HasColumnType("varchar(120)");
+
                     b.Property<string>("BibNumber")
-                        .IsRequired()
                         .HasMaxLength(32)
                         .HasColumnType("varchar(32)");
 
@@ -605,6 +608,11 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
 
                     b.Property<Guid>("OrganizerId")
                         .HasColumnType("char(36)");
+
+                    b.Property<string>("PaymentStatus")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("varchar(24)");
 
                     b.Property<Guid?>("RaceCategoryId")
                         .HasColumnType("char(36)");
@@ -623,12 +631,18 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("StartWaveId")
                         .HasColumnType("char(36)");
 
+                    b.Property<string>("Team")
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
                     b.HasKey("Id");
 
                     b.HasIndex("EventId", "BibNumber")
                         .IsUnique();
 
                     b.HasIndex("EventId", "OrganizerId");
+
+                    b.HasIndex("EventId", "RunnerId");
 
                     b.HasIndex("RaceCategoryId", "RaceId");
 
@@ -647,6 +661,9 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("char(36)");
 
+                    b.Property<DateOnly?>("Birthdate")
+                        .HasColumnType("date");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime(6)");
 
@@ -654,15 +671,27 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                         .HasMaxLength(254)
                         .HasColumnType("varchar(254)");
 
+                    b.Property<string>("EmergencyContact")
+                        .HasMaxLength(250)
+                        .HasColumnType("varchar(250)");
+
                     b.Property<string>("FirstName")
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("varchar(100)");
 
+                    b.Property<string>("Gender")
+                        .HasMaxLength(40)
+                        .HasColumnType("varchar(40)");
+
                     b.Property<string>("LastName")
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("varchar(100)");
+
+                    b.Property<string>("MobileNumber")
+                        .HasMaxLength(40)
+                        .HasColumnType("varchar(40)");
 
                     b.Property<Guid>("OrganizerId")
                         .HasColumnType("char(36)");

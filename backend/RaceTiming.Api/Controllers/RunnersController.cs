@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using RaceTiming.Domain.Entities;
 using RaceTiming.Api.Authorization;
+using RaceTiming.Api.Services;
 using RaceTiming.Infrastructure.Persistence;
 
 namespace RaceTiming.Api.Controllers;
@@ -13,19 +14,21 @@ namespace RaceTiming.Api.Controllers;
 [Route("api/v1/organizers/{organizerId:guid}/runners")]
 public sealed class RunnersController(
     RaceTimingDbContext db,
-    IOrganizerMembershipAuthorization organizerAuthorization) : ControllerBase
+    IOrganizerMembershipAuthorization organizerAuthorization, IAuditLogger? audit = null) : ControllerBase
 {
     public sealed record CreateRunnerRequest(
-        string FirstName, string LastName, string? PublicDisplayName, string? Email);
+        string FirstName, string LastName, string? PublicDisplayName, string? Email, DateOnly? Birthdate = null, string? Gender = null,
+        string? MobileNumber = null, string? EmergencyContact = null);
 
     public sealed record UpdateRunnerRequest(
-        string FirstName, string LastName, string? PublicDisplayName, string? Email);
+        string FirstName, string LastName, string? PublicDisplayName, string? Email, DateOnly? Birthdate = null, string? Gender = null,
+        string? MobileNumber = null, string? EmergencyContact = null);
 
     [HttpGet]
     public async Task<IActionResult> List(Guid organizerId, [FromQuery] string? search = null,
         [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default)
     {
-        if (!await organizerAuthorization.CanAccessAsync(User, organizerId, false, ct)) return Forbid();
+        if (!await organizerAuthorization.CanAccessAsync(User, organizerId, true, ct)) return Forbid();
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
         var query = db.Runners.AsNoTracking().Where(x => x.OrganizerId == organizerId);
@@ -41,7 +44,7 @@ public sealed class RunnersController(
         var total = await query.CountAsync(ct);
         var items = await query.OrderBy(x => x.LastName).ThenBy(x => x.FirstName)
             .Skip((page - 1) * pageSize).Take(pageSize)
-            .Select(x => new { x.Id, x.FirstName, x.LastName, x.PublicDisplayName, x.Email, x.CreatedAt })
+            .Select(x => new { x.Id, x.FirstName, x.LastName, x.PublicDisplayName, x.Email, x.CreatedAt, x.Birthdate, x.Gender, x.MobileNumber, x.EmergencyContact })
             .ToListAsync(ct);
 
         return Ok(new { items, page, pageSize, total, totalPages = (int)Math.Ceiling(total / (double)pageSize) });
@@ -50,10 +53,10 @@ public sealed class RunnersController(
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid organizerId, Guid id, CancellationToken ct)
     {
-        if (!await organizerAuthorization.CanAccessAsync(User, organizerId, false, ct)) return Forbid();
+        if (!await organizerAuthorization.CanAccessAsync(User, organizerId, true, ct)) return Forbid();
         var runner = await db.Runners.AsNoTracking()
             .Where(x => x.OrganizerId == organizerId && x.Id == id)
-            .Select(x => new { x.Id, x.FirstName, x.LastName, x.PublicDisplayName, x.Email, x.CreatedAt })
+            .Select(x => new { x.Id, x.FirstName, x.LastName, x.PublicDisplayName, x.Email, x.CreatedAt, x.Birthdate, x.Gender, x.MobileNumber, x.EmergencyContact })
             .FirstOrDefaultAsync(ct);
         return runner is null ? NotFound() : Ok(runner);
     }
@@ -64,6 +67,9 @@ public sealed class RunnersController(
         if (!await organizerAuthorization.CanAccessAsync(User, organizerId, true, ct)) return Forbid();
         var validation = Validate(request.FirstName, request.LastName, request.Email);
         if (validation is not null) return BadRequest(validation);
+        if (request.Birthdate > DateOnly.FromDateTime(DateTime.UtcNow) || request.Gender?.Trim().Length > 40
+            || request.MobileNumber?.Trim().Length > 40 || request.EmergencyContact?.Trim().Length > 250)
+            return BadRequest("Check the birthdate and contact field lengths.");
 
         var runner = new Runner
         {
@@ -71,9 +77,12 @@ public sealed class RunnersController(
             FirstName = request.FirstName.Trim(),
             LastName = request.LastName.Trim(),
             PublicDisplayName = NormalizeOptional(request.PublicDisplayName),
-            Email = NormalizeEmail(request.Email)
+            Email = NormalizeEmail(request.Email),
+            Birthdate = request.Birthdate, Gender = NormalizeOptional(request.Gender),
+            MobileNumber = NormalizeOptional(request.MobileNumber), EmergencyContact = NormalizeOptional(request.EmergencyContact)
         };
         db.Runners.Add(runner);
+        audit?.Record(User, "Runner.Created", "Runner", runner.Id.ToString(), organizerId);
         await db.SaveChangesAsync(ct);
         return CreatedAtAction(nameof(Get), new { organizerId, id = runner.Id }, ToDto(runner));
     }
@@ -84,6 +93,9 @@ public sealed class RunnersController(
         if (!await organizerAuthorization.CanAccessAsync(User, organizerId, true, ct)) return Forbid();
         var validation = Validate(request.FirstName, request.LastName, request.Email);
         if (validation is not null) return BadRequest(validation);
+        if (request.Birthdate > DateOnly.FromDateTime(DateTime.UtcNow) || request.Gender?.Trim().Length > 40
+            || request.MobileNumber?.Trim().Length > 40 || request.EmergencyContact?.Trim().Length > 250)
+            return BadRequest("Check the birthdate and contact field lengths.");
 
         var runner = await db.Runners.FirstOrDefaultAsync(
             x => x.OrganizerId == organizerId && x.Id == id, ct);
@@ -93,6 +105,11 @@ public sealed class RunnersController(
         runner.LastName = request.LastName.Trim();
         runner.PublicDisplayName = NormalizeOptional(request.PublicDisplayName);
         runner.Email = NormalizeEmail(request.Email);
+        runner.Birthdate = request.Birthdate;
+        runner.Gender = NormalizeOptional(request.Gender);
+        runner.MobileNumber = NormalizeOptional(request.MobileNumber);
+        runner.EmergencyContact = NormalizeOptional(request.EmergencyContact);
+        audit?.Record(User, "Runner.Updated", "Runner", runner.Id.ToString(), organizerId);
         await db.SaveChangesAsync(ct);
         return Ok(ToDto(runner));
     }
@@ -117,6 +134,6 @@ public sealed class RunnersController(
     private static object ToDto(Runner runner) => new
     {
         runner.Id, runner.OrganizerId, runner.FirstName, runner.LastName,
-        runner.PublicDisplayName, runner.Email, runner.CreatedAt
+        runner.PublicDisplayName, runner.Email, runner.CreatedAt, runner.Birthdate, runner.Gender, runner.MobileNumber, runner.EmergencyContact
     };
 }
