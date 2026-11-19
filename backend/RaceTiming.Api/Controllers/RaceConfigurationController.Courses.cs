@@ -58,12 +58,21 @@ public sealed partial class RaceConfigurationController
             if ((courseId is null || course.Name != name) && await db.Courses.AnyAsync(x =>
                 x.EventId == eventId && x.Id != course.Id && x.Name == name, ct))
                 return ConflictProblem("A course with this name already exists in the event.");
-            if (course.Checkpoints.Any(x => x.DistanceFromStartKm > input.DistanceKm ||
-                (x.IsFinish && x.DistanceFromStartKm != input.DistanceKm)))
-                return Invalid("Update finish and checkpoint distances together with the course distance.");
-            if (races.Count > 0 &&
-                ValidateRoute(input.DistanceKm, course.Checkpoints.OrderBy(x => x.Sequence).Select(CheckpointValue).ToArray(), true) is not null)
-                return Invalid("An assigned course needs a valid Start, Finish, and checkpoint layout. Edit the checkpoints to correct the route.");
+            var distanceChanged = course.DistanceKm != input.DistanceKm;
+            if (distanceChanged || races.Count > 0)
+            {
+                var route = course.Checkpoints.OrderBy(x => x.Sequence).Select(CheckpointValue)
+                    .Select(x => distanceChanged && x.IsFinish ? x with { DistanceFromStartKm = input.DistanceKm } : x)
+                    .ToArray();
+                if (ValidateRoute(input.DistanceKm, route, races.Count > 0) is { } error)
+                    return Invalid(error);
+            }
+
+            if (distanceChanged)
+            {
+                foreach (var finish in course.Checkpoints.Where(x => x.IsFinish))
+                    finish.DistanceFromStartKm = input.DistanceKm;
+            }
             course.Name = name;
             course.Description = input.Description?.Trim();
             SetCourseDistance(course, races, input.DistanceKm);
@@ -237,6 +246,8 @@ public sealed partial class RaceConfigurationController
             return "Put Start first and set its distance to 0 km.";
         if (points.Any(x => x.IsFinish && (x.Sequence != points.Length || x.DistanceFromStartKm != distance)))
             return FormattableString.Invariant($"Put Finish last and set its distance to the course distance ({distance:0.###} km).");
+        if (points.Any(x => !x.IsStart && !x.IsFinish && x.DistanceFromStartKm > distance))
+            return "The course distance cannot be shorter than an intermediate checkpoint's distance from start.";
         for (var i = 0; i < points.Length; i++)
         {
             var point = points[i];

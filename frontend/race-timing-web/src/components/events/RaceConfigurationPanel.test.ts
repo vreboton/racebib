@@ -137,6 +137,50 @@ describe('race configuration actions', () => {
     wrapper.unmount()
   })
 
+  it.each([12, 8])('edits distance directly on a course with a Finish checkpoint (%s km)', async distance => {
+    const finish = {
+      id: 'finish-1', name: 'Finish', code: 'F', sequence: 1, distanceFromStartKm: 10, isFinish: true,
+      isStart: false, elevationMeters: null, isMandatory: true, hasCutoff: false, cutoffDurationSeconds: null,
+      description: null,
+    }
+    const attached = { ...configuration(), courses: [{ ...course, checkpoints: [finish] }] }
+    vi.mocked(loadConfiguration).mockResolvedValueOnce(attached).mockResolvedValueOnce({
+      ...attached,
+      courses: [{ ...course, distanceKm: distance, checkpoints: [{ ...finish, distanceFromStartKm: distance }] }],
+      races: attached.races.map(race => ({ ...race, distanceKm: distance })),
+    })
+    const { wrapper, button } = await mountPanel()
+    await button('Edit course')!.trigger('click')
+    const field = wrapper.get('input[aria-label="Distance (km)"]')
+    expect(field.attributes('readonly')).toBeUndefined()
+    await field.setValue(String(distance))
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(saveConfiguration).toHaveBeenCalledWith('event-1', 'courses/course-1', 'put',
+      { name: 'Summit', description: 'Trail route', distanceKm: distance, elevationGainMeters: 800 })
+    expect(wrapper.text()).toContain(`Finish (F) · ${distance} km`)
+    wrapper.unmount()
+  })
+
+  it('shows an invalid route reduction and keeps the distance field available for correction', async () => {
+    vi.mocked(loadConfiguration).mockResolvedValueOnce({ ...configuration(), courses: [course] })
+    vi.mocked(saveConfiguration).mockRejectedValueOnce({
+      response: { status: 400, data: { title: "The course distance cannot be shorter than an intermediate checkpoint's distance from start." } },
+    })
+    const { wrapper, button } = await mountPanel()
+    await button('Edit course')!.trigger('click')
+    const field = wrapper.get('input[aria-label="Distance (km)"]')
+    await field.setValue('4')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('shorter than an intermediate checkpoint')
+    expect((field.element as HTMLInputElement).value).toBe('4')
+    expect(loadConfiguration).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
   it('saves an attached course distance together with the updated Finish checkpoint', async () => {
     const finish = {
       id: 'finish-1', name: 'Finish', code: 'F', sequence: 2, distanceFromStartKm: 10, isFinish: true,

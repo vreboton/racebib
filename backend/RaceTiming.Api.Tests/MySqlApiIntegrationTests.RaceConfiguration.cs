@@ -384,8 +384,8 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.False(Course(await Configuration(), courseId).GetProperty("immutable").GetBoolean());
         using var edited = await client.PutAsJsonAsync(coursePath, metadata with { name = "Summit trail" });
         Assert.Equal(HttpStatusCode.OK, edited.StatusCode);
-        using var mismatchedDistance = await client.PutAsJsonAsync(coursePath, metadata with { name = "Summit trail", distanceKm = 12 });
-        Assert.Equal(HttpStatusCode.BadRequest, mismatchedDistance.StatusCode);
+        using var tooShort = await client.PutAsJsonAsync(coursePath, metadata with { name = "Summit trail", distanceKm = 4 });
+        Assert.Equal(HttpStatusCode.BadRequest, tooShort.StatusCode);
         var ids = original.GetProperty("checkpoints").EnumerateArray().Select(x => x.GetProperty("id").GetGuid()).ToArray();
         var updates = points.Select((p, index) => p with { id = ids[index] }).ToArray();
         updates[1] = updates[1] with { sequence = 3, name = "Water stop" };
@@ -606,6 +606,90 @@ public sealed partial class MySqlApiIntegrationTests
             Assert.Equal("Finish gate", after.GetProperty("checkpoints")[1].GetProperty("name").GetString());
             Assert.Equal(ids[1], after.GetProperty("checkpoints")[1].GetProperty("id").GetGuid());
         }
+    }
+
+    [MySqlIntegrationFact]
+    [Trait("Category", "MySqlIntegration")]
+    public async Task DirectDistanceEditUpdatesOnlyFinishAndAllReferencingRaces()
+    {
+        await using var data = new MySqlTestData(Services);
+        var account = await data.CreateAccountAsync();
+        var organizerId = await data.CreateOrganizerAsync(account, OrganizerRole.RaceDirector);
+        var eventId = await data.CreateEventAsync(organizerId);
+        using var client = Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await LoginAsync(client, account));
+        var path = $"/api/v1/events/{eventId}";
+        var courseInput = new { name = "Distance Course", distanceKm = 10, description = "Original" };
+        var courseId = await CreatedId(await client.PostAsJsonAsync(path + "/courses", courseInput));
+        var coursePath = $"{path}/courses/{courseId}";
+        var points = new[]
+        {
+            new { name = "Start", code = "S", sequence = 1, distanceFromStartKm = 0, isStart = true, isFinish = false,
+                elevationMeters = 120, isMandatory = true, description = "Check in" },
+            new { name = "Aid", code = "A", sequence = 2, distanceFromStartKm = 6, isStart = false, isFinish = false,
+                elevationMeters = 500, isMandatory = false, description = "Water" },
+            new { name = "Finish", code = "F", sequence = 3, distanceFromStartKm = 10, isStart = false, isFinish = true,
+                elevationMeters = 140, isMandatory = true, description = "Finish gate" }
+        };
+        using var checkpoints = await client.PutAsJsonAsync(coursePath + "/checkpoints", new { distanceKm = 10, checkpoints = points });
+        Assert.Equal(HttpStatusCode.NoContent, checkpoints.StatusCode);
+
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+        var evt = await db.Events.SingleAsync(x => x.Id == eventId);
+        var startAt = evt.StartDate.AddMinutes(5).ToString("yyyy-MM-ddTHH:mm:ss") + "Z";
+        var first = await CreatedId(await client.PostAsJsonAsync(path + "/races", new { name = "First", courseId, startAt }));
+        var second = await CreatedId(await client.PostAsJsonAsync(path + "/races", new { name = "Second", courseId, startAt }));
+        using var inactiveRace = await client.DeleteAsync($"{path}/races/{second}");
+        Assert.Equal(HttpStatusCode.NoContent, inactiveRace.StatusCode);
+
+        async Task<JsonElement> ReadConfiguration() => await client.GetFromJsonAsync<JsonElement>(path + "/configuration");
+        var initial = (await ReadConfiguration()).GetProperty("courses")[0].GetProperty("checkpoints");
+        foreach (var distance in new[] { 12, 8 })
+        {
+            using var updated = await client.PutAsJsonAsync(coursePath, courseInput with { distanceKm = distance });
+            Assert.Equal(HttpStatusCode.OK, updated.StatusCode);
+            var config = await ReadConfiguration();
+            var course = config.GetProperty("courses")[0];
+            var savedPoints = course.GetProperty("checkpoints");
+            Assert.Equal((decimal)distance, course.GetProperty("distanceKm").GetDecimal());
+            Assert.Equal((decimal)distance, savedPoints[2].GetProperty("distanceFromStartKm").GetDecimal());
+            for (var i = 0; i < initial.GetArrayLength(); i++)
+            {
+                foreach (var field in initial[i].EnumerateObject())
+                {
+                    if (i == 2 && field.Name == "distanceFromStartKm") continue;
+                    Assert.Equal(field.Value.GetRawText(), savedPoints[i].GetProperty(field.Name).GetRawText());
+                }
+            }
+            var races = config.GetProperty("races");
+            Assert.Equal(2, races.GetArrayLength());
+            Assert.All(races.EnumerateArray(), race => Assert.Equal((decimal)distance, race.GetProperty("distanceKm").GetDecimal()));
+        }
+
+        var before = await ReadConfiguration();
+        using var invalid = await client.PutAsJsonAsync(coursePath, courseInput with { distanceKm = 5, description = "Must roll back" });
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+        Assert.Contains("intermediate checkpoint", (await invalid.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("title").GetString());
+        Assert.Equal(before.GetRawText(), (await ReadConfiguration()).GetRawText());
+
+        db.Registrations.Add(new Registration
+        {
+            EventId = eventId, OrganizerId = organizerId, RaceId = second, BibNumber = "123",
+            RegistrationStatus = RegistrationStatus.Cancelled,
+            Runner = new Runner { OrganizerId = organizerId, FirstName = "Synthetic", LastName = "Runner" }
+        });
+        await db.SaveChangesAsync();
+        var locked = await ReadConfiguration();
+        using var withCancelledRegistration = await client.PutAsJsonAsync(coursePath, courseInput with { distanceKm = 11 });
+        Assert.Equal(HttpStatusCode.Conflict, withCancelledRegistration.StatusCode);
+        Assert.Equal(locked.GetRawText(), (await ReadConfiguration()).GetRawText());
+
+        evt.Status = EventStatus.RegistrationClosed;
+        await db.SaveChangesAsync();
+        using var ready = await client.PatchAsJsonAsync(path + "/status", new { status = "Ready" });
+        Assert.Equal(HttpStatusCode.OK, ready.StatusCode);
+        Assert.Equal(first, (await client.GetFromJsonAsync<JsonElement>($"{path}/races/{first}")).GetProperty("id").GetGuid());
     }
 
     private static async Task<Guid> CreatedId(HttpResponseMessage response)
