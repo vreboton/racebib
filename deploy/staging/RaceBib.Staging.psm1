@@ -34,6 +34,135 @@ function New-StageDirectory([string]$Path) {
     $probe=Join-Path $Path 'local-staging-marker'
     [IO.File]::WriteAllText($probe,'staging-only'); Protect-StageFile $probe
     [void](& $script:Core { param($p) Assert-RaceBibPrivateFile $p } $probe)
+    $lock=Join-Path $Path 'execution.lock'
+    [IO.File]::WriteAllText($lock,'racebib-stage-execution-lock-v1'); Protect-StageFile $lock
+}
+
+function Assert-StageUnusedRun($Run,[string]$Directory) {
+    if ($Run -isnot [Collections.IDictionary] -or $Run.run_id -cnotmatch '\A[0-9a-f]{32}\z') { throw 'Invalid execution run identity.' }
+    foreach ($field in @('creation_submitted','stack_id','execution_id','target','inventory','attachments')) {
+        if ($Run.ContainsKey($field)) { throw 'Execute is single-use; this run already has execution state. No preflight or teardown permitted.' }
+    }
+    foreach ($name in @('execution.json','creation-attempt.json','acceptance.json','cleanup.json')) {
+        if (Test-Path -LiteralPath (Join-Path $Directory $name)) { throw 'Execute authorization already consumed; use a fresh plan.' }
+    }
+}
+
+function Enter-StageExecutionLock([string]$Directory,$Run) {
+    Assert-StageUnusedRun $Run $Directory
+    $path=Join-Path $Directory 'execution.lock'
+    [void](& $script:Core { param($p) Assert-RaceBibPrivateFile $p } $path)
+    try { $lock=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None) }
+    catch { throw 'Another Execute owns this run, or its lock is unavailable; no preflight or teardown permitted.' }
+    try {
+        # Re-read under the cross-process lock; a prior invocation may have finished since the first read.
+        $latest=Get-Content -Raw (Join-Path $Directory 'run.json')|ConvertFrom-Json -AsHashtable
+        Assert-StageUnusedRun $latest $Directory
+        if ($latest.run_id -cne $Run.run_id) { throw 'Run identity changed before execution.' }
+        return $lock
+    } catch { $lock.Dispose(); throw }
+}
+
+function New-StageExecutionClaim([string]$Directory,[string]$RunId) {
+    $id=[guid]::NewGuid().ToString('N')
+    $path=Join-Path $Directory 'execution.json'
+    $stream=[IO.File]::Open($path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    try {
+        $bytes=[Text.Encoding]::UTF8.GetBytes((@{format=1;run_id=$RunId;execution_id=$id}|ConvertTo-Json -Compress))
+        $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true)
+    } finally { $stream.Dispose() }
+    Protect-StageFile $path
+    return $id
+}
+
+function Format-StageInfrastructureFailure([string]$Json,[string]$Action,[int]$ExitCode) {
+    # Read only an exact typed envelope. Never echo arbitrary stdout/stderr/exception messages.
+    try {
+        if ($Json.Length -gt 4096) { throw 'Oversized diagnostic.' }
+        $fields=@('protocol','action','category','service','operation','waiter','exit_code','aws_error_code','exception_type','phase','line')
+        $value=& $script:Core { param($j,$f) ConvertFrom-RaceBibEvidenceJson $j $f } $Json $fields
+        if ($value.protocol -cne 'racebib-stage-error-v1' -or $value.action -cne $Action -or
+            $Action -cnotin @('plan','create','inspect','trust','destroy','cleanup') -or
+            $value.category -cnotin @('controller','aws-cli','aws-timeout','aws-start','aws-json','aws-encoding','aws-response') -or
+            $value.service -cnotin @('none','ec2','sts','cloudformation') -or
+            $value.operation -cnotin @('none','get-caller-identity','describe-images','create-stack','describe-stacks','get-template',
+                'list-stack-resources','describe-stack-events','describe-vpcs','describe-subnets','describe-security-groups',
+                'describe-route-tables','describe-internet-gateways','describe-volumes','describe-network-interfaces',
+                'describe-instances','get-console-output','delete-stack','wait','describe-addresses','describe-nat-gateways','describe-snapshots') -or
+            $value.waiter -cnotin @('none','stack-create-complete','stack-delete-complete') -or
+            $value.aws_error_code -cnotin @('none','unknown','AccessDenied','AccessDeniedException','UnauthorizedOperation','ExpiredToken',
+                'ExpiredTokenException','InvalidClientTokenId','RequestExpired','ValidationError','InvalidParameterValue','Throttling',
+                'ThrottlingException','RequestLimitExceeded','InvalidInstanceID.NotFound','InvalidNetworkInterfaceID.NotFound','InvalidVolume.NotFound') -or
+            $value.exception_type -cnotin @('unknown','InfrastructureFailure','RuntimeError','KeyError','TypeError','ValueError',
+                'AttributeError','JSONDecodeError','OSError','FileNotFoundError','PermissionError','NotReady') -or
+            $value.phase -cnotin @('main','aws','validate_record','account_guard','create','destroy','cleanup','save','stack_guard',
+                'validate_resources','inspect','trust','ownership','unprotected','observed_stack') -or
+            $value.line -cnotmatch '\A[0-9]{1,7}\z' -or $value.exit_code -cnotmatch '\A(?:none|-?[0-9]{1,10})\z') { throw 'Unrecognized diagnostic.' }
+        if ($ExitCode -notin @(1,2) -or $value.line -cnotmatch '\A[1-9][0-9]{0,6}\z') { throw 'Invalid native failure status/location.' }
+        if ($value.category -ceq 'controller') {
+            if ($value.service -cne 'none' -or $value.operation -cne 'none' -or $value.waiter -cne 'none' -or
+                $value.exit_code -cne 'none' -or $value.aws_error_code -cne 'none' -or
+                $value.exception_type -ceq 'InfrastructureFailure') { throw 'Controller diagnostic contains AWS metadata.' }
+            if ($value.exception_type -ceq 'NotReady') {
+                if ($Action -cne 'trust' -or $ExitCode -ne 2 -or $value.phase -cne 'trust') { throw 'Invalid readiness diagnostic.' }
+            } elseif ($ExitCode -ne 1) { throw 'Unexpected controller exit status.' }
+        } else {
+            if ($ExitCode -ne 1 -or $value.exception_type -cne 'InfrastructureFailure' -or $value.service -ceq 'none' -or
+                $value.operation -ceq 'none') { throw 'Incomplete AWS failure diagnostic.' }
+            if ($Action -ceq 'plan' -or ($value.operation -ceq 'create-stack' -and $Action -cne 'create') -or
+                ($value.operation -ceq 'delete-stack' -and $Action -cne 'destroy')) { throw 'Mutation/action mismatch.' }
+            $cloudFormation=@('create-stack','describe-stacks','get-template','list-stack-resources','describe-stack-events','delete-stack','wait')
+            if (($value.service -ceq 'sts' -and $value.operation -cne 'get-caller-identity') -or
+                ($value.service -ceq 'cloudformation' -and $value.operation -cnotin $cloudFormation) -or
+                ($value.service -ceq 'ec2' -and ($value.operation -cin $cloudFormation -or $value.operation -ceq 'get-caller-identity'))) {
+                throw 'Service and operation disagree.'
+            }
+            if ($value.operation -ceq 'wait') {
+                if ($value.service -cne 'cloudformation' -or $value.waiter -ceq 'none') { throw 'Missing waiter identity.' }
+                if (-not (($Action -ceq 'create' -and $value.waiter -ceq 'stack-create-complete') -or
+                          ($Action -ceq 'destroy' -and $value.waiter -ceq 'stack-delete-complete'))) { throw 'Waiter/action mismatch.' }
+            } elseif ($value.waiter -cne 'none') { throw 'Waiter attached to a non-wait operation.' }
+            switch -CaseSensitive ($value.category) {
+                'aws-cli' {
+                    if ($value.exit_code -cnotmatch '\A-?[1-9][0-9]{0,9}\z' -or $value.aws_error_code -ceq 'none' -or $value.phase -cne 'aws') { throw 'Contradictory CLI failure.' }
+                }
+                { $_ -cin @('aws-json','aws-response') } {
+                    $expectedPhase=if ($value.category -ceq 'aws-response') { 'cleanup' } else { 'aws' }
+                    if ($value.exit_code -cne '0' -or $value.aws_error_code -cne 'none' -or $value.phase -cne $expectedPhase) { throw 'Contradictory response failure.' }
+                    if ($value.category -ceq 'aws-response' -and $Action -cne 'cleanup') { throw 'Response/action mismatch.' }
+                }
+                default {
+                    if ($value.exit_code -cne 'none' -or $value.aws_error_code -cne 'none' -or $value.phase -cne 'aws') { throw 'Unobserved process exit contains result metadata.' }
+                }
+            }
+        }
+        return "action=$Action; native_exit=$ExitCode; phase=$($value.phase); line=$($value.line); category=$($value.category); service=$($value.service); operation=$($value.operation); waiter=$($value.waiter); aws_exit=$($value.exit_code); aws_code=$($value.aws_error_code); exception=$($value.exception_type)"
+    } catch { return "action=$Action; native_exit=$ExitCode; sanitized diagnostic unavailable; raw output withheld" }
+}
+
+function Get-StageFailureSummary($Failure,[string]$Phase) {
+    if ($Failure.Data.Contains('RaceBibStageSafeSummary')) { return $Failure.Data['RaceBibStageSafeSummary'] }
+    return "phase=$Phase; controller failure; raw exception withheld"
+}
+
+function Complete-StageTeardown($Settings,[string]$Directory,[string]$RunId,[string]$ExecutionId) {
+    $failures=[Collections.Generic.List[Exception]]::new()
+    try { $latest=Get-Content -Raw (Join-Path $Directory 'run.json')|ConvertFrom-Json -AsHashtable }
+    catch { throw 'Teardown outcome unconfirmed: run state unreadable; no AWS action attempted.' }
+    if ($latest.ContainsKey('creation_submitted') -and $latest.creation_submitted) {
+        if ($ExecutionId -cnotmatch '\A[0-9a-f]{32}\z' -or $latest.run_id -cne $RunId -or
+            -not $latest.ContainsKey('execution_id') -or $latest.execution_id -cne $ExecutionId) {
+            throw 'Teardown rejected: creation does not belong to the current accepted Execute invocation.'
+        }
+        try { [void](Invoke-StageInfra $Settings 'destroy' $Directory) }
+        catch { $failures.Add([InvalidOperationException]::new((Get-StageFailureSummary $_.Exception 'destroy'))) }
+        # Verification is read-only and must still run when guarded deletion/waiting fails.
+        try {
+            $clean=Invoke-StageInfra $Settings 'cleanup' $Directory
+            $clean|ConvertTo-Json|Set-Content (Join-Path $Directory 'cleanup.json'); Protect-StageFile (Join-Path $Directory 'cleanup.json')
+        } catch { $failures.Add([InvalidOperationException]::new((Get-StageFailureSummary $_.Exception 'cleanup'))) }
+    }
+    if ($failures.Count) { throw [AggregateException]::new('Staging teardown failed; deletion and verification outcomes retained.', $failures) }
 }
 
 function Invoke-StageInfra($Settings,[string]$Action,[string]$Directory,[string[]]$Extra=@()) {
@@ -44,9 +173,16 @@ function Invoke-StageInfra($Settings,[string]$Action,[string]$Directory,[string[
         $arguments+=@('--aws-cli',$awsPath)
     }
     $result=& $script:Core { param($p,$a) Invoke-RaceBibNative -Executable $p -Arguments $a -TimeoutSeconds 1500 } $Settings.PythonPath $arguments
-    if ($Action -eq 'trust' -and $result.ExitCode -eq 2) { return $null }
-    if ($result.ExitCode -ne 0) { throw "Staging infrastructure action failed: $Action. Inspect only this run's stack/state before retrying." }
-    foreach ($file in @(Get-ChildItem -LiteralPath $Directory -File)) { Protect-StageFile $file.FullName }
+    if ($result.ExitCode -ne 0) {
+        $summary=Format-StageInfrastructureFailure $result.Stdout $Action $result.ExitCode
+        if ($Action -eq 'trust' -and $result.ExitCode -eq 2 -and -not $summary.Contains('sanitized diagnostic unavailable')) { return $null }
+        $failure=[InvalidOperationException]::new("Staging infrastructure action failed: $summary")
+        $failure.Data['RaceBibStageSafeSummary']=$summary
+        throw $failure
+    }
+    if ($Action -ne 'cleanup') {
+        foreach ($file in @(Get-ChildItem -LiteralPath $Directory -File)) { Protect-StageFile $file.FullName }
+    }
     return ($result.Stdout | ConvertFrom-Json -AsHashtable)
 }
 
@@ -225,6 +361,8 @@ function Invoke-RaceBibStagingRehearsal {
     if ($Action -eq 'Destroy') { [void](Invoke-StageInfra $settings 'destroy' $RunDirectory); return (Invoke-StageInfra $settings 'cleanup' $RunDirectory) }
     if ($Action -eq 'VerifyCleanup') { return (Invoke-StageInfra $settings 'cleanup' $RunDirectory) }
     if ($Action -ne 'Execute') { throw 'Unknown staging action.' }
+    $executionLock=Enter-StageExecutionLock $RunDirectory $run
+    try {
     if ($run.estimate_usd -gt $settings.CostCeilingUsd) { throw 'Estimated cost exceeds the reviewed ceiling.' }
     # Fresh staging-only read tokens are never written to Terraform/CF/local state.
     if (-not $env:RACEBIB_STAGING_GH_TOKEN -or -not $env:RACEBIB_STAGING_GHCR_TOKEN -or -not $env:RACEBIB_STAGING_GHCR_USERNAME) { throw 'Supply staging-only read credentials in this process environment.' }
@@ -240,10 +378,12 @@ function Invoke-RaceBibStagingRehearsal {
     } finally { $env:GH_TOKEN=$old.GH_TOKEN; $env:GHCR_TOKEN=$old.GHCR_TOKEN; $env:GHCR_USERNAME=$old.GHCR_USERNAME }
     Write-Host ('Temporary isolated stack '+$run.stack_name+'; estimate USD '+$run.estimate_usd+'; ceiling USD '+$settings.CostCeilingUsd+' is not an AWS billing cap.')
     if ((Read-Host ('Type CREATE STAGING '+$run.run_id)) -cne ('CREATE STAGING '+$run.run_id)) { throw 'Staging creation not approved.' }
-    $submitted=$false
+    # A durable one-shot claim is created only after fresh local authorization, while holding the lock.
+    $executionId=New-StageExecutionClaim $RunDirectory $run.run_id
+    $primaryFailure=$null; $teardownFailure=$null; $phase='create'
     try {
-        $submitted=$true
-        [void](Invoke-StageInfra $settings 'create' $RunDirectory @('--approved-run',$run.run_id))
+        [void](Invoke-StageInfra $settings 'create' $RunDirectory @('--approved-run',$run.run_id,'--execution-id',$executionId))
+        $phase='bootstrap-trust'
         $target=$null
         for ($attempt=0;$attempt -lt 90 -and $null -eq $target;$attempt++) {
             $target=Invoke-StageInfra $settings 'trust' $RunDirectory
@@ -262,8 +402,10 @@ function Invoke-RaceBibStagingRehearsal {
         $config=& $script:Core { param($p) Get-RaceBibConfiguration $p } $configPath
         $bundle=Get-Content -Raw (Join-Path $RunDirectory 'bundle.json')|ConvertFrom-Json -AsHashtable
         $auth=@{github_token=$env:RACEBIB_STAGING_GH_TOKEN;ghcr_token=$env:RACEBIB_STAGING_GHCR_TOKEN;ghcr_username=$env:RACEBIB_STAGING_GHCR_USERNAME}
+        $phase='host-install-and-initialize'
         [void](Invoke-StageControl $config $settings $run $target 'install' @{files=$bundle;github_auth=$auth;mysql_image=$settings.MySqlImage})
         [void](Invoke-StageControl $config $settings $run $target 'initialize')
+        $phase='deployment-and-acceptance'
         Invoke-StageDeploy $config $settings $run $target $evidence
         Test-StageHttps $config $settings $run $target
         foreach ($command in @('whoami','sftp','scp -t /tmp/forbidden',('deploy '+$settings.SourceSha+' --migrate'),('deploy '+$settings.SourceSha+'; id'))) {
@@ -306,17 +448,18 @@ function Invoke-RaceBibStagingRehearsal {
         if ($state.maintenance -or -not $state.api_ready -or -not $state.frontend_ready -or $state.current_sha -cne $settings.SourceSha -or $state.manifest_digest -cne $evidence.manifest_digest -or $state.history_count -ne ($before.history_count+2)) { throw 'Recovered staging state mismatch.' }
         @{run_id=$run.run_id;release=$evidence;security_negatives='passed';failure_recovery='passed';api_frontend='passed'}|ConvertTo-Json -Depth 5|Set-Content (Join-Path $RunDirectory 'acceptance.json')
         Protect-StageFile (Join-Path $RunDirectory 'acceptance.json')
+    } catch {
+        $primaryFailure=[InvalidOperationException]::new((Get-StageFailureSummary $_.Exception $phase))
     } finally {
-        if ($submitted) {
-            $latest=Get-Content -Raw (Join-Path $RunDirectory 'run.json')|ConvertFrom-Json -AsHashtable
-            if ($latest.ContainsKey('creation_submitted') -and $latest.creation_submitted) {
-                [void](Invoke-StageInfra $settings 'destroy' $RunDirectory)
-                $clean=Invoke-StageInfra $settings 'cleanup' $RunDirectory
-                $clean|ConvertTo-Json|Set-Content (Join-Path $RunDirectory 'cleanup.json'); Protect-StageFile (Join-Path $RunDirectory 'cleanup.json')
-            }
-        }
+        try { Complete-StageTeardown $settings $RunDirectory $run.run_id $executionId }
+        catch { $teardownFailure=$_.Exception }
     }
+    $failures=[Collections.Generic.List[Exception]]::new()
+    if ($null -ne $primaryFailure) { $failures.Add($primaryFailure) }
+    if ($null -ne $teardownFailure) { $failures.Add($teardownFailure) }
+    if ($failures.Count) { throw [AggregateException]::new('Staging rehearsal failed; primary failure precedes teardown outcomes. No automatic retry.', $failures) }
     return @{run_id=$run.run_id;rehearsal='passed';cleanup='verified'}
+    } finally { $executionLock.Dispose() }
 }
 
 Export-ModuleMember -Function Invoke-RaceBibStagingRehearsal

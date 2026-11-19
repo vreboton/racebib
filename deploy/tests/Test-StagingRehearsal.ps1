@@ -27,20 +27,43 @@ try {
         & $script:Core {
             function script:Invoke-RaceBibNative {
                 param($Executable,$Arguments,$TimeoutSeconds,[switch]$StripTokens)
+                $global:RaceBibStagingPreflights++
+                if ($global:RaceBibStagingPreflightFailure) { return @{ExitCode=1;Stdout='RAW-SENSITIVE-OUTPUT'} }
                 return @{ExitCode=0;Stdout=($global:RaceBibStagingMockEvidence|ConvertTo-Json -Compress)}
             }
         }
         $global:RaceBibStagingMockEvidence=$script:Evidence
+        $global:RaceBibStagingPreflights=0; $global:RaceBibStagingPreflightFailure=$false; $script:Approvals=0
         $script:Events=@(); $script:Barrier=$false; $script:Scenario='success'
-        function script:Read-Host { param($Prompt) return ('CREATE STAGING '+('b'*32)) }
+        function script:Read-Host {
+            param($Prompt)
+            $script:Approvals++
+            if ($script:Scenario -eq 'cancel-before-claim') { return 'decline' }
+            return ('CREATE STAGING '+('b'*32))
+        }
+        function New-TestInfraFailure([string]$Action) {
+            $operation=if ($Action -ceq 'cleanup') { 'describe-stacks' } else { 'wait' }
+            $waiter=switch ($Action) { 'create' { 'stack-create-complete' } 'destroy' { 'stack-delete-complete' } default { 'none' } }
+            $diagnostic=@{protocol='racebib-stage-error-v1';action=$Action;category='aws-cli';service='cloudformation';operation=$operation;
+                waiter=$waiter;exit_code='255';aws_error_code='ValidationError';exception_type='InfrastructureFailure';phase='aws';line='109'}
+            $failure=[InvalidOperationException]::new('SENSITIVE RAW AWS OUTPUT')
+            $failure.Data['RaceBibStageSafeSummary']=Format-StageInfrastructureFailure ($diagnostic|ConvertTo-Json -Compress) $Action 1
+            return $failure
+        }
         function script:Invoke-StageInfra {
             param($Settings,$Action,$Directory,$Extra=@())
             $script:Events+='infra-'+$Action
             if ($Action -eq 'create') {
                 $record=Get-Content -Raw (Join-Path $Directory 'run.json')|ConvertFrom-Json -AsHashtable
                 $record.creation_submitted=$true
+                $record.execution_id=$Extra[[Array]::IndexOf($Extra,'--execution-id')+1]
+                if ($script:Scenario -eq 'foreign-creation') { $record.execution_id='e'*32 }
                 $record|ConvertTo-Json|Set-Content (Join-Path $Directory 'run.json'); Protect-StageFile (Join-Path $Directory 'run.json')
+                if ($script:Scenario -eq 'foreign-creation') { throw (New-TestInfraFailure 'create') }
+                if ($script:Scenario -like 'create-failure*') { throw (New-TestInfraFailure 'create') }
             }
+            if ($Action -eq 'destroy' -and $script:Scenario -in @('create-failure-destroy','create-failure-both','destroy-failure')) { throw (New-TestInfraFailure 'destroy') }
+            if ($Action -eq 'cleanup' -and $script:Scenario -in @('create-failure-cleanup','create-failure-both','cleanup-failure')) { throw (New-TestInfraFailure 'cleanup') }
             if ($Action -in @('inspect','trust','create')) {
                 $target=$script:Target.Clone()
                 if ($script:Scenario -eq 'production-target') { $target.public_ip='15.135.108.24' }
@@ -117,21 +140,39 @@ try {
         $prior=@{a=$env:RACEBIB_STAGING_GH_TOKEN;b=$env:RACEBIB_STAGING_GHCR_TOKEN;c=$env:RACEBIB_STAGING_GHCR_USERNAME}
         try {
             $env:RACEBIB_STAGING_GH_TOKEN='synthetic-github-read';$env:RACEBIB_STAGING_GHCR_TOKEN='synthetic-ghcr-read';$env:RACEBIB_STAGING_GHCR_USERNAME='synthetic-user'
-            foreach ($scenario in @('success','production-target','disconnect','tls-failure','barrier-disconnect','unexpected-failure','missing-proof','wrong-proof','negative-auth','negative-client','negative-timeout','negative-connection','barrier-auth','barrier-timeout','barrier-unrelated','barrier-generic','barrier-generic-only','barrier-extra-output','barrier-extra-stderr','barrier-success','barrier-malformed-receipt','recovery-failed','recovery-busy','legacy-recovery-host')) {
+            foreach ($scenario in @('success','production-target','disconnect','tls-failure','barrier-disconnect','unexpected-failure','missing-proof','wrong-proof','negative-auth','negative-client','negative-timeout','negative-connection','barrier-auth','barrier-timeout','barrier-unrelated','barrier-generic','barrier-generic-only','barrier-extra-output','barrier-extra-stderr','barrier-success','barrier-malformed-receipt','recovery-failed','recovery-busy','legacy-recovery-host',
+                                    'create-failure','create-failure-destroy','create-failure-cleanup','create-failure-both','destroy-failure','cleanup-failure')) {
                 $script:Scenario=$scenario; $script:Events=@();$script:Barrier=$false;$script:History=0;$script:ProbeVerified=$false
                 @{run_id=$runId;stack_name=('racebib-staging-'+$runId);estimate_usd=0.32}|ConvertTo-Json|Set-Content (Join-Path $Fixture 'run.json')
+                foreach ($name in @('execution.json','creation-attempt.json','acceptance.json','cleanup.json')) {
+                    $path=Join-Path $Fixture $name
+                    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+                }
                 foreach ($file in @(Get-ChildItem $Fixture -File)) { Protect-StageFile $file.FullName }
                 $failed=$false
-                try { $result=Invoke-RaceBibStagingRehearsal -Action Execute -RunDirectory $Fixture } catch { $failed=$true; if ($scenario -eq 'success') { throw } }
+                $caught=$null
+                try { $result=Invoke-RaceBibStagingRehearsal -Action Execute -RunDirectory $Fixture } catch { $failed=$true; $caught=$_.Exception; if ($scenario -eq 'success') { throw } }
                 Assert-True ($failed -eq ($scenario -ne 'success')) ('Expected scenario outcome: '+$scenario)
                 Assert-True (@($script:Events|Where-Object{$_ -eq 'infra-create'}).Count -eq 1) 'Creation never retried'
                 Assert-True (@($script:Events|Where-Object{$_ -eq 'infra-destroy'}).Count -eq 1) 'Owned staging cleanup always attempted'
+                Assert-True (@($script:Events|Where-Object{$_ -eq 'infra-cleanup'}).Count -eq 1) 'Read-only verification still attempted after deletion error'
+                if ($scenario -like 'create-failure*') {
+                    $flat=@($caught.Flatten().InnerExceptions)
+                    Assert-True ($flat[0].Message.Contains('action=create;') -and $flat[0].Message.Contains('waiter=stack-create-complete')) 'Primary create failure retained before teardown errors'
+                    Assert-True (-not $caught.ToString().Contains('SENSITIVE RAW AWS OUTPUT')) 'No original AWS exception text exposed'
+                    Assert-True (-not (Test-Path -LiteralPath (Join-Path $Fixture 'acceptance.json'))) 'Partial creation cannot generate acceptance'
+                    Assert-True (@($script:Events|Where-Object{$_ -like 'ssh-*'}).Count -eq 0) 'No SSH after failed creation'
+                    $expected=1
+                    if ($scenario -in @('create-failure-destroy','create-failure-cleanup')) { $expected=2 }
+                    if ($scenario -eq 'create-failure-both') { $expected=3 }
+                    Assert-True ($flat.Count -eq $expected) 'Keep every distinct primary/delete/verification error'
+                }
                 if ($scenario -eq 'production-target') { Assert-True (@($script:Events|Where-Object{$_ -like 'ssh-*'}).Count -eq 0) 'Production target rejected before SSH' }
                 if ($scenario -in @('recovery-failed','recovery-busy')) {
                     Assert-True (@($script:Events|Where-Object{$_ -eq 'control-recover'}).Count -eq 1 -and $script:Barrier) 'No retry or barrier clearing after recovery failure/contention'
                     $tail=@($script:Events|Select-Object -Skip ([Array]::IndexOf($script:Events,'control-recover')+1))
                     Assert-True (@($tail|Where-Object{$_ -like 'ssh-deploy *'}).Count -eq 0) 'No deployment after failed recovery'
-                } elseif ($scenario -ne 'success') { Assert-True ('control-recover' -notin $script:Events) 'No automatic recovery after unrelated, inconclusive or unproven failure' }
+                } elseif ($scenario -ne 'success' -and $scenario -notin @('destroy-failure','cleanup-failure')) { Assert-True ('control-recover' -notin $script:Events) 'No automatic recovery after unrelated, inconclusive or unproven failure' }
                 if ($scenario -eq 'success') {
                     Assert-True ($result.rehearsal -eq 'passed' -and 'control-arm-failure' -in $script:Events -and 'control-recover' -in $script:Events) 'Explicit synthetic barrier and recovery exercised'
                 }
@@ -140,6 +181,118 @@ try {
                 }
             }
         } finally { $env:RACEBIB_STAGING_GH_TOKEN=$prior.a;$env:RACEBIB_STAGING_GHCR_TOKEN=$prior.b;$env:RACEBIB_STAGING_GHCR_USERNAME=$prior.c }
+        function Reset-ExecutionFixture {
+            foreach ($name in @('execution.json','creation-attempt.json','acceptance.json','cleanup.json')) {
+                $path=Join-Path $Fixture $name
+                if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+            }
+            @{run_id=$runId;stack_name=('racebib-staging-'+$runId);estimate_usd=0.32}|ConvertTo-Json|Set-Content (Join-Path $Fixture 'run.json')
+            Protect-StageFile (Join-Path $Fixture 'run.json')
+            $script:Events=@(); $script:Approvals=0; $global:RaceBibStagingPreflights=0
+        }
+        function Get-ExecutionFixtureSnapshot {
+            return (@(Get-ChildItem -LiteralPath $Fixture -File|Sort-Object Name|ForEach-Object {
+                # The live lock cannot be opened for hashing; it is itself held with read-only access and no sharing.
+                $hash=if ($_.Name -eq 'execution.lock') { 'locked-read-only' } else { (Get-FileHash -LiteralPath $_.FullName).Hash }
+                @{name=$_.Name;hash=$hash;length=$_.Length;mtime=$_.LastWriteTimeUtc.Ticks;acl=(Get-Acl -LiteralPath $_.FullName).Sddl}
+            })|ConvertTo-Json -Depth 4 -Compress)
+        }
+        $prior=@{a=$env:RACEBIB_STAGING_GH_TOKEN;b=$env:RACEBIB_STAGING_GHCR_TOKEN;c=$env:RACEBIB_STAGING_GHCR_USERNAME}
+        try {
+            $env:RACEBIB_STAGING_GH_TOKEN='synthetic-github-read';$env:RACEBIB_STAGING_GHCR_TOKEN='synthetic-ghcr-read';$env:RACEBIB_STAGING_GHCR_USERNAME='synthetic-user'
+            foreach ($used in @('submitted','stack','execution-claim','create-attempt','acceptance','cleanup')) {
+                Reset-ExecutionFixture
+                if ($used -in @('submitted','stack')) {
+                    $record=Get-Content -Raw (Join-Path $Fixture 'run.json')|ConvertFrom-Json -AsHashtable
+                    if ($used -eq 'submitted') { $record.creation_submitted=$true } else { $record.stack_id='historical-stack' }
+                    $record|ConvertTo-Json|Set-Content (Join-Path $Fixture 'run.json')
+                } else {
+                    $name=switch ($used) { 'execution-claim' {'execution.json'} 'create-attempt' {'creation-attempt.json'} 'acceptance' {'acceptance.json'} 'cleanup' {'cleanup.json'} }
+                    '{}'|Set-Content (Join-Path $Fixture $name); Protect-StageFile (Join-Path $Fixture $name)
+                }
+                $before=Get-ExecutionFixtureSnapshot
+                Assert-Throws { Invoke-RaceBibStagingRehearsal -Action Execute -RunDirectory $Fixture } 'Used Execute rejected'
+                Assert-True ($script:Events.Count -eq 0 -and $global:RaceBibStagingPreflights -eq 0 -and $script:Approvals -eq 0) 'Replay has zero infrastructure, teardown, preflight or approval calls'
+                Assert-True ((Get-ExecutionFixtureSnapshot) -ceq $before) 'Replay writes no evidence bytes, metadata or ACLs'
+            }
+            Reset-ExecutionFixture
+            $before=Get-ExecutionFixtureSnapshot
+            $info=[Diagnostics.ProcessStartInfo]::new()
+            $info.FileName=[Environment]::ProcessPath; $info.UseShellExecute=$false
+            $info.RedirectStandardInput=$true; $info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true
+            foreach ($argument in @('-NoLogo','-NoProfile','-Command', '$ErrorActionPreference="Stop"; $lock=[IO.File]::Open($env:RACEBIB_TEST_LOCK_PATH,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None); try { [Console]::WriteLine("LOCKED"); [void][Console]::ReadLine() } finally { $lock.Dispose() }')) { $info.ArgumentList.Add($argument) }
+            $info.Environment['RACEBIB_TEST_LOCK_PATH']=Join-Path $Fixture 'execution.lock'
+            $holder=[Diagnostics.Process]::new(); $holder.StartInfo=$info
+            try {
+                [void]$holder.Start()
+                $ready=$holder.StandardOutput.ReadLineAsync()
+                Assert-True ($ready.Wait(10000) -and $ready.Result -ceq 'LOCKED') 'Separate process owns execution lock'
+                Assert-Throws { Invoke-RaceBibStagingRehearsal -Action Execute -RunDirectory $Fixture } 'Concurrent Execute rejected before preflight'
+                Assert-True ($script:Events.Count -eq 0 -and $global:RaceBibStagingPreflights -eq 0 -and $script:Approvals -eq 0) 'Concurrent loser has zero mutation-capable calls or teardown'
+                Assert-True ((Get-ExecutionFixtureSnapshot) -ceq $before) 'Concurrent loser writes no evidence or ACLs'
+            } finally {
+                $holder.StandardInput.Close()
+                if (-not $holder.WaitForExit(10000)) { $holder.Kill($true) }
+                $holder.Dispose()
+            }
+            foreach ($scenario in @('preflight-failure','cancel-before-claim')) {
+                Reset-ExecutionFixture; $script:Scenario=$scenario
+                $before=Get-ExecutionFixtureSnapshot
+                $global:RaceBibStagingPreflightFailure=$scenario -eq 'preflight-failure'
+                try { Assert-Throws { Invoke-RaceBibStagingRehearsal -Action Execute -RunDirectory $Fixture } 'Pre-acceptance failure stops Execute' }
+                finally { $global:RaceBibStagingPreflightFailure=$false }
+                Assert-True ($script:Events.Count -eq 0) 'No infrastructure/teardown before accepted invocation'
+                Assert-True ((Get-ExecutionFixtureSnapshot) -ceq $before) 'No evidence writes before authorization'
+            }
+            Reset-ExecutionFixture; $script:Scenario='foreign-creation'
+            Assert-Throws { Invoke-RaceBibStagingRehearsal -Action Execute -RunDirectory $Fixture } 'Foreign submission cannot grant teardown eligibility'
+            Assert-True (@($script:Events|Where-Object{$_ -in @('infra-destroy','infra-cleanup')}).Count -eq 0) 'Teardown rejects foreign invocation before any operation'
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $Fixture 'cleanup.json'))) 'Foreign invocation cannot manufacture cleanup evidence'
+        } finally {
+            $env:RACEBIB_STAGING_GH_TOKEN=$prior.a;$env:RACEBIB_STAGING_GHCR_TOKEN=$prior.b;$env:RACEBIB_STAGING_GHCR_USERNAME=$prior.c
+            $global:RaceBibStagingPreflightFailure=$false
+        }
+        $diagnostic=@{protocol='racebib-stage-error-v1';action='cleanup';category='aws-json';service='ec2';operation='describe-snapshots';
+            waiter='none';exit_code='0';aws_error_code='none';exception_type='InfrastructureFailure';phase='aws';line='123'}
+        $json=$diagnostic|ConvertTo-Json -Compress
+        Assert-True ((Format-StageInfrastructureFailure $json 'cleanup' 1).Contains('operation=describe-snapshots')) 'Display only validated operation diagnostics'
+        foreach ($bad in @('RAW SECRET TEXT',($json+'{}'),('announcement '+$json),('[]'),
+                          ('{"action":"create",'+$json.Substring(1)), $json.Replace('"aws_error_code":"none"','"aws_error_code":"SENSITIVE VALUE"'))) {
+            $message=Format-StageInfrastructureFailure $bad 'cleanup' 1
+            Assert-True ($message.Contains('sanitized diagnostic unavailable') -and -not $message.Contains('SENSITIVE') -and -not $message.Contains('RAW SECRET')) 'Reject malformed, duplicate, unknown or untyped diagnostic output'
+        }
+        foreach ($changes in @(
+                @{category='aws-cli';exit_code='0';aws_error_code='unknown'},
+                @{waiter='stack-create-complete'}, @{service='cloudformation'}, @{operation='wait'},
+                @{category='aws-timeout';exit_code='255'}, @{category='aws-start';exit_code='0'},
+                @{category='aws-encoding';exit_code='0'}, @{category='aws-json';aws_error_code='AccessDenied'},
+                @{category='aws-response';phase='aws'}, @{category='controller'},
+                @{category='aws-cli';exit_code='none';aws_error_code='unknown'},
+                @{category='aws-cli';exit_code='-0';aws_error_code='unknown'}, @{service='none'},
+                @{operation='none'}, @{exception_type='RuntimeError'}, @{line='0'},
+                @{service='cloudformation';operation='create-stack'}, @{service='cloudformation';operation='delete-stack'})) {
+            $wrong=$diagnostic.Clone()
+            foreach ($key in $changes.Keys) { $wrong[$key]=$changes[$key] }
+            $message=Format-StageInfrastructureFailure ($wrong|ConvertTo-Json -Compress) 'cleanup' 1
+            Assert-True ($message.Contains('sanitized diagnostic unavailable')) 'Contradictory error fields fail closed'
+        }
+        foreach ($category in @('aws-cli','aws-timeout','aws-start','aws-encoding','aws-json','aws-response')) {
+            $valid=$diagnostic.Clone(); $valid.category=$category
+            if ($category -eq 'aws-cli') { $valid.exit_code='255'; $valid.aws_error_code='AccessDenied' }
+            elseif ($category -in @('aws-timeout','aws-start','aws-encoding')) { $valid.exit_code='none' }
+            elseif ($category -eq 'aws-response') { $valid.phase='cleanup' }
+            $message=Format-StageInfrastructureFailure ($valid|ConvertTo-Json -Compress) 'cleanup' 1
+            Assert-True (-not $message.Contains('sanitized diagnostic unavailable')) 'Every actual AWS diagnostic category remains supported'
+        }
+        foreach ($nativeExit in @(0,2,255)) {
+            Assert-True ((Format-StageInfrastructureFailure $json 'cleanup' $nativeExit).Contains('sanitized diagnostic unavailable')) 'Native exit must agree with diagnostic contract'
+        }
+        $controller=$diagnostic.Clone(); $controller.category='controller'; $controller.service='none';$controller.operation='none'
+        $controller.exit_code='none'; $controller.exception_type='RuntimeError'; $controller.phase='cleanup'
+        Assert-True (-not (Format-StageInfrastructureFailure ($controller|ConvertTo-Json -Compress) 'cleanup' 1).Contains('sanitized diagnostic unavailable')) 'Controller errors carry no AWS result metadata'
+        $controller.action='trust';$controller.phase='trust';$controller.exception_type='NotReady'
+        Assert-True (-not (Format-StageInfrastructureFailure ($controller|ConvertTo-Json -Compress) 'trust' 2).Contains('sanitized diagnostic unavailable')) 'Exact trust readiness status remains supported'
+        Assert-True ((Format-StageInfrastructureFailure ($controller|ConvertTo-Json -Compress) 'trust' 1).Contains('sanitized diagnostic unavailable')) 'Readiness exception cannot use failure exit one'
         foreach ($pair in @(@('forced-command','Only pinned RaceBib deployment is permitted',1),@('forwarding','channel 0: open failed: administratively prohibited: open failed',255),@('host-pin',"REMOTE HOST IDENTIFICATION HAS CHANGED!`nHost key verification failed.",255),@('identity','racebib-deploy@8.8.4.4: Permission denied (publickey).',255))) {
             $ok=@{ExitCode=$pair[2];Stdout='';Stderr=$pair[1]}
             Assert-StageRejection $ok $pair[0] '8.8.4.4'; $script:Checks++
@@ -205,6 +358,7 @@ try {
     } $fixture
 } finally {
     Remove-Variable RaceBibStagingMockEvidence -Scope Global -ErrorAction SilentlyContinue
+    Remove-Variable RaceBibStagingPreflights,RaceBibStagingPreflightFailure -Scope Global -ErrorAction SilentlyContinue
     Remove-Module $module -Force
     $full=[IO.Path]::GetFullPath($fixture)
     $prefix=[Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile).TrimEnd('\')+'\'

@@ -5,6 +5,7 @@ import hashlib
 import gzip
 import ipaddress
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -24,6 +25,45 @@ class NotReady(RuntimeError):
     pass
 
 
+ERROR_CODES = {"AccessDenied", "AccessDeniedException", "UnauthorizedOperation", "ExpiredToken", "ExpiredTokenException",
+               "InvalidClientTokenId", "RequestExpired", "ValidationError", "InvalidParameterValue", "Throttling",
+               "ThrottlingException", "RequestLimitExceeded", "InvalidInstanceID.NotFound",
+               "InvalidNetworkInterfaceID.NotFound", "InvalidVolume.NotFound"}
+ACTIONS = {"plan", "create", "inspect", "trust", "destroy", "cleanup"}
+OPERATIONS = {"get-caller-identity", "describe-images", "create-stack", "describe-stacks", "get-template",
+              "list-stack-resources", "describe-stack-events", "describe-vpcs", "describe-subnets",
+              "describe-security-groups", "describe-route-tables", "describe-internet-gateways", "describe-volumes",
+              "describe-network-interfaces", "describe-instances", "get-console-output", "delete-stack", "wait",
+              "describe-addresses", "describe-nat-gateways", "describe-snapshots"}
+
+
+class InfrastructureFailure(RuntimeError):
+    def __init__(self, category, service="none", operation="none", waiter="none", exit_code="none", aws_error_code="none"):
+        super().__init__("Staging infrastructure failure; raw output withheld")
+        self.fields = dict(category=category, service=service, operation=operation, waiter=waiter,
+                           exit_code=str(exit_code), aws_error_code=aws_error_code)
+
+
+def diagnostic(error, action):
+    """Only fixed vocabulary and source line numbers; never exception text, paths, arguments or AWS output."""
+    value = dict(protocol="racebib-stage-error-v1", action=action if action in ACTIONS else "unknown",
+                 category="controller", service="none", operation="none", waiter="none", exit_code="none",
+                 aws_error_code="none", exception_type="unknown", phase="main", line="0")
+    if isinstance(error, InfrastructureFailure):
+        value.update(error.fields)
+    if type(error).__name__ in {"InfrastructureFailure", "RuntimeError", "KeyError", "TypeError", "ValueError",
+                                "AttributeError", "JSONDecodeError", "OSError", "FileNotFoundError", "PermissionError", "NotReady"}:
+        value["exception_type"] = type(error).__name__
+    trace = error.__traceback__
+    phases = {"main", "aws", "validate_record", "account_guard", "create", "destroy", "cleanup", "save",
+              "stack_guard", "validate_resources", "inspect", "trust", "ownership", "unprotected", "observed_stack"}
+    while trace:
+        if trace.tb_frame.f_code.co_filename == __file__ and trace.tb_frame.f_code.co_name in phases:
+            value.update(phase=trace.tb_frame.f_code.co_name, line=str(trace.tb_lineno))
+        trace = trace.tb_next
+    return value
+
+
 def require(value, message):
     if not value:
         raise RuntimeError(message)
@@ -41,13 +81,35 @@ def aws(record, service, *arguments, missing_ok=False):
         if name.upper().startswith(('GH', 'RACEBIB_STAGING_')):
             environment.pop(name)
     environment["AWS_MAX_ATTEMPTS"] = "1"  # Never duplicate provisioning/deletion after a lost response.
-    result = subprocess.run(command, capture_output=True, text=True, timeout=1200 if arguments[0] == "wait" else 120, env=environment)
+    operation = arguments[0] if arguments[0] in OPERATIONS else "none"
+    safe_service = service if service in {"sts", "ec2", "cloudformation"} else "none"
+    waiter = arguments[1] if operation == "wait" and arguments[1] in {"stack-create-complete", "stack-delete-complete"} else "none"
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=1200 if operation == "wait" else 120, env=environment)
+    except subprocess.TimeoutExpired:
+        raise InfrastructureFailure("aws-timeout", safe_service, operation, waiter) from None
+    except OSError:
+        raise InfrastructureFailure("aws-start", safe_service, operation, waiter) from None
+    except UnicodeError:
+        raise InfrastructureFailure("aws-encoding", safe_service, operation, waiter) from None
     if result.returncode:
-        missing_stack = service == 'cloudformation' and arguments[0] == 'describe-stacks' and 'does not exist' in result.stderr
-        if missing_ok and (missing_stack or any(code in result.stderr for code in ("InvalidInstanceID.NotFound", "InvalidNetworkInterfaceID.NotFound", "InvalidVolume.NotFound"))):
+        match = re.search(r"An error occurred \(([A-Za-z0-9.]+)\) when calling", result.stderr)
+        code = match[1] if match and match[1] in ERROR_CODES else "unknown"
+        selector = arguments[arguments.index("--stack-name") + 1] if "--stack-name" in arguments else ""
+        missing_stack = service == 'cloudformation' and operation == 'describe-stacks' and code == 'ValidationError' and bool(
+            re.search(r"Stack with id " + re.escape(selector) + r" does not exist\s*$", result.stderr))
+        missing_resource = {"describe-instances": "InvalidInstanceID.NotFound",
+                            "describe-network-interfaces": "InvalidNetworkInterfaceID.NotFound", "describe-volumes": "InvalidVolume.NotFound"}
+        if missing_ok and (missing_stack or code == missing_resource.get(operation)):
             return None
-        raise RuntimeError("AWS operation failed; inspect the named staging stack before retrying (raw output withheld)")
-    return json.loads(result.stdout) if result.stdout.strip() else {}
+        raise InfrastructureFailure("aws-cli", safe_service, operation, waiter, result.returncode, code)
+    try:
+        value = json.loads(result.stdout) if result.stdout.strip() else {}
+        if not isinstance(value, dict):
+            raise ValueError()
+        return value
+    except ValueError:
+        raise InfrastructureFailure("aws-json", safe_service, operation, waiter, result.returncode) from None
 
 
 def validate_record(record):
@@ -158,9 +220,16 @@ def account_guard(record):
     require(aws(record, "sts", "get-caller-identity")["Account"] == record["account"], "AWS account mismatch")
 
 
-def create(directory, record, approved_run):
+def create(directory, record, approved_run, execution_id=None):
     require(approved_run == record["run_id"], "Explicit approval of the displayed cost/run is required")
     require(not record.get("stack_id"), "Never submit creation twice; inspect existing stack")
+    require(not record.get("creation_submitted"), "Creation outcome uncertain; inspect by unique stack name")
+    require(isinstance(execution_id, str) and re.fullmatch(r'[0-9a-f]{32}', execution_id), 'Current accepted execution identity required')
+    claim = json.loads((Path(directory) / 'execution.json').read_text(encoding='utf-8-sig'))
+    require(claim == {'format': 1, 'run_id': record['run_id'], 'execution_id': execution_id}, 'Execution authorization mismatch')
+    # Atomic, durable consumption also blocks concurrent direct Python create calls with a stale run.json.
+    with (Path(directory) / 'creation-attempt.json').open('x', encoding='utf-8') as attempt:
+        json.dump(claim, attempt); attempt.flush(); os.fsync(attempt.fileno())
     account_guard(record)
     require(digest(json.loads((Path(directory) / 'template.json').read_text(encoding='utf-8-sig'))) == record['template_digest'], 'Reviewed template file was modified')
     images = aws(record, "ec2", "describe-images", "--image-ids", record["ami"], "--owners", "099720109477")["Images"]
@@ -169,6 +238,7 @@ def create(directory, record, approved_run):
     # Persist submission intent BEFORE the non-idempotent API call. Never auto-resubmit.
     require(not record.get("creation_submitted"), "Creation outcome uncertain; inspect by unique stack name")
     record["creation_submitted"] = True
+    record["execution_id"] = execution_id
     save(directory, record)
     result = aws(record, "cloudformation", "create-stack", "--stack-name", record["stack_name"],
                  "--template-body", "file://" + str((Path(directory) / "template.json").resolve()),
@@ -335,13 +405,31 @@ def trust(record):
     return target
 
 
+def observed_stack(record):
+    result = aws(record, 'cloudformation', 'describe-stacks', '--stack-name', record.get('stack_id') or record['stack_name'], missing_ok=True)
+    if result is None:
+        require(record.get('stack_id'), 'Missing creation response is ambiguous; reconcile the unique staging name before teardown')
+        return None
+    require(len(result.get('Stacks', [])) == 1, 'Expected exactly one staging stack observation')
+    stack = result['Stacks'][0]
+    ownership(record, stack)
+    require(not record.get('stack_id') or stack['StackId'] == record['stack_id'], 'Stack identity changed')
+    validate_record(dict(record, stack_id=stack['StackId']))
+    return stack
+
+
 def destroy(directory, record):
     account_guard(record)
-    observed = aws(record, 'cloudformation', 'describe-stacks', '--stack-name', record.get('stack_id') or record['stack_name'], missing_ok=True)
-    if observed is None:
-        require(record.get('stack_id'), 'Missing creation response is ambiguous; reconcile the unique staging name before teardown')
+    require(record.get('creation_submitted'), 'This tool did not submit the staging stack')
+    observed = observed_stack(record)
+    if observed is not None and not record.get('stack_id'):
+        # Preserve a positively reconciled ARN even if deletion already finished or is in flight.
+        record['stack_id'] = observed['StackId']
+        save(directory, record)
+    if observed is None or observed.get('StackStatus') == 'DELETE_COMPLETE':
         return
-    if observed['Stacks'][0].get('StackStatus') == 'DELETE_COMPLETE':
+    if observed.get('StackStatus') == 'DELETE_IN_PROGRESS':
+        aws(record, "cloudformation", "wait", "stack-delete-complete", "--stack-name", observed['StackId'])
         return
     stack_guard(record, deleting=True)
     save(directory, record)
@@ -349,31 +437,54 @@ def destroy(directory, record):
     aws(record, "cloudformation", "wait", "stack-delete-complete", "--stack-name", record["stack_id"])
 
 
+def explicit_inventory(record, operation, key, flag, id_key, identifier):
+    value = aws(record, 'ec2', operation, flag, identifier, missing_ok=True)
+    if value is None:  # Only aws()'s operation-specific recognized NotFound path.
+        return []
+    if (not isinstance(value, dict) or set(value) != {key} or not isinstance(value[key], list) or
+            len(value[key]) > 1 or any(not isinstance(item, dict) or item.get(id_key) != identifier for item in value[key])):
+        raise InfrastructureFailure('aws-response', 'ec2', operation, exit_code=0)
+    return value[key]
+
+
 def cleanup(record):
     account_guard(record)
     remaining = {}
     filters = ["Name=tag:StageRun,Values=" + record["run_id"], "Name=tag:Environment,Values=racebib-staging"]
     for operation, key in [("describe-instances", "Reservations"), ("describe-volumes", "Volumes"),
-                           ("describe-addresses", "Addresses"), ("describe-nat-gateways", "NatGateways"), ("describe-snapshots", "Snapshots")]:
+                           ("describe-addresses", "Addresses"), ("describe-nat-gateways", "NatGateways"), ("describe-snapshots", "Snapshots"),
+                           ("describe-network-interfaces", "NetworkInterfaces"), ("describe-vpcs", "Vpcs")]:
         args = [operation, "--filters", *filters]
         if operation == "describe-snapshots":
             args += ["--owner-ids", "self"]
-        value = aws(record, "ec2", *args)[key]
+        response = aws(record, "ec2", *args)
+        if not isinstance(response, dict) or not isinstance(response.get(key), list):
+            raise InfrastructureFailure("aws-response", "ec2", operation, exit_code=0)
+        value = response[key]
         if operation == "describe-instances":
             value = [host["InstanceId"] for reservation in value for host in reservation["Instances"] if host["State"]["Name"] != "terminated"]
         if value:
             remaining[operation] = value
-    for interface in record.get("target", {}).get("interfaces", []):
-        value = aws(record, "ec2", "describe-network-interfaces", "--network-interface-ids", interface, missing_ok=True)
+    target = record.get('target') if record.get('target') is not None else {}
+    attachments = record.get('attachments') if record.get('attachments') is not None else {}
+    require(isinstance(target, dict) and isinstance(attachments, dict), 'Invalid partial staging inventory')
+    for inventory in (target, attachments):
+        require(all(isinstance(inventory.get(key, []), list) and
+                    all(isinstance(item, str) and item for item in inventory.get(key, []))
+                    for key in ('interfaces', 'volumes')), 'Invalid tracked attachment identifiers')
+    for interface in sorted(set(target.get("interfaces", []) + attachments.get("interfaces", []))):
+        unprotected(record, interface)
+        value = explicit_inventory(record, 'describe-network-interfaces', 'NetworkInterfaces', '--network-interface-ids', 'NetworkInterfaceId', interface)
         if value:
             remaining[interface] = "still present"
-    for volume in record.get('target', {}).get('volumes', []):
-        value = aws(record, 'ec2', 'describe-volumes', '--volume-ids', volume, missing_ok=True)
-        if value and value.get('Volumes'):
+    for volume in sorted(set(target.get('volumes', []) + attachments.get('volumes', []))):
+        unprotected(record, volume)
+        value = explicit_inventory(record, 'describe-volumes', 'Volumes', '--volume-ids', 'VolumeId', volume)
+        if value:
             remaining[volume] = 'tracked volume still present, even if tags were removed'
     require(not remaining, "Staging resources remain; inspect the cleanup report, never delete unrelated resources")
-    stack = aws(record, "cloudformation", "describe-stacks", "--stack-name", record.get("stack_id") or record["stack_name"], missing_ok=True)
-    require(stack is None or stack["Stacks"][0]["StackStatus"] == "DELETE_COMPLETE", "Staging stack still exists")
+    stack = observed_stack(record)
+    require(stack is None or stack["StackStatus"] == "DELETE_COMPLETE", "Staging stack still exists")
     return {"run_id": record["run_id"], "tracked_and_tagged_billable_resources": "none", "account_wide_billing_certification": False}
 
 
@@ -383,6 +494,7 @@ def main():
     parser.add_argument("--directory", required=True)
     parser.add_argument("--input")
     parser.add_argument("--approved-run")
+    parser.add_argument("--execution-id")
     parser.add_argument("--aws-cli")
     args = parser.parse_args()
     directory = Path(args.directory)
@@ -396,7 +508,7 @@ def main():
     record['aws_cli'] = args.aws_cli
     validate_record(record)
     if args.action == "create":
-        value = create(directory, record, args.approved_run)
+        value = create(directory, record, args.approved_run, args.execution_id)
         record["target"] = value
     elif args.action in ("inspect", "trust", "cleanup"):
         value = globals()[args.action](record)
@@ -405,13 +517,21 @@ def main():
     else:
         destroy(directory, record)
         value = {"stack_deleted": True}
-    save(directory, record)
+    if args.action != "cleanup":
+        save(directory, record)
     print(json.dumps(value))
 
 
-if __name__ == "__main__":
+def cli():
     try:
         main()
     except Exception as error:
-        print("Staging operation failed; inspect only this run's AWS stack/state before retrying (details withheld).", file=sys.stderr)
-        sys.exit(2 if isinstance(error, NotReady) else 1)
+        # The shared production native runner discards stderr. Publish ONLY this safe envelope on stdout.
+        print(json.dumps(diagnostic(error, sys.argv[1] if len(sys.argv) > 1 else "unknown")))
+        print("Staging operation failed; sanitized diagnostic on stdout; raw details withheld.", file=sys.stderr)
+        return 2 if isinstance(error, NotReady) else 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(cli())

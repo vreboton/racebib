@@ -22,6 +22,8 @@ class StagingTests(unittest.TestCase):
         self.directory = Path(self.temp.name)
         self.record = infra.plan(self.directory, '111122223333', 'staging-only', '8.8.8.8/32', 'ami-'+'a'*17,
                                  'ssh-ed25519 AAAA bootstrap', 'ssh-ed25519 AAAB deploy', protected_ids=['i-'+'f'*17,'vpc-'+'f'*17])
+        self.execution_id = 'c' * 32
+        (self.directory / 'execution.json').write_text(json.dumps({'format': 1, 'run_id': self.record['run_id'], 'execution_id': self.execution_id}))
         self.arn = 'arn:aws:cloudformation:ap-southeast-2:111122223333:stack/'+self.record['stack_name']+'/stack-guid'
         self.host = {'InstanceId':'i-'+'a'*17, 'ImageId':self.record['ami'], 'VpcId':'vpc-stage', 'SubnetId':'subnet-stage',
                      'SecurityGroups':[{'GroupId':'sg-stage'}], 'PublicIpAddress':'8.8.4.4', 'State':{'Name':'running'},
@@ -117,11 +119,11 @@ class StagingTests(unittest.TestCase):
 
     def test_creation_requires_approval_and_fresh_template_and_never_resubmits(self):
         with patch('infrastructure.aws',side_effect=self.client):
-            with self.assertRaises(RuntimeError): infra.create(self.directory,self.record,'wrong')
+            with self.assertRaises(RuntimeError): infra.create(self.directory,self.record,'wrong',self.execution_id)
             self.assertEqual(self.calls,[])
-            result = infra.create(self.directory,self.record,self.record['run_id'])
+            result = infra.create(self.directory,self.record,self.record['run_id'],self.execution_id)
             self.assertEqual(result['instance_id'],self.host['InstanceId'])
-            with self.assertRaises(RuntimeError): infra.create(self.directory,self.record,self.record['run_id'])
+            with self.assertRaises(RuntimeError): infra.create(self.directory,self.record,self.record['run_id'],self.execution_id)
         self.assertEqual(sum(args[0]=='create-stack' for _,args in self.calls),1)
 
     def test_lost_creation_response_keeps_intent_and_prevents_duplicate_submission(self):
@@ -131,7 +133,7 @@ class StagingTests(unittest.TestCase):
             return self.client(record,service,*args,**kwargs)
         with patch('infrastructure.aws',side_effect=fail):
             for _ in range(2):
-                with self.assertRaises(RuntimeError): infra.create(self.directory,self.record,self.record['run_id'])
+                with self.assertRaises(RuntimeError): infra.create(self.directory,self.record,self.record['run_id'],self.execution_id)
         self.assertTrue(json.loads((self.directory/'run.json').read_text())['creation_submitted'])
         self.assertEqual(sum(args[0]=='create-stack' for _,args in self.calls),1)
 
@@ -167,7 +169,7 @@ class StagingTests(unittest.TestCase):
         def client(record,service,*args,**kwargs):
             if args[0]=='get-caller-identity': return {'Account':record['account']}
             if args[0]=='describe-volumes' and '--volume-ids' in args: return {'Volumes':[{'VolumeId':'vol-stage'}]}
-            return {key:[] for key in ['Reservations','Volumes','Addresses','NatGateways','Snapshots']}
+            return {key:[] for key in ['Reservations','Volumes','Addresses','NatGateways','Snapshots','NetworkInterfaces','Vpcs']}
         with patch('infrastructure.aws',side_effect=client),self.assertRaises(RuntimeError): infra.cleanup(self.record)
 
     def test_host_control_rejects_missing_marker_or_instance_mismatch_before_commands(self):
@@ -210,7 +212,7 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(conditions['aws:RequestTag/ManagedBy'],'racebib-rehearsal')
         self.assertIn('aws:RequestTag/StageRun',tag['Condition']['StringLike'])
         with patch('infrastructure.aws',side_effect=self.client):
-            infra.create(self.directory,self.record,self.record['run_id'])
+            infra.create(self.directory,self.record,self.record['run_id'],self.execution_id)
         args = next(args for _,args in self.calls if args[0]=='create-stack')
         for key in ['Environment','StageRun','ManagedBy','Temporary']:
             self.assertTrue(any(a.startswith('Key='+key+',Value=') for a in args))
@@ -283,7 +285,8 @@ class StagingTests(unittest.TestCase):
             return value
         with patch('infrastructure.aws',side_effect=unowned),self.assertRaises(RuntimeError): infra.destroy(self.directory,self.submitted())
         self.assertFalse(any(args[0]=='delete-stack' for _,args in self.calls))
-        for status in ['CREATE_IN_PROGRESS','DELETE_IN_PROGRESS','UPDATE_COMPLETE','IMPORT_COMPLETE']:
+        # DELETE_IN_PROGRESS now permits only an identity-checked read-only waiter, never another delete.
+        for status in ['CREATE_IN_PROGRESS','UPDATE_COMPLETE','IMPORT_COMPLETE']:
             self.calls=[]
             def busy(record,service,*args,**kwargs):
                 value=partial(record,service,*args,**kwargs)

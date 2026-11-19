@@ -172,6 +172,112 @@ Successful execution requires both owner-protected `acceptance.json` and
 
 ## Failure handling and cleanup
 
+### Single-use execution and current-invocation teardown
+
+New plans include a protected `execution.lock`. Execute opens that existing file
+read-only with exclusive Windows sharing before preflight or approval, rechecks
+fresh run state under the lock, and holds it through finalization. A used run or
+contending invocation is rejected without infrastructure/preflight/approval calls
+or evidence/ACL writes. Older unused plans without the lock require a fresh Plan;
+do not retrofit historical evidence. VerifyCleanup does not need the lock.
+
+After fresh CREATE STAGING approval, the controller durably creates the one-use
+`execution.json` claim with a new invocation identity. Python validates it and
+atomically consumes it in `creation-attempt.json` before any AWS call, preventing
+concurrent or restarted direct creation attempts from reusing stale run state.
+The submitted intent records that same identity before CreateStack. Automatic
+teardown is eligible only for submission by this current accepted invocation,
+never merely because an old run has `creation_submitted=true`. Genuine partial
+creation still receives guarded teardown and independent cleanup verification.
+An interrupted accepted claim is never reset or reused; investigate and create a
+fresh plan after separately authorized cleanup. Preflight failure or declined
+approval creates no claim and permits a later fresh authorization.
+
+Explicit-ID cleanup accepts only an operation-specific recognized NotFound or
+an exact, correctly typed collection for the requested resource. Empty collections
+prove absence; present resources block success. Missing/null collections, extra
+fields/pagination markers, duplicate or different identities, and malformed local
+target/attachment lists fail closed for both target and partial inventory.
+
+Diagnostics now enforce service/operation, waiter/action, category/exit-status,
+exception/phase and optional metadata consistency as well as the existing exact
+schema and vocabulary. Nonzero CLI failures cannot claim exit zero; timeouts or
+spawn/encoding failures cannot invent an exit status or AWS error code. Only an
+exact NotReady/trust/exit-2 envelope permits bootstrap polling. Raw output remains
+withheld for any inconsistent diagnostic.
+
+### Diagnosing a failure without losing the primary error
+
+Infrastructure failures now emit a small `racebib-stage-error-v1` JSON object on
+stdout, even on nonzero exit. It contains only fixed-vocabulary action, phase,
+AWS service/operation/waiter, category, native/AWS exit status, allowlisted AWS
+error code, exception type and source line. AWS output, command arguments,
+account/profile values, paths, credentials, environment values, keys and SSH
+output are not included. Unknown AWS codes are reported as `unknown`; unknown
+Python messages are withheld. The shared production native runner still discards
+stderr. The staging wrapper parses this exact, string-only schema and rejects
+extra, duplicate, malformed or unrecognized values instead of printing raw output.
+A diagnostic with `aws_exit=0` and category `aws-json` or `aws-response` indicates
+an unsuccessful local interpretation of CLI output, not an IAM denial.
+
+The Execute handler preserves the primary failure first and retains separate
+guarded deletion and read-only verification outcomes. Cleanup failure cannot
+replace creation/wait/bootstrap failure. Verification still runs if deletion or
+its waiter fails; this does not authorize another deletion, provisioning attempt,
+SSH retry or synthetic recovery. A failed run never reports rehearsal success.
+An independent successful cleanup report is not application acceptance.
+
+`DELETE_COMPLETE` is a valid terminal observation, not an API error and not a
+reason to resend DeleteStack. The controller checks account, staging ownership,
+run/ARN identity and the local reviewed record before accepting that observation.
+An already `DELETE_IN_PROGRESS` stack permits only a bounded read-only waiter
+after those identity checks. Creation/update/import in progress or mismatched
+ownership still fails closed; all mutations retain the complete existing
+template/resource/origin/production-protection checks. A lost creation response
+can be reconciled by its unique name only when positive matching stack identity
+is available. An absent stack with no recorded ARN remains ambiguous.
+
+Cleanup scans run/environment-tagged EC2 hosts, volumes, EIPs, NAT gateways,
+snapshots, ENIs and VPCs, and checks saved volume/interface IDs from either the
+target or partial attachment inventory, including IDs whose tags disappeared.
+No populated target is required. Empty explicit-ID ENI/volume responses count as
+absent. Residual or malformed observations prevent success. This is scoped
+resource verification, not account-wide billing certification. No IAM permissions
+were added; ENI/VPC reads were already in the reviewed example policy.
+
+The `cleanup` Python action and `VerifyCleanup` wrapper now leave the input run
+files and ACLs unchanged. They return their result to the caller; they do not
+manufacture `acceptance.json` or automatically write `cleanup.json` into a
+historical directory. Only Execute's finalization writes its own cleanup report.
+Store later diagnostic/verification results in a separately protected incident
+directory rather than changing historical evidence.
+
+### First-live-run incident: 2026-11-18
+
+Run `4b260490ae41422aaf1ae823f3fcf223`, controller
+`56cd4f65e8794485feac39d96eef49f03e4662a7`, had persisted creation intent and
+a stack ARN but no target or acceptance/cleanup report. The operator reported
+`DELETE_COMPLETE` and successful empty resource queries in Sydney. Local
+read-only inspection confirmed the run record passes validation, has no target
+and has an empty saved inventory. Replaying successful empty CLI JSON responses
+plus the matching deleted-stack observation succeeds offline. Consequently the
+original cleanup exception and the preceding creation failure cannot be recovered
+from the generic messages alone; **an IAM fault is not established**. The confirmed
+defects are diagnostic suppression, primary-error masking and incomplete partial
+cleanup coverage, rather than a proven failure of AWS deletion.
+
+Preserve the original run directory, keys, settings, template, bundle and existing
+AWS evidence unchanged. This diagnosis authorizes no AWS operation. After review
+and separate operator authorization, the next recovery step is read-only cleanup
+verification with the reviewed controller and a protected report outside that
+directory. Investigate the original creation failure using retained stack events
+or other already-recorded evidence; do not increase IAM permissions based on a
+generic error. No additional Destroy is indicated by the reported deleted stack.
+Do not rerun Execute on this run or regenerate acceptance evidence. Only after
+cleanup and the creation failure are understood should a new Plan generate a
+fresh nonce, new directory and staging keys, followed by fresh explicit CREATE
+STAGING authorization. Revoke old staging read tokens as separately approved.
+
 Do not rerun Execute after disconnect, PC shutdown, timeout or failed receipt.
 The remote engine may still be running. There is no automatic retry, rollback,
 migration or maintenance clearing after ambiguity. For this disposable rehearsal,
