@@ -114,16 +114,23 @@ public sealed partial class RegistrationsController(
 
         var error = await Validate(item, runner, input, entry, ct);
         if (error is not null) return BadRequest(error);
-        var occupied = await db.Registrations.Where(x => x.EventId == item.Id && x.Id != id)
-            .Select(x => x.BibNumber).ToListAsync(ct);
-        error = BibAllocator.Allocate(input.Assignment ?? new(), occupied, [input.BibNumber], out var bibs);
-        if (error is not null) return Conflict(error);
         var previousBib = entry?.BibNumber;
-        if (entry is not null && input.Status == RegistrationStatus.Cancelled && previousBib != bibs[0])
+        var assignment = input.Assignment ?? new();
+        var selectedBib = previousBib;
+        if (entry is null || assignment.Mode != BibAssignmentMode.Existing ||
+            !string.Equals(input.BibNumber, previousBib, StringComparison.Ordinal))
+        {
+            var occupied = await db.Registrations.Where(x => x.EventId == item.Id && x.Id != id)
+                .Select(x => x.BibNumber).ToListAsync(ct);
+            error = BibAllocator.Allocate(assignment, occupied, [input.BibNumber], out var bibs);
+            if (error is not null) return Conflict(error);
+            selectedBib = bibs[0];
+        }
+        if (entry is not null && input.Status == RegistrationStatus.Cancelled && previousBib != selectedBib)
             return Conflict("Cancellation must keep the existing bib reserved.");
         entry ??= new Registration { EventId = item.Id, OrganizerId = item.OrganizerId, Runner = runner };
         entry.Runner = runner;
-        Apply(entry, input, bibs[0]);
+        Apply(entry, input, selectedBib);
         if (!id.HasValue) db.Registrations.Add(entry);
         Record(entry, id.HasValue ? "Registration.Updated" : "Registration.Created");
         if (previousBib != entry.BibNumber) Record(entry, "Registration.BibChanged");

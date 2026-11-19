@@ -71,7 +71,13 @@ public sealed partial class MySqlApiIntegrationTests
             $"/api/v1/public/events/{secondEventId}/participants"))[0];
         Assert.Equal("María Dalisay", fallback.GetProperty("nameOnBib").GetString());
 
-        using var edit = await client.PutAsJsonAsync($"{path}/{id}", input with { bibDisplayName = "Maya" });
+        using (var scope = Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+            (await db.Registrations.SingleAsync(x => x.Id == id)).BibNumber = "Bíb";
+            await db.SaveChangesAsync();
+        }
+        using var edit = await client.PutAsJsonAsync($"{path}/{id}", input with { bibDisplayName = "Maya", bibNumber = "Bíb" });
         Assert.Equal(HttpStatusCode.OK, edit.StatusCode);
         using var bibEdit = await client.PutAsJsonAsync($"{path}/{id}/bib", new { bibNumber = "0008" });
         Assert.Equal(HttpStatusCode.NoContent, bibEdit.StatusCode);
