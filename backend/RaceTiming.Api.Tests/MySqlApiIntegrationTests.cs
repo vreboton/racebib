@@ -150,7 +150,7 @@ public sealed class MySqlApiFactory : WebApplicationFactory<Program>
 }
 
 [Collection(MySqlApiIntegrationCollection.Name)]
-public sealed class MySqlApiIntegrationTests(MySqlApiIntegrationFixture fixture)
+public sealed partial class MySqlApiIntegrationTests(MySqlApiIntegrationFixture fixture)
 {
     [MySqlIntegrationFact]
     [Trait("Category", "MySqlIntegration")]
@@ -368,7 +368,7 @@ public sealed class MySqlTestData(IServiceProvider services) : IAsyncDisposable
         return new TestAccount(user.Id, email, password);
     }
 
-    public async Task<Guid> CreateOrganizerAsync(TestAccount? member = null)
+    public async Task<Guid> CreateOrganizerAsync(TestAccount? member = null, OrganizerRole role = OrganizerRole.EventAdministrator)
     {
         using var scope = services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
@@ -381,7 +381,7 @@ public sealed class MySqlTestData(IServiceProvider services) : IAsyncDisposable
             {
                 OrganizerId = organizer.Id,
                 UserId = member.Id,
-                Role = OrganizerRole.EventAdministrator,
+                Role = role,
             });
         await db.SaveChangesAsync();
         organizerIds.Add(organizer.Id);
@@ -424,6 +424,7 @@ public sealed class MySqlTestData(IServiceProvider services) : IAsyncDisposable
             (record.ActorUserId != null && userIdList.Contains(record.ActorUserId)) ||
             (record.OrganizerId.HasValue && organizerIdList.Contains(record.OrganizerId.Value))).ToListAsync();
         db.AuditRecords.RemoveRange(auditRecords);
+        db.Registrations.RemoveRange(await db.Registrations.Where(item => organizerIdList.Contains(item.OrganizerId)).ToListAsync());
         db.Events.RemoveRange(await db.Events.Where(item => organizerIdList.Contains(item.OrganizerId)).ToListAsync());
         db.Runners.RemoveRange(await db.Runners.Where(item => organizerIdList.Contains(item.OrganizerId)).ToListAsync());
         db.OrganizerMemberships.RemoveRange(await db.OrganizerMemberships.Where(item => organizerIdList.Contains(item.OrganizerId)).ToListAsync());
