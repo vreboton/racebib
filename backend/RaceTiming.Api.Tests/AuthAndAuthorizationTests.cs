@@ -239,6 +239,34 @@ public sealed class AuthAndAuthorizationTests : IAsyncLifetime
         Assert.IsType<ForbidResult>(result);
     }
 
+    [Theory]
+    [InlineData(OrganizerRole.RaceDirector, EventStatus.RegistrationClosed, 204)]
+    [InlineData(OrganizerRole.RaceDirector, EventStatus.Ready, 409)]
+    [InlineData(OrganizerRole.TimingOfficial, EventStatus.Draft, 403)]
+    public async Task CourseStatusChangeRequiresManagementPermissionAndEditableLifecycle(
+        OrganizerRole role, EventStatus eventStatus, int expectedStatus)
+    {
+        await AddMembership(organizerA, role);
+        var item = new Event
+        {
+            OrganizerId = organizerA.Id, Name = "Course retirement", Slug = "course-retirement",
+            OrganizerName = organizerA.Name, Status = eventStatus, TimeZoneId = "UTC",
+            StartDate = DateTime.UtcNow, EndDate = DateTime.UtcNow.AddHours(1)
+        };
+        var course = new Course { EventId = item.Id, Name = "Route", DistanceKm = 10 };
+        db.AddRange(item, course);
+        await db.SaveChangesAsync();
+        var controller = new RaceConfigurationController(db, services.GetRequiredService<IOrganizerMembershipAuthorization>())
+        {
+            ControllerContext = new ControllerContext { HttpContext = CreateHttpContext(account) }
+        };
+        var result = await controller.ChangeCourseStatus(item.Id, course.Id, new(RecordStatus.Inactive), default);
+
+        var statusCode = result is ForbidResult ? 403 : ((Microsoft.AspNetCore.Mvc.Infrastructure.IStatusCodeActionResult)result).StatusCode;
+        Assert.Equal(expectedStatus, statusCode);
+        Assert.Equal(expectedStatus == 204 ? RecordStatus.Inactive : RecordStatus.Active, course.Status);
+    }
+
     private AuthController CreateAuthController()
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>

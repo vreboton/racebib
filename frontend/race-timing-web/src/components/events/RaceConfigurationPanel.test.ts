@@ -32,7 +32,7 @@ const category = {
 
 const course: Course = {
   id: 'course-1', name: 'Summit', status: 'Active', version: 1, description: 'Trail route',
-  distanceKm: 10, elevationGainMeters: 800, usable: true, immutable: false, editBlock: null,
+  distanceKm: 10, elevationGainMeters: 800, usable: true, immutable: false, editBlock: null, hasActiveRaces: true,
   checkpoints: [],
 }
 
@@ -56,6 +56,62 @@ async function mountPanel() {
 
 describe('race configuration actions', () => {
   beforeEach(() => vi.resetAllMocks())
+
+  it('retires and reactivates a historical revision while keeping its race visible and edits locked', async () => {
+    const historical = { ...course, immutable: true, editBlock: 'historical' as const, hasActiveRaces: false }
+    const retired = { ...historical, status: 'Inactive' as const, usable: false }
+    const current = configuration()
+    const inactiveRace = { ...current.races[0], status: 'Inactive' as const }
+    const history = { ...current, races: [inactiveRace] }
+    vi.mocked(loadConfiguration).mockResolvedValueOnce({ ...history, courses: [historical] })
+      .mockResolvedValueOnce({ ...history, courses: [retired] })
+      .mockResolvedValueOnce({ ...history, courses: [historical] })
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const { wrapper, button } = await mountPanel()
+    try {
+      await button('Retire course')!.trigger('click')
+      await flushPromises()
+      expect(saveConfiguration).toHaveBeenCalledWith('event-1', 'courses/course-1/status', 'patch', { status: 'Inactive' })
+      expect(wrapper.text()).toContain('Course · Summit · Revision 1 · 10 km · Retired')
+      expect(button('Add race')!.attributes('disabled')).toBeDefined()
+      expect(button('Edit course')).toBeUndefined()
+      await button('Reactivate course')!.trigger('click')
+      await flushPromises()
+      expect(saveConfiguration).toHaveBeenLastCalledWith('event-1', 'courses/course-1/status', 'patch', { status: 'Active' })
+      expect(button('Edit checkpoints')).toBeUndefined()
+      expect(button('Add race')!.attributes('disabled')).toBeUndefined()
+    } finally {
+      confirm.mockRestore()
+      wrapper.unmount()
+    }
+  })
+
+  it('requires reactivation before editing an inactive standalone course', async () => {
+    const active = { ...course, hasActiveRaces: false }
+    const inactive = { ...active, status: 'Inactive' as const, immutable: true, editBlock: 'inactive' as const, usable: false }
+    vi.mocked(loadConfiguration).mockResolvedValueOnce({ ...configuration(), races: [], courses: [inactive] })
+      .mockResolvedValueOnce({ ...configuration(), races: [], courses: [active] })
+    const { wrapper, button } = await mountPanel()
+
+    expect(wrapper.text()).toContain('Reactivate this course before editing it.')
+    expect(button('Edit course')).toBeUndefined()
+    expect(button('Edit checkpoints')).toBeUndefined()
+    await button('Reactivate course')!.trigger('click')
+    await flushPromises()
+    expect(saveConfiguration).toHaveBeenCalledWith('event-1', 'courses/course-1/status', 'patch', { status: 'Active' })
+    expect(button('Edit course')).toBeDefined()
+    expect(button('Edit checkpoints')).toBeDefined()
+    wrapper.unmount()
+  })
+
+  it('disables retirement for a course used by an active race', async () => {
+    vi.mocked(loadConfiguration).mockResolvedValue({ ...configuration(), courses: [course] })
+    const { wrapper, button } = await mountPanel()
+    expect(button('Retire course')!.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('An active race uses this course.')
+    expect(button('Edit course')).toBeDefined()
+    wrapper.unmount()
+  })
 
   it('duplicates an attached course and opens the independent copy for editing', async () => {
     const attached = { ...configuration(), courses: [course] }
