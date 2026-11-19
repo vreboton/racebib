@@ -313,6 +313,12 @@ try {
         }
         foreach ($changes in @(
                 @{category='aws-cli';exit_code='0';aws_error_code='unknown'},
+                @{category='aws-cli';exit_code='252';aws_error_code='unknown'},
+                @{category='aws-cli';exit_code='255';aws_error_code='AccessDenied'},
+                @{category='aws-arguments';exit_code='255'}, @{category='aws-config';exit_code='252'},
+                @{category='aws-arguments';exit_code='252';aws_error_code='AccessDenied'},
+                @{category='aws-authentication';exit_code='254';aws_error_code='AccessDenied'},
+                @{category='aws-authorization';exit_code='253';aws_error_code='AccessDenied'},
                 @{waiter='stack-create-complete'}, @{service='cloudformation'}, @{operation='wait'},
                 @{category='aws-timeout';exit_code='255'}, @{category='aws-start';exit_code='0'},
                 @{category='aws-encoding';exit_code='0'}, @{category='aws-json';aws_error_code='AccessDenied'},
@@ -326,9 +332,13 @@ try {
             $message=Format-StageInfrastructureFailure ($wrong|ConvertTo-Json -Compress) 'cleanup' 1
             Assert-True ($message.Contains('sanitized diagnostic unavailable')) 'Contradictory error fields fail closed'
         }
-        foreach ($category in @('aws-cli','aws-timeout','aws-start','aws-encoding','aws-json','aws-response')) {
+        foreach ($category in @('aws-cli','aws-arguments','aws-config','aws-authentication','aws-authorization','aws-timeout','aws-start','aws-encoding','aws-json','aws-response')) {
             $valid=$diagnostic.Clone(); $valid.category=$category
-            if ($category -eq 'aws-cli') { $valid.exit_code='255'; $valid.aws_error_code='AccessDenied' }
+            if ($category -eq 'aws-cli') { $valid.exit_code='255'; $valid.aws_error_code='ValidationError' }
+            elseif ($category -eq 'aws-arguments') { $valid.exit_code='252' }
+            elseif ($category -eq 'aws-config') { $valid.exit_code='253' }
+            elseif ($category -eq 'aws-authentication') { $valid.exit_code='254'; $valid.aws_error_code='ExpiredToken' }
+            elseif ($category -eq 'aws-authorization') { $valid.exit_code='254'; $valid.aws_error_code='AccessDenied' }
             elseif ($category -in @('aws-timeout','aws-start','aws-encoding')) { $valid.exit_code='none' }
             elseif ($category -eq 'aws-response') { $valid.phase='cleanup' }
             $message=Format-StageInfrastructureFailure ($valid|ConvertTo-Json -Compress) 'cleanup' 1

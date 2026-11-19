@@ -3,6 +3,7 @@ import contextlib
 import copy
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -60,6 +61,50 @@ class StagingCleanupTests(unittest.TestCase):
             self.assertEqual(infra.cleanup(self.record)['tracked_and_tagged_billable_resources'], 'none')
             infra.destroy(self.directory, self.record)
         self.assertFalse(any(a[0] in ('delete-stack', 'create-stack') for _, a in self.calls))
+
+    def test_cleanup_nat_filter_matches_cli_contract_without_truncating_inventory(self):
+        before = copy.deepcopy(self.record)
+        def process(command, **kwargs):
+            self.assertEqual(command[:6], [self.record['aws_cli'], '--region', infra.REGION,
+                                          '--profile', self.record['profile'], command[5]])
+            self.assertEqual(command[-3:], ['--output', 'json', '--no-cli-pager'])
+            for option in ('--query', '--max-results', '--max-items', '--no-paginate', '--starting-token'):
+                self.assertNotIn(option, command)
+            self.assertEqual(kwargs['env']['AWS_PROFILE'], 'different-environment-profile')
+            self.assertNotIn('RACEBIB_STAGING_GH_TOKEN', kwargs['env'])
+            service, arguments = command[5], command[6:-3]
+            if service == 'ec2':
+                flag = '--filter' if arguments[0] == 'describe-nat-gateways' else '--filters'
+                self.assertIn(flag, arguments)
+                self.assertIn('Name=tag:StageRun,Values='+self.record['run_id'], arguments)
+                self.assertIn('Name=tag:Environment,Values=racebib-staging', arguments)
+                if arguments[0] == 'describe-nat-gateways':
+                    self.assertNotIn('--filters', arguments)
+            return SimpleNamespace(returncode=0, stdout=json.dumps(self.deleted(self.record, service, *arguments)), stderr='')
+        with patch.dict(os.environ, AWS_PROFILE='different-environment-profile', RACEBIB_STAGING_GH_TOKEN='secret'), \
+                patch.object(infra.subprocess, 'run', side_effect=process), patch.object(infra, 'save') as save:
+            self.assertEqual(infra.cleanup(self.record)['tracked_and_tagged_billable_resources'], 'none')
+            save.assert_not_called()
+        self.assertEqual(self.record, before)
+        self.assertTrue(any(args[0] == 'describe-nat-gateways' for _, args in self.calls))
+
+    def test_cli_argument_configuration_and_service_failures_are_distinct_and_sanitized(self):
+        cases = [(2, '', 'aws-arguments', 'none'), (252, 'Unknown options: --filters SECRET', 'aws-arguments', 'none'),
+                 (253, 'SECRET credentials', 'aws-config', 'none'),
+                 (254, 'AccessDenied', 'aws-authorization', 'AccessDenied'),
+                 (255, 'ExpiredToken', 'aws-authentication', 'ExpiredToken'),
+                 (254, 'ValidationError', 'aws-cli', 'ValidationError')]
+        for exit_code, error, category, code in cases:
+            stderr = 'An error occurred ('+error+') when calling SECRET'
+            with self.subTest(exit_code=exit_code, category=category), \
+                    patch.object(infra.subprocess, 'run', return_value=SimpleNamespace(returncode=exit_code, stdout='SECRET', stderr=stderr)):
+                with self.assertRaises(infra.InfrastructureFailure) as caught:
+                    infra.aws(self.record, 'ec2', 'describe-nat-gateways', '--filters', 'SECRET', missing_ok=True)
+                value = infra.diagnostic(caught.exception, 'cleanup')
+                self.assertEqual(value['category'], category)
+                self.assertEqual(value['aws_error_code'], code)
+                self.assertEqual(value['exit_code'], str(exit_code))
+                self.assertNotIn('SECRET', json.dumps(value))
 
     def test_failed_creation_wait_keeps_stack_identity_without_target_and_never_resubmits(self):
         record = self.fixture.record

@@ -90,7 +90,8 @@ function Format-StageInfrastructureFailure([string]$Json,[string]$Action,[int]$E
         $value=& $script:Core { param($j,$f) ConvertFrom-RaceBibEvidenceJson $j $f } $Json $fields
         if ($value.protocol -cne 'racebib-stage-error-v1' -or $value.action -cne $Action -or
             $Action -cnotin @('plan','create','inspect','trust','destroy','cleanup') -or
-            $value.category -cnotin @('controller','aws-cli','aws-timeout','aws-start','aws-json','aws-encoding','aws-response') -or
+            $value.category -cnotin @('controller','aws-cli','aws-arguments','aws-config','aws-authentication','aws-authorization',
+                'aws-timeout','aws-start','aws-json','aws-encoding','aws-response') -or
             $value.service -cnotin @('none','ec2','sts','cloudformation') -or
             $value.operation -cnotin @('none','get-caller-identity','describe-images','create-stack','describe-stacks','get-template',
                 'list-stack-resources','describe-stack-events','describe-vpcs','describe-subnets','describe-security-groups',
@@ -131,7 +132,19 @@ function Format-StageInfrastructureFailure([string]$Json,[string]$Action,[int]$E
             } elseif ($value.waiter -cne 'none') { throw 'Waiter attached to a non-wait operation.' }
             switch -CaseSensitive ($value.category) {
                 'aws-cli' {
-                    if ($value.exit_code -cnotmatch '\A-?[1-9][0-9]{0,9}\z' -or $value.aws_error_code -ceq 'none' -or $value.phase -cne 'aws') { throw 'Contradictory CLI failure.' }
+                    if ($value.exit_code -cnotmatch '\A-?[1-9][0-9]{0,9}\z' -or $value.exit_code -cin @('2','252','253') -or
+                        $value.aws_error_code -cin @('none','AccessDenied','AccessDeniedException','UnauthorizedOperation',
+                            'ExpiredToken','ExpiredTokenException','InvalidClientTokenId','RequestExpired') -or $value.phase -cne 'aws') { throw 'Contradictory CLI failure.' }
+                }
+                { $_ -cin @('aws-arguments','aws-config') } {
+                    $codes=if ($value.category -ceq 'aws-config') { @('253') } else { @('2','252') }
+                    if ($value.exit_code -cnotin $codes -or $value.aws_error_code -cne 'none' -or $value.phase -cne 'aws') { throw 'Contradictory local CLI failure.' }
+                }
+                { $_ -cin @('aws-authentication','aws-authorization') } {
+                    $codes=if ($value.category -ceq 'aws-authentication') { @('ExpiredToken','ExpiredTokenException','InvalidClientTokenId','RequestExpired') }
+                           else { @('AccessDenied','AccessDeniedException','UnauthorizedOperation') }
+                    if ($value.exit_code -cnotmatch '\A-?[1-9][0-9]{0,9}\z' -or $value.exit_code -cin @('2','252','253') -or
+                        $value.aws_error_code -cnotin $codes -or $value.phase -cne 'aws') { throw 'Contradictory authentication/authorization failure.' }
                 }
                 { $_ -cin @('aws-json','aws-response') } {
                     $expectedPhase=if ($value.category -ceq 'aws-response') { 'cleanup' } else { 'aws' }

@@ -93,6 +93,10 @@ def aws(record, service, *arguments, missing_ok=False):
     except UnicodeError:
         raise InfrastructureFailure("aws-encoding", safe_service, operation, waiter) from None
     if result.returncode:
+        # Local CLI parsing/configuration failures have no trustworthy AWS service error code.
+        if result.returncode in (2, 252, 253):
+            category = 'aws-config' if result.returncode == 253 else 'aws-arguments'
+            raise InfrastructureFailure(category, safe_service, operation, waiter, result.returncode)
         match = re.search(r"An error occurred \(([A-Za-z0-9.]+)\) when calling", result.stderr)
         code = match[1] if match and match[1] in ERROR_CODES else "unknown"
         selector = arguments[arguments.index("--stack-name") + 1] if "--stack-name" in arguments else ""
@@ -102,7 +106,10 @@ def aws(record, service, *arguments, missing_ok=False):
                             "describe-network-interfaces": "InvalidNetworkInterfaceID.NotFound", "describe-volumes": "InvalidVolume.NotFound"}
         if missing_ok and (missing_stack or code == missing_resource.get(operation)):
             return None
-        raise InfrastructureFailure("aws-cli", safe_service, operation, waiter, result.returncode, code)
+        category = ('aws-authorization' if code in {'AccessDenied', 'AccessDeniedException', 'UnauthorizedOperation'} else
+                    'aws-authentication' if code in {'ExpiredToken', 'ExpiredTokenException', 'InvalidClientTokenId', 'RequestExpired'} else
+                    'aws-cli')
+        raise InfrastructureFailure(category, safe_service, operation, waiter, result.returncode, code)
     try:
         value = json.loads(result.stdout) if result.stdout.strip() else {}
         if not isinstance(value, dict):
@@ -454,7 +461,8 @@ def cleanup(record):
     for operation, key in [("describe-instances", "Reservations"), ("describe-volumes", "Volumes"),
                            ("describe-addresses", "Addresses"), ("describe-nat-gateways", "NatGateways"), ("describe-snapshots", "Snapshots"),
                            ("describe-network-interfaces", "NetworkInterfaces"), ("describe-vpcs", "Vpcs")]:
-        args = [operation, "--filters", *filters]
+        filter_option = '--filter' if operation == 'describe-nat-gateways' else '--filters'
+        args = [operation, filter_option, *filters]
         if operation == "describe-snapshots":
             args += ["--owner-ids", "self"]
         response = aws(record, "ec2", *args)
