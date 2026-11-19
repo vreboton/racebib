@@ -57,3 +57,5 @@ Use ASP.NET Core Identity's sign-in workflow so configured lockout and failed-lo
 
 Milestone 1 establishes event setup and administration only: organizer tenancy, event/race/category/wave/course/checkpoint configuration, runner records, registrations, authentication and administrative UI. The checkpoint timing PWA, offline synchronization, RFID reader, raw timing ingestion, split calculations and public live tracking remain future milestones.
 
+
+[Runner registration architecture and CSV workflow](runner-registration.md)

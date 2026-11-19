@@ -142,6 +142,9 @@ public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> op
             e.Property(x => x.FirstName).HasMaxLength(100).IsRequired();
             e.Property(x => x.LastName).HasMaxLength(100).IsRequired();
             e.Property(x => x.Email).HasMaxLength(254);
+            e.Property(x => x.Gender).HasMaxLength(40);
+            e.Property(x => x.MobileNumber).HasMaxLength(40);
+            e.Property(x => x.EmergencyContact).HasMaxLength(250);
             e.HasAlternateKey(x => new { x.Id, x.OrganizerId });
             e.HasOne(x => x.Organizer).WithMany().HasForeignKey(x => x.OrganizerId);
             e.HasIndex(x => new { x.OrganizerId, x.Email });
@@ -149,7 +152,16 @@ public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> op
         b.Entity<Registration>(e =>
         {
             e.HasIndex(x => new { x.EventId, x.BibNumber }).IsUnique();
-            e.Property(x => x.BibNumber).HasMaxLength(32).IsRequired();
+            // The migration reserves NULL solely for grandfathered duplicates.
+            e.Property<bool?>("EventRunnerUniquenessSlot").HasDefaultValue(true);
+            e.HasIndex(nameof(Registration.EventId), nameof(Registration.RunnerId), "EventRunnerUniquenessSlot")
+                .IsUnique().HasDatabaseName("UX_Registrations_Event_Runner_Slot");
+            e.ToTable(table => table.HasCheckConstraint("CK_Registrations_EventRunnerSlot",
+                "EventRunnerUniquenessSlot IS NULL OR EventRunnerUniquenessSlot = 1"));
+            e.Property(x => x.BibNumber).HasMaxLength(32);
+            e.Property(x => x.BibDisplayName).HasMaxLength(120);
+            e.Property(x => x.Team).HasMaxLength(100);
+            e.Property(x => x.PaymentStatus).HasConversion<string>().HasMaxLength(24);
             e.Property(x => x.RegistrationStatus).HasConversion<string>().HasMaxLength(24);
             e.HasOne(x => x.Race).WithMany(x => x.Registrations)
                 .HasForeignKey(x => new { x.RaceId, x.EventId })

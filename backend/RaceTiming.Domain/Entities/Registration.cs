@@ -11,7 +11,16 @@ public sealed class Registration
     public Guid RunnerId { get; set; }
     public Guid? RaceCategoryId { get; set; }
     public Guid? StartWaveId { get; set; }
-    public required string BibNumber { get; set; }
+    public string? BibNumber { get; set; }
+    public string? BibDisplayName { get; set; }
+    public PaymentStatus PaymentStatus { get; set; }
+    public string? Team { get; set; }
+
+    public string EffectiveBibDisplayName => DisplayName(BibDisplayName, Runner.FirstName, Runner.LastName);
+
+    public static string DisplayName(string? bibDisplayName, string firstName, string lastName) =>
+        string.IsNullOrWhiteSpace(bibDisplayName)
+        ? $"{firstName} {lastName}" : bibDisplayName.Trim();
     public RegistrationStatus RegistrationStatus { get; set; } = RegistrationStatus.Pending;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public Event Event { get; set; } = null!;

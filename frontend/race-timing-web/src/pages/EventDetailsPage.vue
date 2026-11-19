@@ -44,6 +44,7 @@
         </div>
       </v-card-text>
     </v-card>
+    <RegistrationPanel v-if="canEdit" :key="event.id" :event-id="event.id" :organizer-id="event.organizerId" />
     <RaceConfigurationPanel :event-id="event.id" :zone="event.timeZoneId" />
   </template>
   <v-snackbar v-model="success" color="success" timeout="2500">Event status updated.</v-snackbar>
@@ -54,6 +55,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { eventStatusTransitions, eventsApi, getApiError } from '../services/events'
 import type { EventDetails, EventStatus } from '../services/events'
+import RegistrationPanel from '../components/events/RegistrationPanel.vue'
 import RaceConfigurationPanel from '../components/events/RaceConfigurationPanel.vue'
 import { useAuthStore } from '../stores/auth'
 
