@@ -32,6 +32,9 @@
               <p v-else-if="course.editBlock === 'historical'" class="text-medium-emphasis">
                 This historical revision is read-only. Duplicate the course to make an editable copy.
               </p>
+              <p v-else-if="course.editBlock === 'inactive'" class="text-medium-emphasis">
+                Reactivate this course before editing it.
+              </p>
               <p v-if="configuration.canEdit && course.status === 'Active' && course.hasActiveRaces" class="text-medium-emphasis">
                 An active race uses this course. Retire the race or switch it to an eligible course before retiring this course.
               </p>

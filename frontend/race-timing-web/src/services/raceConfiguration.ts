@@ -27,7 +27,7 @@ export interface Course extends Entry {
   distanceKm: number
   elevationGainMeters: number | null
   immutable: boolean
-  editBlock: 'historical' | 'registrations' | null
+  editBlock: 'historical' | 'registrations' | 'inactive' | null
   usable: boolean
   hasActiveRaces: boolean
   checkpoints: Checkpoint[]

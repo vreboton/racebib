@@ -94,9 +94,9 @@ public sealed partial class RaceConfigurationController(
             courses = courses.Select(x => new
             {
                 x.Id, x.Name, x.Version, x.Description, x.DistanceKm, x.ElevationGainMeters, x.Status,
-                immutable = historicalCourseIds.Contains(x.Id) || registeredCourseIds.Contains(x.Id),
+                immutable = x.Status != RecordStatus.Active || historicalCourseIds.Contains(x.Id) || registeredCourseIds.Contains(x.Id),
                 editBlock = historicalCourseIds.Contains(x.Id) ? "historical" :
-                    registeredCourseIds.Contains(x.Id) ? "registrations" : null,
+                    x.Status != RecordStatus.Active ? "inactive" : registeredCourseIds.Contains(x.Id) ? "registrations" : null,
                 hasActiveRaces = activeCourseIds.Contains(x.Id),
                 usable = IsUsable(x),
                 checkpoints = x.Checkpoints.OrderBy(c => c.Sequence).Select(c => new

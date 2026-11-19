@@ -86,6 +86,24 @@ describe('race configuration actions', () => {
     }
   })
 
+  it('requires reactivation before editing an inactive standalone course', async () => {
+    const active = { ...course, hasActiveRaces: false }
+    const inactive = { ...active, status: 'Inactive' as const, immutable: true, editBlock: 'inactive' as const, usable: false }
+    vi.mocked(loadConfiguration).mockResolvedValueOnce({ ...configuration(), races: [], courses: [inactive] })
+      .mockResolvedValueOnce({ ...configuration(), races: [], courses: [active] })
+    const { wrapper, button } = await mountPanel()
+
+    expect(wrapper.text()).toContain('Reactivate this course before editing it.')
+    expect(button('Edit course')).toBeUndefined()
+    expect(button('Edit checkpoints')).toBeUndefined()
+    await button('Reactivate course')!.trigger('click')
+    await flushPromises()
+    expect(saveConfiguration).toHaveBeenCalledWith('event-1', 'courses/course-1/status', 'patch', { status: 'Active' })
+    expect(button('Edit course')).toBeDefined()
+    expect(button('Edit checkpoints')).toBeDefined()
+    wrapper.unmount()
+  })
+
   it('disables retirement for a course used by an active race', async () => {
     vi.mocked(loadConfiguration).mockResolvedValue({ ...configuration(), courses: [course] })
     const { wrapper, button } = await mountPanel()

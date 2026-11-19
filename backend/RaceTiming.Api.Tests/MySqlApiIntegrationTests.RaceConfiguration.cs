@@ -515,7 +515,9 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.True(restored.GetProperty("usable").GetBoolean());
         Assert.True(restored.GetProperty("immutable").GetBoolean());
         using var stillReadOnly = await client.PutAsJsonAsync(routePath, routeInput);
+        using var metadataStillReadOnly = await client.PutAsJsonAsync(coursePath, courseInput);
         Assert.Equal(HttpStatusCode.Conflict, stillReadOnly.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, metadataStillReadOnly.StatusCode);
 
         var raceToSwitch = firstRace with { name = "Future race" };
         var switchId = await CreatedId(await client.PostAsJsonAsync(path + "/races", raceToSwitch));
@@ -530,6 +532,80 @@ public sealed partial class MySqlApiIntegrationTests
         await db.SaveChangesAsync();
         using var lifecycleLocked = await client.PatchAsJsonAsync($"{path}/courses/{successorId}/status", active);
         Assert.Equal(HttpStatusCode.Conflict, lifecycleLocked.StatusCode);
+    }
+
+    [MySqlIntegrationFact]
+    [Trait("Category", "MySqlIntegration")]
+    public async Task RetiredStandaloneCoursesRequireReactivationBeforeEditing()
+    {
+        await using var data = new MySqlTestData(Services);
+        var account = await data.CreateAccountAsync();
+        var organizerId = await data.CreateOrganizerAsync(account, OrganizerRole.RaceDirector);
+        var eventId = await data.CreateEventAsync(organizerId);
+        using var client = Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await LoginAsync(client, account));
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+        var start = await db.Events.Where(x => x.Id == eventId).Select(x => x.StartDate).SingleAsync();
+        var startAt = start.AddMinutes(5).ToString("yyyy-MM-ddTHH:mm:ss") + "Z";
+        var path = $"/api/v1/events/{eventId}";
+        var points = new[]
+        {
+            new RoutePoint(null, "Start", "S", 1, 0, IsStart: true),
+            new RoutePoint(null, "Finish", "F", 2, 10, IsFinish: true)
+        };
+
+        foreach (var scenario in new[] { (Name: "Unused course", HasRace: false), (Name: "Inactive race course", HasRace: true) })
+        {
+            var courseId = await CreatedId(await client.PostAsJsonAsync(path + "/courses", new { name = scenario.Name, distanceKm = 10 }));
+            var coursePath = $"{path}/courses/{courseId}";
+            var routePath = coursePath + "/checkpoints";
+            using var initialRoute = await client.PutAsJsonAsync(routePath, new { distanceKm = 10, checkpoints = points });
+            Assert.Equal(HttpStatusCode.NoContent, initialRoute.StatusCode);
+            if (scenario.HasRace)
+            {
+                var raceId = await CreatedId(await client.PostAsJsonAsync(path + "/races", new { name = "Inactive race", courseId, startAt }));
+                using var retireRace = await client.DeleteAsync($"{path}/races/{raceId}");
+                Assert.Equal(HttpStatusCode.NoContent, retireRace.StatusCode);
+            }
+
+            async Task<JsonElement> ReadCourse() =>
+                (await client.GetFromJsonAsync<JsonElement>(path + "/configuration")).GetProperty("courses")
+                .EnumerateArray().Single(x => x.GetProperty("id").GetGuid() == courseId);
+
+            using var retired = await client.PatchAsJsonAsync(coursePath + "/status", new { status = "Inactive" });
+            Assert.Equal(HttpStatusCode.NoContent, retired.StatusCode);
+            var before = await ReadCourse();
+            Assert.True(before.GetProperty("immutable").GetBoolean());
+            Assert.Equal("inactive", before.GetProperty("editBlock").GetString());
+
+            var ids = before.GetProperty("checkpoints").EnumerateArray().Select(x => x.GetProperty("id").GetGuid()).ToArray();
+            var edits = points.Select((p, index) => p with { Id = ids[index] }).ToArray();
+            edits[1] = edits[1] with { Name = "Finish gate" };
+            var metadata = new { name = scenario.Name + " updated", distanceKm = 10 };
+            var changedRoute = new { distanceKm = 10, checkpoints = edits };
+            using var blockedMetadata = await client.PutAsJsonAsync(coursePath, metadata);
+            using var blockedRoute = await client.PutAsJsonAsync(routePath, changedRoute);
+            foreach (var response in new[] { blockedMetadata, blockedRoute })
+            {
+                Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+                Assert.Equal("Reactivate this course before editing it.",
+                    (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("title").GetString());
+            }
+            Assert.Equal(before.GetRawText(), (await ReadCourse()).GetRawText());
+
+            using var reactivated = await client.PatchAsJsonAsync(coursePath + "/status", new { status = "Active" });
+            Assert.Equal(HttpStatusCode.NoContent, reactivated.StatusCode);
+            Assert.False((await ReadCourse()).GetProperty("immutable").GetBoolean());
+            using var editedMetadata = await client.PutAsJsonAsync(coursePath, metadata);
+            using var editedRoute = await client.PutAsJsonAsync(routePath, changedRoute);
+            Assert.Equal(HttpStatusCode.OK, editedMetadata.StatusCode);
+            Assert.Equal(HttpStatusCode.NoContent, editedRoute.StatusCode);
+            var after = await ReadCourse();
+            Assert.Equal(metadata.name, after.GetProperty("name").GetString());
+            Assert.Equal("Finish gate", after.GetProperty("checkpoints")[1].GetProperty("name").GetString());
+            Assert.Equal(ids[1], after.GetProperty("checkpoints")[1].GetProperty("id").GetGuid());
+        }
     }
 
     private static async Task<Guid> CreatedId(HttpResponseMessage response)
