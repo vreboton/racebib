@@ -20,6 +20,25 @@ public sealed partial class RaceConfigurationController
     public Task<IActionResult> UpdateCourse(Guid eventId, Guid courseId, CourseInput input, CancellationToken ct) =>
         SaveCourse(eventId, courseId, input, ct);
 
+    public sealed record CourseStatusInput(RecordStatus? Status);
+
+    [HttpPatch("courses/{courseId:guid}/status")]
+    public Task<IActionResult> ChangeCourseStatus(Guid eventId, Guid courseId, CourseStatusInput input, CancellationToken ct) =>
+        WithEvent(eventId, true, ct, async _ =>
+        {
+            var course = await db.Courses.SingleOrDefaultAsync(x => x.EventId == eventId && x.Id == courseId, ct);
+            if (course is null) return NotFound();
+            if (input.Status is not (RecordStatus.Active or RecordStatus.Inactive))
+                return Invalid("Choose Active or Inactive for the course status.");
+            if (course.Status == input.Status) return NoContent();
+            if (input.Status == RecordStatus.Inactive && await ActiveCourseRaces(eventId).AnyAsync(x => x.CourseId == courseId, ct))
+                return ConflictProblem("This course is used by an active race. Retire the race or switch it to an eligible course before retiring this course.");
+
+            course.Status = input.Status.Value;
+            await db.SaveChangesAsync(ct);
+            return NoContent();
+        });
+
     private Task<IActionResult> SaveCourse(Guid eventId, Guid? courseId, CourseInput input, CancellationToken ct) =>
         WithEvent(eventId, true, ct, async _ =>
         {
@@ -42,9 +61,11 @@ public sealed partial class RaceConfigurationController
             if (course.Checkpoints.Any(x => x.DistanceFromStartKm > input.DistanceKm ||
                 (x.IsFinish && x.DistanceFromStartKm != input.DistanceKm)))
                 return Invalid("Update finish and checkpoint distances together with the course distance.");
-            if (races.Count > 0 && (course.Status != RecordStatus.Active ||
-                ValidateRoute(input.DistanceKm, course.Checkpoints.OrderBy(x => x.Sequence).Select(CheckpointValue).ToArray(), true) is not null))
-                return Invalid("An assigned course must remain active with a valid start, finish, and checkpoint layout. Edit the checkpoints to correct the route.");
+            if (course.Status != RecordStatus.Active && races.Any(x => x.Status == RecordStatus.Active))
+                return Invalid("A course used by an active race must be active.");
+            if (races.Count > 0 &&
+                ValidateRoute(input.DistanceKm, course.Checkpoints.OrderBy(x => x.Sequence).Select(CheckpointValue).ToArray(), true) is not null)
+                return Invalid("An assigned course needs a valid Start, Finish, and checkpoint layout. Edit the checkpoints to correct the route.");
             course.Name = name;
             course.Description = input.Description?.Trim();
             SetCourseDistance(course, races, input.DistanceKm);
@@ -130,8 +151,8 @@ public sealed partial class RaceConfigurationController
             if (input.Checkpoints is null || input.Checkpoints.Any(x => x is null))
                 return Invalid("Provide a checkpoint list without empty entries.");
             var ordered = input.Checkpoints.OrderBy(x => x.Sequence).ToArray();
-            if (races.Count > 0 && course.Status != RecordStatus.Active)
-                return Invalid("A course assigned to a race must be active.");
+            if (course.Status != RecordStatus.Active && races.Any(x => x.Status == RecordStatus.Active))
+                return Invalid("A course used by an active race must be active.");
             if (ValidateRoute(input.DistanceKm, ordered, races.Count > 0) is { } error)
                 return Invalid(error);
 
@@ -181,6 +202,9 @@ public sealed partial class RaceConfigurationController
     private static string CourseEditMessage(string block) => block == "historical"
         ? "This historical course revision is read-only. Duplicate the course to make an editable copy."
         : "This course is used by a race with registrations. Duplicate the course to make an editable copy.";
+
+    private IQueryable<Race> ActiveCourseRaces(Guid eventId) =>
+        db.Races.Where(x => x.EventId == eventId && x.Status == RecordStatus.Active);
 
     private Task<List<Race>> ReferencingRaces(Course course, CancellationToken ct) =>
         db.Races.Where(x => x.EventId == course.EventId && x.CourseId == course.Id).ToListAsync(ct);

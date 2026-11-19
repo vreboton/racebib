@@ -73,6 +73,7 @@ public sealed partial class RaceConfigurationController(
             .Include(x => x.Checkpoints).OrderBy(x => x.Name).ThenBy(x => x.Version).ToListAsync(ct);
         var races = await db.Races.AsNoTracking().Where(x => x.EventId == eventId)
             .Include(x => x.Categories).Include(x => x.StartWaves).AsSplitQuery().OrderBy(x => x.Name).ToListAsync(ct);
+        var activeCourseIds = races.Where(x => x.Status == RecordStatus.Active).Select(x => x.CourseId).ToHashSet();
         var historicalCourseIds = (await HistoricalCourses(eventId).ToListAsync(ct)).ToHashSet();
         var history = await db.Registrations.Where(x => x.EventId == eventId)
             .Select(x => new { x.RaceId, x.RaceCategoryId, x.StartWaveId }).Distinct().ToListAsync(ct);
@@ -83,7 +84,7 @@ public sealed partial class RaceConfigurationController(
         var newerRevisions = (await (
             from race in db.Races
             join course in db.Courses on new { race.EventId, race.Course.Name } equals new { course.EventId, course.Name }
-            where race.EventId == eventId && course.Version > race.Course.Version
+            where race.EventId == eventId && course.Status == RecordStatus.Active && course.Version > race.Course.Version
             select new { RaceId = race.Id, CourseId = course.Id }).ToListAsync(ct))
             .ToLookup(x => x.RaceId, x => x.CourseId);
         return Ok(new
@@ -96,6 +97,7 @@ public sealed partial class RaceConfigurationController(
                 immutable = historicalCourseIds.Contains(x.Id) || registeredCourseIds.Contains(x.Id),
                 editBlock = historicalCourseIds.Contains(x.Id) ? "historical" :
                     registeredCourseIds.Contains(x.Id) ? "registrations" : null,
+                hasActiveRaces = activeCourseIds.Contains(x.Id),
                 usable = IsUsable(x),
                 checkpoints = x.Checkpoints.OrderBy(c => c.Sequence).Select(c => new
                 {
@@ -129,7 +131,8 @@ public sealed partial class RaceConfigurationController(
             var history = await db.Registrations.Where(x => x.RaceId == raceId)
                 .Select(x => new { x.RaceCategoryId, x.StartWaveId }).Distinct().ToListAsync(ct);
             var revisions = history.Count > 0 ? [] : await db.Courses
-                .Where(x => x.EventId == eventId && x.Name == race.Course.Name && x.Version > race.Course.Version)
+                .Where(x => x.EventId == eventId && x.Status == RecordStatus.Active &&
+                    x.Name == race.Course.Name && x.Version > race.Course.Version)
                 .Select(x => x.Id).ToListAsync(ct);
             return Ok(RaceDto(race, revisions, history.Select(x => x.RaceCategoryId).ToHashSet(),
                 history.Select(x => x.StartWaveId).ToHashSet()));

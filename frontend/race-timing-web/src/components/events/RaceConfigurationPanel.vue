@@ -32,10 +32,16 @@
               <p v-else-if="course.editBlock === 'historical'" class="text-medium-emphasis">
                 This historical revision is read-only. Duplicate the course to make an editable copy.
               </p>
+              <p v-if="configuration.canEdit && course.status === 'Active' && course.hasActiveRaces" class="text-medium-emphasis">
+                An active race uses this course. Retire the race or switch it to an eligible course before retiring this course.
+              </p>
               <div v-if="configuration.canEdit" class="d-flex flex-wrap ga-2 mt-3">
                 <v-btn v-if="!course.immutable" variant="text" @click="editCourse(course)">Edit course</v-btn>
                 <v-btn v-if="!course.immutable" variant="text" @click="editRoute(course)">Edit checkpoints</v-btn>
                 <v-btn variant="text" :disabled="busy" @click="duplicateCourse(course)">Duplicate course</v-btn>
+                <v-btn v-if="course.status === 'Active'" variant="text" color="error" :disabled="busy || course.hasActiveRaces"
+                  @click="changeCourseStatus(course, 'Inactive')">Retire course</v-btn>
+                <v-btn v-else variant="text" :disabled="busy" @click="changeCourseStatus(course, 'Active')">Reactivate course</v-btn>
               </div>
             </v-expansion-panel-text>
           </v-expansion-panel>
@@ -53,6 +59,7 @@
             :title="`${race.name} · ${race.distanceKm} km${race.status === 'Inactive' ? ' · Retired' : ''}`">
             <v-expansion-panel-text>
               <p>{{ displayStart(race.startAt) }} ({{ zone }})</p>
+              <p v-if="courseById.get(race.courseId)">Course · {{ courseLabel(courseById.get(race.courseId)!) }}</p>
               <p v-if="race.description">{{ race.description }}</p>
               <div v-if="editable(race)" class="d-flex flex-wrap ga-2 my-2">
                 <v-btn variant="text" @click="editRace(race)">Edit race</v-btn>
@@ -192,6 +199,7 @@ type Editor = EditorBase & (
 const editor = ref<Editor>()
 let pointKey = 0
 const usableCourses = computed(() => configuration.value?.courses.filter(c => c.usable) ?? [])
+const courseById = computed(() => new Map(configuration.value?.courses.map(course => [course.id, course])))
 watch(() => props.eventId, reload, { immediate: true })
 
 function displayStart(value: string) {
@@ -213,9 +221,10 @@ async function reload() {
 }
 function courseLabel(course: Course) {
   const revision = course.version > 1 || course.editBlock === 'historical' ? ` · Revision ${course.version}` : ''
-  return `${course.name}${revision} · ${course.distanceKm} km`
+  const status = course.status === 'Inactive' ? ' · Retired' : ''
+  return `${course.name}${revision} · ${course.distanceKm} km${status}`
 }
-async function mutate(path: string, method: 'post' | 'put' | 'delete', payload?: unknown,
+async function mutate(path: string, method: 'post' | 'put' | 'patch' | 'delete', payload?: unknown,
   onSaved?: (id: string) => void) {
   busy.value = true
   error.value = ''
@@ -232,6 +241,10 @@ function duplicateCourse(course: Course) {
     const copy = configuration.value?.courses.find(item => item.id === id)
     if (copy && configuration.value?.canEdit && !copy.immutable) editCourse(copy)
   })
+}
+function changeCourseStatus(course: Course, status: Course['status']) {
+  if (status === 'Inactive' && !window.confirm(`Retire ${course.name}? Existing race records will keep this course.`)) return
+  void mutate(`courses/${course.id}/status`, 'patch', { status })
 }
 function retire(name: string, path: string) {
   if (window.confirm(`Retire ${name}? Existing records will remain available.`)) void mutate(path, 'delete')

@@ -29,6 +29,7 @@ export interface Course extends Entry {
   immutable: boolean
   editBlock: 'historical' | 'registrations' | null
   usable: boolean
+  hasActiveRaces: boolean
   checkpoints: Checkpoint[]
 }
 
@@ -70,7 +71,7 @@ export async function loadConfiguration(eventId: string) {
 }
 
 export async function saveConfiguration<T = void>(eventId: string, path: string,
-  method: 'post' | 'put' | 'delete', data?: unknown) {
+  method: 'post' | 'put' | 'patch' | 'delete', data?: unknown) {
   const response = await api.request<T>({ method, url: `/events/${eventId}/${path}`, data })
   return response.data
 }
