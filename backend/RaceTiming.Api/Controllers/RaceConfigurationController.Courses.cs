@@ -28,8 +28,9 @@ public sealed partial class RaceConfigurationController
             var course = courseId is null ? new Course { EventId = eventId, Name = input.Name.Trim() }
                 : await FindCourse(eventId, courseId.Value, ct);
             if (course is null) return NotFound();
-            if (courseId.HasValue && await IsImmutable(course, ct))
-                return ConflictProblem("This course revision is historical or assigned to a race. Clone a revision to edit it.");
+            if (courseId.HasValue && await CourseEditBlock(eventId, course.Id, ct) is { } block)
+                return ConflictProblem(CourseEditMessage(block));
+            var races = courseId.HasValue ? await ReferencingRaces(course, ct) : [];
             var name = input.Name.Trim();
             if (courseId.HasValue && course.Name != name &&
                 (course.Version > 1 || await db.Courses.AnyAsync(x =>
@@ -41,9 +42,12 @@ public sealed partial class RaceConfigurationController
             if (course.Checkpoints.Any(x => x.DistanceFromStartKm > input.DistanceKm ||
                 (x.IsFinish && x.DistanceFromStartKm != input.DistanceKm)))
                 return Invalid("Update finish and checkpoint distances together with the course distance.");
+            if (races.Count > 0 && (course.Status != RecordStatus.Active ||
+                ValidateRoute(input.DistanceKm, course.Checkpoints.OrderBy(x => x.Sequence).Select(CheckpointValue).ToArray(), true) is not null))
+                return Invalid("An assigned course must remain active with a valid start, finish, and checkpoint layout. Edit the checkpoints to correct the route.");
             course.Name = name;
             course.Description = input.Description?.Trim();
-            course.DistanceKm = input.DistanceKm;
+            SetCourseDistance(course, races, input.DistanceKm);
             course.ElevationGainMeters = input.ElevationGainMeters;
             if (courseId is null) db.Courses.Add(course);
             await db.SaveChangesAsync(ct);
@@ -58,25 +62,59 @@ public sealed partial class RaceConfigurationController
             if (source is null) return NotFound();
             var lastVersion = await db.Courses.Where(x => x.EventId == eventId && x.Name == source.Name)
                 .MaxAsync(x => x.Version, ct);
-            var revision = new Course
-            {
-                EventId = eventId, Name = source.Name, Version = lastVersion + 1,
-                DistanceKm = source.DistanceKm, ElevationGainMeters = source.ElevationGainMeters,
-                Description = source.Description
-            };
-            foreach (var checkpoint in source.Checkpoints)
-            {
-                var copy = new CourseCheckpoint { CourseId = revision.Id, Name = checkpoint.Name, Code = checkpoint.Code };
-                SetCheckpoint(copy, new(null, checkpoint.Name, checkpoint.Code, checkpoint.Sequence,
-                    checkpoint.DistanceFromStartKm, checkpoint.ElevationMeters, checkpoint.IsMandatory,
-                    checkpoint.IsStart, checkpoint.IsFinish, checkpoint.HasCutoff, checkpoint.CutoffDurationSeconds,
-                    checkpoint.Description));
-                revision.Checkpoints.Add(copy);
-            }
+            var revision = CopyCourse(source, source.Name, lastVersion + 1);
             db.Courses.Add(revision);
             await db.SaveChangesAsync(ct);
             return Ok(new { revision.Id, revision.Version });
         });
+
+    [HttpPost("courses/{courseId:guid}/duplicate")]
+    public Task<IActionResult> DuplicateCourse(Guid eventId, Guid courseId, CancellationToken ct) =>
+        WithEvent(eventId, true, ct, async _ =>
+        {
+            var source = await FindCourse(eventId, courseId, ct);
+            if (source is null) return NotFound();
+
+            // WithEvent holds the parent row lock through name allocation and insertion.
+            var copyNumber = 1;
+            string name;
+            do
+            {
+                var suffix = copyNumber == 1 ? " (Copy)" : FormattableString.Invariant($" (Copy {copyNumber})");
+                var prefixLength = Math.Min(source.Name.Length, 160 - suffix.Length);
+                if (prefixLength < source.Name.Length && char.IsHighSurrogate(source.Name[prefixLength - 1]))
+                    prefixLength--;
+                name = source.Name[..prefixLength].TrimEnd() + suffix;
+                copyNumber++;
+            }
+            while (await db.Courses.AnyAsync(x => x.EventId == eventId && x.Name == name, ct));
+
+            var duplicate = CopyCourse(source, name, 1);
+            db.Courses.Add(duplicate);
+            await db.SaveChangesAsync(ct);
+            return Ok(new { duplicate.Id, duplicate.Name, duplicate.Version });
+        });
+
+    private static Course CopyCourse(Course source, string name, int version)
+    {
+        var copy = new Course
+        {
+            EventId = source.EventId, Name = name, Version = version, DistanceKm = source.DistanceKm,
+            ElevationGainMeters = source.ElevationGainMeters, Description = source.Description
+        };
+        foreach (var checkpoint in source.Checkpoints)
+        {
+            copy.Checkpoints.Add(new CourseCheckpoint
+            {
+                CourseId = copy.Id, Name = checkpoint.Name, Code = checkpoint.Code, Sequence = checkpoint.Sequence,
+                DistanceFromStartKm = checkpoint.DistanceFromStartKm, ElevationMeters = checkpoint.ElevationMeters,
+                IsMandatory = checkpoint.IsMandatory, IsStart = checkpoint.IsStart, IsFinish = checkpoint.IsFinish,
+                HasCutoff = checkpoint.HasCutoff, CutoffDurationSeconds = checkpoint.CutoffDurationSeconds,
+                Description = checkpoint.Description
+            });
+        }
+        return copy;
+    }
 
     public sealed record RouteInput(decimal DistanceKm, IReadOnlyList<CheckpointInput> Checkpoints);
 
@@ -86,23 +124,16 @@ public sealed partial class RaceConfigurationController
         {
             var course = await FindCourse(eventId, courseId, ct);
             if (course is null) return NotFound();
-            if (await IsImmutable(course, ct))
-                return ConflictProblem("Clone a course revision before editing its checkpoints.");
+            if (await CourseEditBlock(eventId, course.Id, ct) is { } block)
+                return ConflictProblem(CourseEditMessage(block));
+            var races = await ReferencingRaces(course, ct);
             if (input.Checkpoints is null || input.Checkpoints.Any(x => x is null))
                 return Invalid("Provide a checkpoint list without empty entries.");
             var ordered = input.Checkpoints.OrderBy(x => x.Sequence).ToArray();
-            if (input.DistanceKm <= 0 || !FitsDistance(input.DistanceKm) ||
-                ordered.Any(x => !ValidText(x.Name, 160) || !ValidText(x.Code, 40) ||
-                    !FitsDistance(x.DistanceFromStartKm) || x.DistanceFromStartKm < 0 ||
-                    x.DistanceFromStartKm > input.DistanceKm || (x.IsStart && x.IsFinish) ||
-                    (x.HasCutoff ? x.CutoffDurationSeconds is null or <= 0 : x.CutoffDurationSeconds is not null)) ||
-                ordered.Where((x, i) => x.Sequence != i + 1 ||
-                    (i > 0 && x.DistanceFromStartKm < ordered[i - 1].DistanceFromStartKm)).Any() ||
-                ordered.Select(x => x.Code.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).Count() != ordered.Length ||
-                ordered.Count(x => x.IsStart) > 1 || ordered.Count(x => x.IsFinish) > 1 ||
-                ordered.Any(x => (x.IsStart && (x.Sequence != 1 || x.DistanceFromStartKm != 0)) ||
-                    (x.IsFinish && (x.Sequence != ordered.Length || x.DistanceFromStartKm != input.DistanceKm))))
-                return Invalid("Check checkpoint names, unique codes, contiguous sequence, ordered distances, start and finish flags, and positive cutoffs.");
+            if (races.Count > 0 && course.Status != RecordStatus.Active)
+                return Invalid("A course assigned to a race must be active.");
+            if (ValidateRoute(input.DistanceKm, ordered, races.Count > 0) is { } error)
+                return Invalid(error);
 
             var existing = course.Checkpoints.ToDictionary(x => x.Id);
             var submitted = ordered.Where(x => x.Id.HasValue).Select(x => x.Id!.Value).ToArray();
@@ -118,7 +149,7 @@ public sealed partial class RaceConfigurationController
             }
             await db.SaveChangesAsync(ct);
 
-            course.DistanceKm = input.DistanceKm;
+            SetCourseDistance(course, races, input.DistanceKm);
             foreach (var value in ordered)
             {
                 var checkpoint = value.Id is Guid id ? existing[id] :
@@ -133,9 +164,68 @@ public sealed partial class RaceConfigurationController
     private Task<Course?> FindCourse(Guid eventId, Guid courseId, CancellationToken ct) =>
         db.Courses.Include(x => x.Checkpoints).SingleOrDefaultAsync(x => x.EventId == eventId && x.Id == courseId, ct);
 
-    private async Task<bool> IsImmutable(Course course, CancellationToken ct) =>
-        await db.Races.AnyAsync(x => x.CourseId == course.Id, ct) ||
-        await db.Courses.AnyAsync(x => x.EventId == course.EventId && x.Name == course.Name && x.Version > course.Version, ct);
+    private IQueryable<Guid> HistoricalCourses(Guid eventId) =>
+        db.Courses.Where(x => x.EventId == eventId &&
+            db.Courses.Any(other => other.EventId == eventId && other.Name == x.Name && other.Version > x.Version))
+            .Select(x => x.Id);
+
+    private IQueryable<Guid> CoursesWithRegistrations(Guid eventId) =>
+        db.Races.Where(x => x.EventId == eventId && x.Registrations.Any()).Select(x => x.CourseId).Distinct();
+
+    private async Task<string?> CourseEditBlock(Guid eventId, Guid courseId, CancellationToken ct)
+    {
+        if (await HistoricalCourses(eventId).ContainsAsync(courseId, ct)) return "historical";
+        return await CoursesWithRegistrations(eventId).ContainsAsync(courseId, ct) ? "registrations" : null;
+    }
+
+    private static string CourseEditMessage(string block) => block == "historical"
+        ? "This historical course revision is read-only. Duplicate the course to make an editable copy."
+        : "This course is used by a race with registrations. Duplicate the course to make an editable copy.";
+
+    private Task<List<Race>> ReferencingRaces(Course course, CancellationToken ct) =>
+        db.Races.Where(x => x.EventId == course.EventId && x.CourseId == course.Id).ToListAsync(ct);
+
+    private static void SetCourseDistance(Course course, IEnumerable<Race> races, decimal distance)
+    {
+        course.DistanceKm = distance;
+        foreach (var race in races) race.DistanceKm = distance;
+    }
+
+    private static CheckpointInput CheckpointValue(CourseCheckpoint x) => new(x.Id, x.Name, x.Code, x.Sequence,
+        x.DistanceFromStartKm, x.ElevationMeters, x.IsMandatory, x.IsStart, x.IsFinish,
+        x.HasCutoff, x.CutoffDurationSeconds, x.Description);
+
+    private static string? ValidateRoute(decimal distance, CheckpointInput[] points, bool requireEndpoints)
+    {
+        if (distance <= 0 || !FitsDistance(distance))
+            return "Enter a positive course distance with up to three decimal places.";
+        if (points.Any(x => !ValidText(x.Name, 160) || !ValidText(x.Code, 40)))
+            return "Enter a name and code for every checkpoint within their length limits.";
+        if (points.Select(x => x.Code.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).Count() != points.Length)
+            return "Use a unique code for every checkpoint.";
+        var starts = points.Count(x => x.IsStart);
+        var finishes = points.Count(x => x.IsFinish);
+        if (requireEndpoints && (starts == 0 || finishes == 0))
+            return "A course assigned to a race needs a Start and a Finish checkpoint.";
+        if (starts > 1 || finishes > 1 || points.Any(x => x.IsStart && x.IsFinish))
+            return "Mark at most one Start and one Finish on separate checkpoints.";
+        if (points.Any(x => x.IsStart && (x.Sequence != 1 || x.DistanceFromStartKm != 0)))
+            return "Put Start first and set its distance to 0 km.";
+        if (points.Any(x => x.IsFinish && (x.Sequence != points.Length || x.DistanceFromStartKm != distance)))
+            return FormattableString.Invariant($"Put Finish last and set its distance to the course distance ({distance:0.###} km).");
+        for (var i = 0; i < points.Length; i++)
+        {
+            var point = points[i];
+            if (point.Sequence != i + 1)
+                return "Checkpoint positions must start at 1 and have no gaps or duplicates.";
+            if (!FitsDistance(point.DistanceFromStartKm) || point.DistanceFromStartKm < 0 || point.DistanceFromStartKm > distance ||
+                (i > 0 && point.DistanceFromStartKm < points[i - 1].DistanceFromStartKm))
+                return "Put checkpoints in distance order, within the course distance and with up to three decimal places.";
+            if (point.HasCutoff ? point.CutoffDurationSeconds is null or <= 0 : point.CutoffDurationSeconds is not null)
+                return "Enter a positive cutoff duration for each checkpoint with Has cutoff selected.";
+        }
+        return null;
+    }
 
     private static bool FitsDistance(decimal distance) => distance <= 99999.999m && decimal.Round(distance, 3) == distance;
 

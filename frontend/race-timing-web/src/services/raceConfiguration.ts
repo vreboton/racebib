@@ -27,6 +27,8 @@ export interface Course extends Entry {
   distanceKm: number
   elevationGainMeters: number | null
   immutable: boolean
+  editBlock: 'historical' | 'registrations' | null
+  usable: boolean
   checkpoints: Checkpoint[]
 }
 
@@ -67,9 +69,10 @@ export async function loadConfiguration(eventId: string) {
   return data
 }
 
-export async function saveConfiguration(eventId: string, path: string,
+export async function saveConfiguration<T = void>(eventId: string, path: string,
   method: 'post' | 'put' | 'delete', data?: unknown) {
-  await api.request({ method, url: `/events/${eventId}/${path}`, data })
+  const response = await api.request<T>({ method, url: `/events/${eventId}/${path}`, data })
+  return response.data
 }
 
 export function localTime(instant: Date, zone: string): string {
