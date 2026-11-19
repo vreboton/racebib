@@ -58,7 +58,8 @@
                 <span>{{ category.name }} · Ages {{ category.minimumAge ?? 'any' }} to {{ category.maximumAge ?? 'any' }}
                   {{ category.status === 'Inactive' ? '· Retired' : '' }}</span>
                 <template v-if="editable(race) && category.status === 'Active'">
-                  <v-btn variant="text" size="small" @click="editCategory(race, category)">Edit</v-btn>
+                  <span v-if="category.hasRegistrations" class="ms-2 text-medium-emphasis">Used by registrations</span>
+                  <v-btn v-else variant="text" size="small" @click="editCategory(race, category)">Edit</v-btn>
                   <v-btn variant="text" size="small" color="error" @click="retire(category.name, `races/${race.id}/categories/${category.id}`)">Retire</v-btn>
                 </template>
               </div>
@@ -71,7 +72,8 @@
                   {{ wave.capacity ? `· Capacity ${wave.capacity}` : '' }}
                   {{ wave.status === 'Inactive' ? '· Retired' : '' }}</span>
                 <template v-if="editable(race) && wave.status === 'Active'">
-                  <v-btn variant="text" size="small" @click="editWave(race, wave)">Edit</v-btn>
+                  <span v-if="wave.hasRegistrations" class="ms-2 text-medium-emphasis">Used by registrations</span>
+                  <v-btn v-else variant="text" size="small" @click="editWave(race, wave)">Edit</v-btn>
                   <v-btn variant="text" size="small" color="error" @click="retire(wave.name, `races/${race.id}/waves/${wave.id}`)">Retire</v-btn>
                 </template>
               </div>
@@ -239,9 +241,7 @@ function movePoint(index: number, delta: number) {
   points.splice(index + delta, 0, point)
 }
 function editRace(race?: Race) {
-  const current = configuration.value?.courses.find(c => c.id === race?.courseId)
-  const courses = usableCourses.value.filter(c => !current || c.id === current.id ||
-    (c.name === current.name && c.version > current.version))
+  const courses = usableCourses.value.filter(c => !race || c.id === race.courseId || race.revisionIds.includes(c.id))
   editor.value = { ...base(race ? 'Edit race' : 'Add race', 'races', race?.id), kind: 'race',
     name: race?.name ?? '', description: race?.description ?? null, courseId: race?.courseId ?? courses[0]?.id ?? '',
     originalCourse: race?.courseId ?? '', startAt: race?.startAt ?? '', cutoffDurationSeconds: race?.cutoffDurationSeconds ?? null,

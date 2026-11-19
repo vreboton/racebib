@@ -38,7 +38,8 @@ public sealed partial class RaceConfigurationController
             {
                 if (await db.Registrations.AnyAsync(x => x.RaceId == race.Id, ct))
                     return ConflictProblem("A race with registrations cannot switch course revisions.");
-                if (course.Version <= race.Course.Version || !string.Equals(course.Name, race.Course.Name, StringComparison.Ordinal))
+                if (course.Version <= race.Course.Version ||
+                    !await db.Courses.AnyAsync(x => x.Id == course.Id && x.Name == race.Course.Name, ct))
                     return Invalid("Switch to a newer revision of this race's course.");
             }
             if (race.StartWaves.Any(x => x.Status == RecordStatus.Active && x.StartAtUtc < start))
@@ -82,6 +83,11 @@ public sealed partial class RaceConfigurationController
                 : await db.RaceCategories.SingleOrDefaultAsync(x => x.RaceId == raceId && x.Id == categoryId, ct);
             if (category is null) return NotFound();
             if (category.Status != RecordStatus.Active) return ConflictProblem("This category has been retired.");
+            if (categoryId.HasValue && (category.Name != input.Name.Trim() ||
+                category.Description != input.Description?.Trim() || category.MinimumAge != input.MinimumAge ||
+                category.MaximumAge != input.MaximumAge) &&
+                await db.Registrations.AnyAsync(x => x.RaceCategoryId == category.Id, ct))
+                return ConflictProblem("A category used by registrations cannot be edited. Retire it and create a replacement.");
             category.Name = input.Name.Trim();
             category.Description = input.Description?.Trim();
             category.MinimumAge = input.MinimumAge;
@@ -120,6 +126,10 @@ public sealed partial class RaceConfigurationController
                 : await db.StartWaves.SingleOrDefaultAsync(x => x.RaceId == raceId && x.Id == waveId, ct);
             if (wave is null) return NotFound();
             if (wave.Status != RecordStatus.Active) return ConflictProblem("This start wave has been retired.");
+            if (waveId.HasValue && (wave.Name != input.Name.Trim() || wave.Sequence != input.Sequence ||
+                wave.StartAtUtc != start || wave.Capacity != input.Capacity) &&
+                await db.Registrations.AnyAsync(x => x.StartWaveId == wave.Id, ct))
+                return ConflictProblem("A wave used by registrations cannot be edited. Retire it and create a replacement.");
             var otherWaves = db.StartWaves.Where(x => x.RaceId == raceId && x.Id != wave.Id);
             if (await otherWaves.AnyAsync(x => x.Sequence == input.Sequence, ct))
                 return ConflictProblem("This wave sequence is already in use.");

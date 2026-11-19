@@ -30,13 +30,18 @@ public sealed partial class RaceConfigurationController
             if (course is null) return NotFound();
             if (courseId.HasValue && await IsImmutable(course, ct))
                 return ConflictProblem("This course revision is historical or assigned to a race. Clone a revision to edit it.");
-            if (courseId.HasValue && await db.Courses.AnyAsync(x => x.EventId == eventId && x.Name == course.Name && x.Id != course.Id, ct)
-                && !string.Equals(course.Name, input.Name.Trim(), StringComparison.Ordinal))
-                return ConflictProblem("The name of a versioned course cannot change.");
+            var name = input.Name.Trim();
+            if (courseId.HasValue && course.Name != name &&
+                (course.Version > 1 || await db.Courses.AnyAsync(x =>
+                    x.EventId == eventId && x.Id != course.Id && x.Name == course.Name, ct)))
+                return ConflictProblem("The spelling and capitalization of a versioned course name cannot change.");
+            if ((courseId is null || course.Name != name) && await db.Courses.AnyAsync(x =>
+                x.EventId == eventId && x.Id != course.Id && x.Name == name, ct))
+                return ConflictProblem("A course with this name already exists in the event.");
             if (course.Checkpoints.Any(x => x.DistanceFromStartKm > input.DistanceKm ||
                 (x.IsFinish && x.DistanceFromStartKm != input.DistanceKm)))
                 return Invalid("Update finish and checkpoint distances together with the course distance.");
-            course.Name = input.Name.Trim();
+            course.Name = name;
             course.Description = input.Description?.Trim();
             course.DistanceKm = input.DistanceKm;
             course.ElevationGainMeters = input.ElevationGainMeters;

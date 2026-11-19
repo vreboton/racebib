@@ -34,7 +34,10 @@ public sealed partial class MySqlApiIntegrationTests
         using var duplicate = await client.PostAsJsonAsync(path + "/courses", new { name = " trail ", distanceKm = 10 });
         Assert.Equal(HttpStatusCode.Conflict, duplicate.StatusCode);
 
-        var routePath = $"{path}/courses/{courseId}/checkpoints";
+        var coursePath = $"{path}/courses/{courseId}";
+        using var caseOnlyRename = await client.PutAsJsonAsync(coursePath, new { name = "TRAIL", distanceKm = 10 });
+        Assert.Equal(HttpStatusCode.OK, caseOnlyRename.StatusCode);
+        var routePath = coursePath + "/checkpoints";
         var points = new[]
         {
             new RoutePoint(null, "Start", "S", 1, 0, IsStart: true),
@@ -75,6 +78,29 @@ public sealed partial class MySqlApiIntegrationTests
             courses[1].GetProperty("checkpoints")[1].GetProperty("id").GetGuid());
         using var locked = await client.PutAsJsonAsync(routePath, new { distanceKm = 10, checkpoints = points });
         Assert.Equal(HttpStatusCode.Conflict, locked.StatusCode);
+
+        var latest = courses[courses.GetArrayLength() - 1].GetProperty("id").GetGuid();
+        using var versionedRename = await client.PutAsJsonAsync($"{path}/courses/{latest}", new { name = "Trail", distanceKm = 10 });
+        Assert.Equal(HttpStatusCode.Conflict, versionedRename.StatusCode);
+
+        // Older records can spell the same MySQL revision family differently.
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+        var storedLatest = await db.Courses.SingleAsync(x => x.Id == latest);
+        storedLatest.Name = "trail";
+        await db.SaveChangesAsync();
+        var start = await db.Events.Where(x => x.Id == eventId).Select(x => x.StartDate).SingleAsync();
+        var request = new { courseId, name = "Revision switch", startAt = start.AddMinutes(10).ToString("yyyy-MM-ddTHH:mm:ss") + "Z" };
+        var raceId = await CreatedId(await client.PostAsJsonAsync(path + "/races", request));
+        var racePath = $"{path}/races/{raceId}";
+        var before = await client.GetFromJsonAsync<JsonElement>(path + "/configuration");
+        Assert.Contains(latest, before.GetProperty("races")[0].GetProperty("revisionIds").EnumerateArray().Select(x => x.GetGuid()));
+        using var switched = await client.PutAsJsonAsync(racePath, request with { courseId = latest });
+        Assert.Equal(HttpStatusCode.OK, switched.StatusCode);
+        var after = await client.GetFromJsonAsync<JsonElement>(racePath);
+        Assert.Equal(latest, after.GetProperty("courseId").GetGuid());
+        using var downgrade = await client.PutAsJsonAsync(racePath, request);
+        Assert.Equal(HttpStatusCode.BadRequest, downgrade.StatusCode);
     }
 
     [MySqlIntegrationFact]
@@ -142,6 +168,14 @@ public sealed partial class MySqlApiIntegrationTests
         });
         Assert.Equal(HttpStatusCode.Conflict, invalidWindow.StatusCode);
 
+        var categoryPath = $"{racePath}/categories/{categoryId}";
+        var wavePath = $"{racePath}/waves/{waveId}";
+        using var editCategory = await client.PutAsJsonAsync(categoryPath, new { name = "Masters", minimumAge = 45, maximumAge = 65 });
+        using var editWave = await client.PutAsJsonAsync(wavePath,
+            new { name = "First", sequence = 1, startAt = At(startAt.AddMinutes(10)), capacity = 25 });
+        Assert.Equal(HttpStatusCode.OK, editCategory.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, editWave.StatusCode);
+
         var runner = new Runner { OrganizerId = organizerId, FirstName = "Synthetic", LastName = "Runner" };
         var registration = new Registration
         {
@@ -152,6 +186,36 @@ public sealed partial class MySqlApiIntegrationTests
         await db.SaveChangesAsync();
         using var registeredSwitch = await client.PutAsJsonAsync(racePath, raceRequest with { courseId = revisionId });
         Assert.Equal(HttpStatusCode.Conflict, registeredSwitch.StatusCode);
+
+        var categorySnapshot = new { name = "Masters", description = (string?)null, minimumAge = 45, maximumAge = 65 };
+        var waveSnapshot = new { name = "First", sequence = 1, startAt = At(startAt.AddMinutes(10)), capacity = 25 };
+        foreach (var change in new[]
+        {
+            categorySnapshot with { name = "Changed" },
+            categorySnapshot with { description = "Changed" },
+            categorySnapshot with { minimumAge = 18 },
+            categorySnapshot with { maximumAge = 70 }
+        })
+        {
+            using var response = await client.PutAsJsonAsync(categoryPath, change);
+            Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        }
+        foreach (var change in new[]
+        {
+            waveSnapshot with { name = "Changed" },
+            waveSnapshot with { sequence = 2 },
+            waveSnapshot with { startAt = At(startAt.AddMinutes(20)) },
+            waveSnapshot with { capacity = 99 }
+        })
+        {
+            using var response = await client.PutAsJsonAsync(wavePath, change);
+            Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        }
+        var linked = await client.GetFromJsonAsync<JsonElement>(path + "/configuration");
+        var linkedRace = linked.GetProperty("races")[0];
+        Assert.Empty(linkedRace.GetProperty("revisionIds").EnumerateArray());
+        Assert.True(linkedRace.GetProperty("categories")[0].GetProperty("hasRegistrations").GetBoolean());
+        Assert.True(linkedRace.GetProperty("waves")[0].GetProperty("hasRegistrations").GetBoolean());
 
         using var retireCategory = await client.DeleteAsync($"{racePath}/categories/{categoryId}");
         using var retireWave = await client.DeleteAsync($"{racePath}/waves/{waveId}");
@@ -164,6 +228,15 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Equal(categoryId, saved.GetProperty("categories")[0].GetProperty("id").GetGuid());
         Assert.Equal(waveId, saved.GetProperty("waves")[0].GetProperty("id").GetGuid());
         Assert.Equal(courseId, saved.GetProperty("courseId").GetGuid());
+        var savedCategory = saved.GetProperty("categories")[0];
+        Assert.Equal("Masters", savedCategory.GetProperty("name").GetString());
+        Assert.Equal(45, savedCategory.GetProperty("minimumAge").GetInt32());
+        Assert.Equal(65, savedCategory.GetProperty("maximumAge").GetInt32());
+        var savedWave = saved.GetProperty("waves")[0];
+        Assert.Equal("First", savedWave.GetProperty("name").GetString());
+        Assert.Equal(1, savedWave.GetProperty("sequence").GetInt32());
+        Assert.Equal(25, savedWave.GetProperty("capacity").GetInt32());
+        Assert.Equal(DateTimeOffset.Parse(At(startAt.AddMinutes(10))), savedWave.GetProperty("startAt").GetDateTimeOffset());
         var storedRegistration = await db.Registrations.AsNoTracking().SingleAsync(x => x.Id == registration.Id);
         Assert.Equal(categoryId, storedRegistration.RaceCategoryId);
         Assert.Equal(waveId, storedRegistration.StartWaveId);
@@ -185,11 +258,44 @@ public sealed partial class MySqlApiIntegrationTests
         await db.SaveChangesAsync();
         using var incomplete = await client.PatchAsJsonAsync(path + "/status", new { status = "Ready" });
         Assert.Equal(HttpStatusCode.Conflict, incomplete.StatusCode);
-        await CreatedId(await client.PostAsJsonAsync(path + "/races", raceRequest with { courseId = revisionId, name = "Replacement" }));
+        var replacementId = await CreatedId(await client.PostAsJsonAsync(path + "/races",
+            raceRequest with { courseId = revisionId, name = "Replacement" }));
+        var replacementWaves = $"{path}/races/{replacementId}/waves";
+        var waveRequest = new { name = "Open capacity", sequence = 3, startAt = At(startAt.AddMinutes(10)), capacity = (int?)null };
+        await CreatedId(await client.PostAsJsonAsync(replacementWaves, waveRequest));
+        using var duplicateSequence = await client.PostAsJsonAsync(replacementWaves, waveRequest with { name = "Duplicate" });
+        using var zeroCapacity = await client.PostAsJsonAsync(replacementWaves, waveRequest with { sequence = 4, capacity = 0 });
+        Assert.Equal(HttpStatusCode.Conflict, duplicateSequence.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, zeroCapacity.StatusCode);
         using var ready = await client.PatchAsJsonAsync(path + "/status", new { status = "Ready" });
         Assert.Equal(HttpStatusCode.OK, ready.StatusCode);
         using var locked = await client.PostAsJsonAsync(path + "/courses", new { name = "Blocked", distanceKm = 10 });
         Assert.Equal(HttpStatusCode.Conflict, locked.StatusCode);
+    }
+
+    [MySqlIntegrationFact]
+    [Trait("Category", "MySqlIntegration")]
+    public async Task ReadyAllowsLegacyEventsButRejectsEventsWithOnlyCourses()
+    {
+        await using var data = new MySqlTestData(Services);
+        var account = await data.CreateAccountAsync();
+        var organizer = await data.CreateOrganizerAsync(account);
+        var legacy = await data.CreateEventAsync(organizer);
+        var courseOnly = await data.CreateEventAsync(organizer);
+        using var client = Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await LoginAsync(client, account));
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+        foreach (var item in await db.Events.Where(x => x.Id == legacy || x.Id == courseOnly).ToListAsync())
+            item.Status = EventStatus.RegistrationClosed;
+        await db.SaveChangesAsync();
+
+        await CreatedId(await client.PostAsJsonAsync($"/api/v1/events/{courseOnly}/courses", new { name = "Draft course", distanceKm = 10 }));
+        using var allowed = await client.PatchAsJsonAsync($"/api/v1/events/{legacy}/status", new { status = "Ready" });
+        using var blocked = await client.PatchAsJsonAsync($"/api/v1/events/{courseOnly}/status", new { status = "Ready" });
+        Assert.Equal(HttpStatusCode.OK, allowed.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, blocked.StatusCode);
+        Assert.Equal(EventStatus.RegistrationClosed, await db.Events.Where(x => x.Id == courseOnly).Select(x => x.Status).SingleAsync());
     }
 
     private static async Task<Guid> CreatedId(HttpResponseMessage response)

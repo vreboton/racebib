@@ -135,7 +135,7 @@ jobs:
           --filter "Category=MySqlIntegration"
           --logger "trx;LogFileName=mysql-integration-tests.trx"
           --results-directory "${{ runner.temp }}/mysql-integration-test-results"
-      - name: Require all eight MySQL integration tests to execute and pass
+      - name: Require all nine MySQL integration tests to execute and pass
         env:
           MYSQL_TEST_RESULTS_DIRECTORY: ${{ runner.temp }}/mysql-integration-test-results
         run: |
@@ -154,10 +154,10 @@ jobs:
           if counters is None:
               sys.exit("MySQL integration TRX results do not contain test counters.")
 
-          expected = {"total": 8, "executed": 8, "passed": 8, "failed": 0, "notExecuted": 0}
+          expected = {"total": 9, "executed": 9, "passed": 9, "failed": 0, "notExecuted": 0}
           actual = {name: int(counters.attrib.get(name, "0")) for name in expected}
           if actual != expected:
-              sys.exit("Expected exactly eight executed and passed MySQL integration tests with none skipped or failed.")
+              sys.exit("Expected exactly nine executed and passed MySQL integration tests with none skipped or failed.")
           PY
       - name: Upload MySQL integration test results
         if: always()

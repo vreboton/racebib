@@ -152,10 +152,14 @@ public sealed class EventsController(
     private static bool HasValidWaveSchedule(Race race, DateTime eventEnd)
     {
         var previousStart = race.StartAtUtc;
+        // Active sequence numbers are unique and positive. Gaps can remain after retirement.
+        var previousSequence = 0;
         foreach (var wave in race.StartWaves.Where(x => x.Status == RecordStatus.Active).OrderBy(x => x.Sequence))
         {
-            if (wave.Sequence <= 0 || wave.Capacity <= 0 || wave.StartAtUtc < previousStart || wave.StartAtUtc > eventEnd)
+            if (wave.Sequence <= previousSequence || wave.Capacity is <= 0 ||
+                wave.StartAtUtc < previousStart || wave.StartAtUtc > eventEnd)
                 return false;
+            previousSequence = wave.Sequence;
             previousStart = wave.StartAtUtc;
         }
         return true;

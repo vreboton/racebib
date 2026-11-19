@@ -73,6 +73,20 @@ public sealed partial class RaceConfigurationController(
             .Include(x => x.Checkpoints).OrderBy(x => x.Name).ThenBy(x => x.Version).ToListAsync(ct);
         var races = await db.Races.AsNoTracking().Where(x => x.EventId == eventId)
             .Include(x => x.Categories).Include(x => x.StartWaves).AsSplitQuery().OrderBy(x => x.Name).ToListAsync(ct);
+        var historicalCourseIds = await db.Courses.Where(x => x.EventId == eventId &&
+            db.Courses.Any(other => other.EventId == x.EventId && other.Name == x.Name && other.Version > x.Version))
+            .Select(x => x.Id).ToListAsync(ct);
+        var history = await db.Registrations.Where(x => x.EventId == eventId)
+            .Select(x => new { x.RaceId, x.RaceCategoryId, x.StartWaveId }).Distinct().ToListAsync(ct);
+        var registeredRaceIds = history.Select(x => x.RaceId).ToHashSet();
+        var categoryIds = history.Select(x => x.RaceCategoryId).ToHashSet();
+        var waveIds = history.Select(x => x.StartWaveId).ToHashSet();
+        var newerRevisions = (await (
+            from race in db.Races
+            join course in db.Courses on new { race.EventId, race.Course.Name } equals new { course.EventId, course.Name }
+            where race.EventId == eventId && course.Version > race.Course.Version
+            select new { RaceId = race.Id, CourseId = course.Id }).ToListAsync(ct))
+            .ToLookup(x => x.RaceId, x => x.CourseId);
         return Ok(new
         {
             timeZoneId = TimeZoneInfo.TryConvertWindowsIdToIanaId(item.TimeZoneId, out var zone) ? zone : item.TimeZoneId,
@@ -80,34 +94,42 @@ public sealed partial class RaceConfigurationController(
             courses = courses.Select(x => new
             {
                 x.Id, x.Name, x.Version, x.Description, x.DistanceKm, x.ElevationGainMeters, x.Status,
-                immutable = races.Any(r => r.CourseId == x.Id) || courses.Any(other =>
-                    other.Version > x.Version && string.Equals(other.Name, x.Name, StringComparison.OrdinalIgnoreCase)),
+                immutable = races.Any(r => r.CourseId == x.Id) || historicalCourseIds.Contains(x.Id),
                 checkpoints = x.Checkpoints.OrderBy(c => c.Sequence).Select(c => new
                 {
                     c.Id, c.Name, c.Code, c.Sequence, c.DistanceFromStartKm, c.ElevationMeters,
                     c.IsMandatory, c.IsStart, c.IsFinish, c.HasCutoff, c.CutoffDurationSeconds, c.Description
                 })
             }),
-            races = races.Select(RaceDto)
+            races = races.Select(x => RaceDto(x,
+                registeredRaceIds.Contains(x.Id) ? [] : newerRevisions[x.Id], categoryIds, waveIds))
         });
     });
 
-    private static object RaceDto(Race x) => new
+    private static object RaceDto(Race x, IEnumerable<Guid> revisionIds,
+        HashSet<Guid?> registeredCategoryIds, HashSet<Guid?> registeredWaveIds) => new
     {
         x.Id, x.CourseId, x.Name, x.DistanceKm, x.Description, startAt = Utc(x.StartAtUtc),
-        x.CutoffDurationSeconds, x.Status,
+        x.CutoffDurationSeconds, x.Status, revisionIds,
         categories = x.Categories.OrderBy(c => c.Name).Select(c => new
-            { c.Id, c.Name, c.Description, c.MinimumAge, c.MaximumAge, c.Status }),
+            { c.Id, c.Name, c.Description, c.MinimumAge, c.MaximumAge, c.Status, hasRegistrations = registeredCategoryIds.Contains(c.Id) }),
         waves = x.StartWaves.OrderBy(w => w.Sequence).Select(w => new
-            { w.Id, w.Name, w.Sequence, startAt = Utc(w.StartAtUtc), w.Capacity, w.Status })
+            { w.Id, w.Name, w.Sequence, startAt = Utc(w.StartAtUtc), w.Capacity, w.Status, hasRegistrations = registeredWaveIds.Contains(w.Id) })
     };
 
     [HttpGet("races/{raceId:guid}")]
     public Task<IActionResult> GetRace(Guid eventId, Guid raceId, CancellationToken ct) =>
         WithEvent(eventId, false, ct, async _ =>
         {
-            var race = await db.Races.AsNoTracking().Include(x => x.Categories).Include(x => x.StartWaves)
+            var race = await db.Races.AsNoTracking().Include(x => x.Course).Include(x => x.Categories).Include(x => x.StartWaves)
                 .AsSplitQuery().SingleOrDefaultAsync(x => x.EventId == eventId && x.Id == raceId, ct);
-            return race is null ? NotFound() : Ok(RaceDto(race));
+            if (race is null) return NotFound();
+            var history = await db.Registrations.Where(x => x.RaceId == raceId)
+                .Select(x => new { x.RaceCategoryId, x.StartWaveId }).Distinct().ToListAsync(ct);
+            var revisions = history.Count > 0 ? [] : await db.Courses
+                .Where(x => x.EventId == eventId && x.Name == race.Course.Name && x.Version > race.Course.Version)
+                .Select(x => x.Id).ToListAsync(ct);
+            return Ok(RaceDto(race, revisions, history.Select(x => x.RaceCategoryId).ToHashSet(),
+                history.Select(x => x.StartWaveId).ToHashSet()));
         });
 }

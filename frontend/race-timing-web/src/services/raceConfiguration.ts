@@ -31,18 +31,21 @@ export interface Course extends Entry {
 }
 
 export interface Category extends Entry {
+  hasRegistrations: boolean
   description: string | null
   minimumAge: number | null
   maximumAge: number | null
 }
 
 export interface Wave extends Entry {
+  hasRegistrations: boolean
   startAt: string
   sequence: number
   capacity: number | null
 }
 
 export interface Race extends Entry {
+  revisionIds: string[]
   courseId: string
   distanceKm: number
   description: string | null
