@@ -267,6 +267,50 @@ public sealed class AuthAndAuthorizationTests : IAsyncLifetime
         Assert.Equal(expectedStatus == 204 ? RecordStatus.Inactive : RecordStatus.Active, course.Status);
     }
 
+    [Theory]
+    [InlineData(12, true)]
+    [InlineData(8, true)]
+    [InlineData(4, false)]
+    [InlineData(6, false)]
+    public async Task DirectCourseDistanceEditValidatesProjectedFinishAndRoute(int newDistance, bool succeeds)
+    {
+        await AddMembership(organizerA, OrganizerRole.RaceDirector);
+        var item = new Event
+        {
+            OrganizerId = organizerA.Id, Name = "Course distance", Slug = "course-distance",
+            OrganizerName = organizerA.Name, TimeZoneId = "UTC",
+            StartDate = DateTime.UtcNow, EndDate = DateTime.UtcNow.AddHours(1)
+        };
+        var course = new Course { EventId = item.Id, Name = "Route", DistanceKm = 10 };
+        db.AddRange(item, course);
+        var start = new CourseCheckpoint { CourseId = course.Id, Name = "Start", Code = "S", Sequence = 1, IsStart = true };
+        var aid = new CourseCheckpoint { CourseId = course.Id, Name = "Aid", Code = "A", Sequence = 2, DistanceFromStartKm = 5 };
+        var secondAid = new CourseCheckpoint
+        {
+            CourseId = course.Id, Name = "Second aid", Code = "B", Sequence = 3,
+            DistanceFromStartKm = newDistance == 6 ? 4 : 6
+        };
+        var finish = new CourseCheckpoint
+        {
+            CourseId = course.Id, Name = "Finish", Code = "F", Sequence = 4, IsFinish = true, DistanceFromStartKm = 10
+        };
+        db.AddRange(start, aid, secondAid, finish);
+        await db.SaveChangesAsync();
+        var controller = new RaceConfigurationController(db, services.GetRequiredService<IOrganizerMembershipAuthorization>())
+        {
+            ControllerContext = new ControllerContext { HttpContext = CreateHttpContext(account) }
+        };
+
+        var result = await controller.UpdateCourse(item.Id, course.Id, new("Updated route", null, newDistance, null), default);
+
+        if (succeeds) Assert.IsType<OkObjectResult>(result);
+        else Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Equal(succeeds ? newDistance : 10, course.DistanceKm);
+        Assert.Equal(course.DistanceKm, finish.DistanceFromStartKm);
+        Assert.Equal(5, aid.DistanceFromStartKm);
+        Assert.Equal(succeeds ? "Updated route" : "Route", course.Name);
+    }
+
     private AuthController CreateAuthController()
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>

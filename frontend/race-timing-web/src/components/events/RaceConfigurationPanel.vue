@@ -143,7 +143,7 @@
             <v-textarea v-if="editor.kind !== 'wave'" v-model="editor.description" label="Description" rows="2" />
             <template v-if="editor.kind === 'course'">
               <v-text-field v-model="editor.distanceKm" type="number" min="0.001" step="0.001" required label="Distance (km)"
-                :readonly="editor.hasFinish" :hint="editor.hasFinish ? 'Use Edit checkpoints to change the course and Finish distances together.' : undefined"
+                :hint="editor.hasFinish ? 'Saving updates the Finish checkpoint and any races using this course.' : undefined"
                 :persistent-hint="editor.hasFinish" />
               <v-text-field v-model="editor.elevationGainMeters" type="number" min="0" label="Elevation gain (m)" />
             </template>
