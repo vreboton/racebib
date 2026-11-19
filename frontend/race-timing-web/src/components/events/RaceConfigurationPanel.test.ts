@@ -32,7 +32,7 @@ const category = {
 
 const course: Course = {
   id: 'course-1', name: 'Summit', status: 'Active', version: 1, description: 'Trail route',
-  distanceKm: 10, elevationGainMeters: 800, usable: true, immutable: false, editBlock: null, hasActiveRaces: true,
+  distanceKm: 10, elevationGainMeters: 800, usable: true, immutable: false, editBlock: null, hasActiveRaces: true, canDelete: false,
   checkpoints: [],
 }
 
@@ -56,6 +56,50 @@ async function mountPanel() {
 
 describe('race configuration actions', () => {
   beforeEach(() => vi.resetAllMocks())
+
+  it('requires confirmation before permanently deleting an unused course and refreshes the list', async () => {
+    const unused = { ...course, canDelete: true, hasActiveRaces: false }
+    vi.mocked(loadConfiguration)
+      .mockResolvedValueOnce({ ...configuration(), races: [], courses: [unused] })
+      .mockResolvedValueOnce({ ...configuration(), races: [] })
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
+    const { wrapper, button } = await mountPanel()
+    try {
+      await button('Delete course')!.trigger('click')
+      expect(saveConfiguration).not.toHaveBeenCalled()
+      await button('Delete course')!.trigger('click')
+      await flushPromises()
+
+      expect(confirm).toHaveBeenCalledWith('Permanently delete Summit and its checkpoints? This cannot be undone.')
+      expect(saveConfiguration).toHaveBeenCalledWith('event-1', 'courses/course-1', 'delete', undefined)
+      expect(wrapper.text()).toContain('No courses yet.')
+      expect(button('Delete course')).toBeUndefined()
+    } finally {
+      confirm.mockRestore()
+      wrapper.unmount()
+    }
+  })
+
+  it('offers no permanent deletion for protected courses or when configuration is read-only', async () => {
+    vi.mocked(loadConfiguration).mockResolvedValueOnce({
+      ...configuration(), courses: [
+        { ...course, hasActiveRaces: false },
+        { ...course, id: 'historical', immutable: true, editBlock: 'historical', hasActiveRaces: false },
+        { ...course, id: 'latest-revision', version: 2, hasActiveRaces: false },
+      ],
+    })
+    const editable = await mountPanel()
+    expect(editable.button('Delete course')).toBeUndefined()
+    expect(editable.button('Retire course')).toBeDefined()
+    editable.wrapper.unmount()
+
+    vi.mocked(loadConfiguration).mockResolvedValueOnce({
+      ...configuration(), canEdit: false, courses: [{ ...course, canDelete: true, hasActiveRaces: false }],
+    })
+    const readOnly = await mountPanel()
+    expect(readOnly.button('Delete course')).toBeUndefined()
+    readOnly.wrapper.unmount()
+  })
 
   it('retires and reactivates a historical revision while keeping its race visible and edits locked', async () => {
     const historical = { ...course, immutable: true, editBlock: 'historical' as const, hasActiveRaces: false }

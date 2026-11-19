@@ -507,7 +507,7 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Equal(HttpStatusCode.BadRequest, unavailable.StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, lockedMetadata.StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, lockedRoute.StatusCode);
-        Assert.Equal(HttpStatusCode.MethodNotAllowed, deletion.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, deletion.StatusCode);
 
         using var reactivated = await client.PatchAsJsonAsync(statusPath, active);
         Assert.Equal(HttpStatusCode.NoContent, reactivated.StatusCode);
@@ -690,6 +690,152 @@ public sealed partial class MySqlApiIntegrationTests
         using var ready = await client.PatchAsJsonAsync(path + "/status", new { status = "Ready" });
         Assert.Equal(HttpStatusCode.OK, ready.StatusCode);
         Assert.Equal(first, (await client.GetFromJsonAsync<JsonElement>($"{path}/races/{first}")).GetProperty("id").GetGuid());
+    }
+
+    [MySqlIntegrationFact]
+    [Trait("Category", "MySqlIntegration")]
+    public async Task PermanentCourseDeletionPreservesReferencedCoursesAndRevisionFamilies()
+    {
+        await using var data = new MySqlTestData(Services);
+        var director = await data.CreateAccountAsync();
+        var official = await data.CreateAccountAsync();
+        var organizerId = await data.CreateOrganizerAsync(director, OrganizerRole.RaceDirector);
+        var eventId = await data.CreateEventAsync(organizerId);
+        var siblingEvent = await data.CreateEventAsync(organizerId);
+        var foreignEvent = await data.CreateEventAsync(await data.CreateOrganizerAsync());
+        using var client = Factory.CreateClient();
+        using var readOnly = Factory.CreateClient();
+        using var anonymous = Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await LoginAsync(client, director));
+        readOnly.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await LoginAsync(readOnly, official));
+
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+        db.OrganizerMemberships.Add(new OrganizerMembership { OrganizerId = organizerId, UserId = official.Id, Role = OrganizerRole.TimingOfficial });
+        await db.SaveChangesAsync();
+        var item = await db.Events.SingleAsync(x => x.Id == eventId);
+        var startAt = item.StartDate.AddMinutes(5).ToString("yyyy-MM-ddTHH:mm:ss") + "Z";
+        var path = $"/api/v1/events/{eventId}";
+        var courses = path + "/courses";
+        var points = new[]
+        {
+            new RoutePoint(null, "Start", "S", 1, 0, IsStart: true),
+            new RoutePoint(null, "Finish", "F", 2, 10, IsFinish: true)
+        };
+        async Task<Guid> AddCourse(string name)
+        {
+            var id = await CreatedId(await client.PostAsJsonAsync(courses, new { name, distanceKm = 10 }));
+            using var route = await client.PutAsJsonAsync($"{courses}/{id}/checkpoints", new { distanceKm = 10, checkpoints = points });
+            Assert.Equal(HttpStatusCode.NoContent, route.StatusCode);
+            return id;
+        }
+        async Task<JsonElement> ReadCourse(Guid id) =>
+            (await client.GetFromJsonAsync<JsonElement>(path + "/configuration")).GetProperty("courses")
+            .EnumerateArray().Single(x => x.GetProperty("id").GetGuid() == id);
+
+        var unused = await AddCourse("Unused");
+        var unusedPath = $"{courses}/{unused}";
+        using var unauthorized = await anonymous.DeleteAsync(unusedPath);
+        using var forbidden = await readOnly.DeleteAsync(unusedPath);
+        using var otherEvent = await client.DeleteAsync($"/api/v1/events/{siblingEvent}/courses/{unused}");
+        using var otherOrganizer = await client.DeleteAsync($"/api/v1/events/{foreignEvent}/courses/{unused}");
+        Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, otherEvent.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, otherOrganizer.StatusCode);
+        Assert.True((await ReadCourse(unused)).GetProperty("canDelete").GetBoolean());
+        Assert.Equal(2, await db.CourseCheckpoints.CountAsync(x => x.CourseId == unused));
+        using var deleted = await client.DeleteAsync(unusedPath);
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+        Assert.False(await db.Courses.AnyAsync(x => x.Id == unused));
+        Assert.False(await db.CourseCheckpoints.AnyAsync(x => x.CourseId == unused));
+
+        var referenced = await AddCourse("Referenced");
+        var raceId = await CreatedId(await client.PostAsJsonAsync(path + "/races", new { courseId = referenced, name = "Race", startAt }));
+        var racePath = $"{path}/races/{raceId}";
+        using var activeConflict = await client.DeleteAsync($"{courses}/{referenced}");
+        Assert.Equal(HttpStatusCode.Conflict, activeConflict.StatusCode);
+        using var retired = await client.DeleteAsync(racePath);
+        Assert.Equal(HttpStatusCode.NoContent, retired.StatusCode);
+        var registration = new Registration
+        {
+            EventId = eventId, OrganizerId = organizerId, RaceId = raceId, BibNumber = "16",
+            Runner = new Runner { OrganizerId = organizerId, FirstName = "Synthetic", LastName = "Runner" }
+        };
+        db.Registrations.Add(registration);
+        await db.SaveChangesAsync();
+        using var inactiveConflict = await client.DeleteAsync($"{courses}/{referenced}");
+        Assert.Equal(HttpStatusCode.Conflict, inactiveConflict.StatusCode);
+        Assert.False((await ReadCourse(referenced)).GetProperty("canDelete").GetBoolean());
+        var fk = await Assert.ThrowsAsync<MySqlConnector.MySqlException>(() =>
+            db.Database.ExecuteSqlInterpolatedAsync($"DELETE FROM Courses WHERE Id = {referenced}"));
+        Assert.Equal(1451, fk.Number);
+        Assert.Equal(referenced, await db.Races.Where(x => x.Id == raceId).Select(x => x.CourseId).SingleAsync());
+        Assert.True(await db.Registrations.AnyAsync(x => x.Id == registration.Id && x.RaceId == raceId));
+        Assert.Equal(2, await db.CourseCheckpoints.CountAsync(x => x.CourseId == referenced));
+
+        var firstRevision = await AddCourse("Historical");
+        var latestRevision = await CreatedId(await client.PostAsync($"{courses}/{firstRevision}/revisions", null));
+        foreach (var courseId in new[] { firstRevision, latestRevision })
+        {
+            Assert.False((await ReadCourse(courseId)).GetProperty("canDelete").GetBoolean());
+            using var protectedRevision = await client.DeleteAsync($"{courses}/{courseId}");
+            Assert.Equal(HttpStatusCode.Conflict, protectedRevision.StatusCode);
+            Assert.Equal(2, await db.CourseCheckpoints.CountAsync(x => x.CourseId == courseId));
+        }
+
+        var locked = await AddCourse("Locked");
+        item.Status = EventStatus.Ready;
+        await db.SaveChangesAsync();
+        using var lockedConflict = await client.DeleteAsync($"{courses}/{locked}");
+        Assert.Equal(HttpStatusCode.Conflict, lockedConflict.StatusCode);
+        Assert.True(await db.Courses.AnyAsync(x => x.Id == locked));
+    }
+
+    [MySqlIntegrationFact]
+    [Trait("Category", "MySqlIntegration")]
+    public async Task CourseDeletionAndRaceAssignmentCannotBothSucceed()
+    {
+        await using var data = new MySqlTestData(Services);
+        var account = await data.CreateAccountAsync();
+        var organizerId = await data.CreateOrganizerAsync(account);
+        var eventId = await data.CreateEventAsync(organizerId);
+        using var client = Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await LoginAsync(client, account));
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+        var start = await db.Events.Where(x => x.Id == eventId).Select(x => x.StartDate).SingleAsync();
+        var startAt = start.AddMinutes(5).ToString("yyyy-MM-ddTHH:mm:ss") + "Z";
+        var path = $"/api/v1/events/{eventId}";
+        var courseId = await CreatedId(await client.PostAsJsonAsync(path + "/courses", new { name = "Concurrent", distanceKm = 10 }));
+        var coursePath = $"{path}/courses/{courseId}";
+        using var route = await client.PutAsJsonAsync(coursePath + "/checkpoints", new
+        {
+            distanceKm = 10, checkpoints = new[]
+            {
+                new RoutePoint(null, "Start", "S", 1, 0, IsStart: true),
+                new RoutePoint(null, "Finish", "F", 2, 10, IsFinish: true)
+            }
+        });
+        Assert.Equal(HttpStatusCode.NoContent, route.StatusCode);
+
+        var deleteTask = client.DeleteAsync(coursePath);
+        var assignTask = client.PostAsJsonAsync(path + "/races", new { name = "Concurrent race", courseId, startAt });
+        using var deleted = await deleteTask;
+        using var assigned = await assignTask;
+        if (deleted.StatusCode == HttpStatusCode.NoContent)
+        {
+            Assert.Equal(HttpStatusCode.NotFound, assigned.StatusCode);
+            Assert.False(await db.Courses.AnyAsync(x => x.Id == courseId));
+            Assert.False(await db.Races.AnyAsync(x => x.EventId == eventId));
+        }
+        else
+        {
+            Assert.Equal(HttpStatusCode.Conflict, deleted.StatusCode);
+            Assert.Equal(HttpStatusCode.OK, assigned.StatusCode);
+            Assert.True(await db.Courses.AnyAsync(x => x.Id == courseId));
+            Assert.True(await db.Races.AnyAsync(x => x.CourseId == courseId));
+        }
     }
 
     private static async Task<Guid> CreatedId(HttpResponseMessage response)

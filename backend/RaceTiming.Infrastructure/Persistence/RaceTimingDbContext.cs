@@ -107,7 +107,8 @@ public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> op
             e.HasAlternateKey(x => new { x.Id, x.EventId });
             e.HasOne(x => x.Course).WithMany(x => x.Races)
                 .HasForeignKey(x => new { x.CourseId, x.EventId })
-                .HasPrincipalKey(x => new { x.Id, x.EventId });
+                .HasPrincipalKey(x => new { x.Id, x.EventId })
+                .OnDelete(DeleteBehavior.Restrict);
         });
         b.Entity<RaceCategory>(e =>
         {

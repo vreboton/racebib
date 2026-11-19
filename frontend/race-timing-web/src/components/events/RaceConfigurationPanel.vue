@@ -45,6 +45,8 @@
                 <v-btn v-if="course.status === 'Active'" variant="text" color="error" :disabled="busy || course.hasActiveRaces"
                   @click="changeCourseStatus(course, 'Inactive')">Retire course</v-btn>
                 <v-btn v-else variant="text" :disabled="busy" @click="changeCourseStatus(course, 'Active')">Reactivate course</v-btn>
+                <v-btn v-if="course.canDelete" variant="text" color="error" :disabled="busy"
+                  @click="deleteCourse(course)">Delete course</v-btn>
               </div>
             </v-expansion-panel-text>
           </v-expansion-panel>
@@ -244,6 +246,10 @@ function duplicateCourse(course: Course) {
     const copy = configuration.value?.courses.find(item => item.id === id)
     if (copy && configuration.value?.canEdit && !copy.immutable) editCourse(copy)
   })
+}
+function deleteCourse(course: Course) {
+  if (!window.confirm(`Permanently delete ${course.name} and its checkpoints? This cannot be undone.`)) return
+  void mutate(`courses/${course.id}`, 'delete')
 }
 function changeCourseStatus(course: Course, status: Course['status']) {
   if (status === 'Inactive' && !window.confirm(`Retire ${course.name}? Existing race records will keep this course.`)) return

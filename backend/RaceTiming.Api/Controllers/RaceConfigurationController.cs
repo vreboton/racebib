@@ -74,6 +74,8 @@ public sealed partial class RaceConfigurationController(
         var races = await db.Races.AsNoTracking().Where(x => x.EventId == eventId)
             .Include(x => x.Categories).Include(x => x.StartWaves).AsSplitQuery().OrderBy(x => x.Name).ToListAsync(ct);
         var activeCourseIds = races.Where(x => x.Status == RecordStatus.Active).Select(x => x.CourseId).ToHashSet();
+        var referencedCourseIds = races.Select(x => x.CourseId).ToHashSet();
+        var versionedCourseIds = (await CoursesWithRevisionHistory(eventId).ToListAsync(ct)).ToHashSet();
         var historicalCourseIds = (await HistoricalCourses(eventId).ToListAsync(ct)).ToHashSet();
         var history = await db.Registrations.Where(x => x.EventId == eventId)
             .Select(x => new { x.RaceId, x.RaceCategoryId, x.StartWaveId }).Distinct().ToListAsync(ct);
@@ -98,6 +100,7 @@ public sealed partial class RaceConfigurationController(
                 editBlock = historicalCourseIds.Contains(x.Id) ? "historical" :
                     x.Status != RecordStatus.Active ? "inactive" : registeredCourseIds.Contains(x.Id) ? "registrations" : null,
                 hasActiveRaces = activeCourseIds.Contains(x.Id),
+                canDelete = !referencedCourseIds.Contains(x.Id) && !versionedCourseIds.Contains(x.Id),
                 usable = IsUsable(x),
                 checkpoints = x.Checkpoints.OrderBy(c => c.Sequence).Select(c => new
                 {
