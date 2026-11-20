@@ -135,7 +135,7 @@ it('invalidates a preview when the bib assignment or file changes', async () => 
 it('blocks import when there are no active races', async () => {
   const { wrapper, button, upload } = await mountImport([inactiveRace])
   await upload('First Name,Last Name,Email\nA,B,a@example.test')
-  expect(wrapper.text()).toContain('Add an active race to this event before importing.')
+  expect(wrapper.text()).toContain('Add an active Race Category to this event before importing.')
   expect(button('Validate & Preview').attributes('disabled')).toBeDefined()
   expect(api.post).not.toHaveBeenCalled()
   wrapper.unmount()
