@@ -23,7 +23,7 @@ public sealed partial class RegistrationsController
         "Race", "Category", "Start Wave", "Bib Number", "Team", "Emergency Contact"
     ];
     private sealed record ImportRow(int Row, string? Error, string? NameOnBib = null, string? BibNumber = null,
-        string? DefaultRaceReason = null, string? CsvRace = null, string? RaceName = null);
+        string? DefaultRaceReason = null, string? CsvRace = null, string? RaceName = null, string? Warning = null);
     private static readonly string[] RequiredColumns = ["First Name", "Last Name", "Email"];
     private sealed record ImportPlan(List<ImportRow> Rows, List<Registration> Entries, string? Error = null);
     private sealed record ImportTicket(Guid Id, Guid EventId, string Actor, string Hash);
@@ -72,7 +72,7 @@ public sealed partial class RegistrationsController
             var plan = await Prepare(item, defaultRaceId, bytes, assignment, ct);
             if (plan.Error is not null || plan.Entries.Count == 0 || plan.Rows.Any(x => x.Error is not null)
                 || ticket.Hash != Fingerprint(defaultRaceId, bytes, assignment, plan.Entries))
-                return Conflict("The file, default race, bib assignment or event data changed. Preview again.");
+                return Conflict("The file, default race, bib assignment, runner profile or event data changed. Preview again.");
 
             db.Registrations.AddRange(plan.Entries);
             foreach (var entry in plan.Entries)
@@ -129,9 +129,9 @@ public sealed partial class RegistrationsController
         var existing = await db.Registrations.Where(x => x.EventId == item.Id)
             .Select(x => new { x.RunnerId, x.BibNumber }).ToListAsync(ct);
         var runners = await db.Runners.Where(x => x.OrganizerId == item.OrganizerId && x.Email != null).ToListAsync(ct);
-        var profilesByEmail = runners.ToLookup(x => x.Email!.Trim(), StringComparer.OrdinalIgnoreCase);
+        var profilesByEmail = runners.ToLookup(x => NormalizeImportEmail(x.Email)!, StringComparer.Ordinal);
         var registered = existing.Select(x => x.RunnerId).ToHashSet();
-        var seenEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seenEmails = new HashSet<string>(StringComparer.Ordinal);
         while (csv.Read())
         {
             if (rows.Count >= MaxRows) throw new InvalidDataException();
@@ -141,13 +141,14 @@ public sealed partial class RegistrationsController
             string? csvRace = null;
             string? defaultRaceReason = null;
             string? raceName = null;
+            string? warning = null;
             if (csv.Parser.Count != headers.Length)
                 error = "Column count does not match the header.";
             else
             {
                 var first = Value("First Name");
                 var last = Value("Last Name");
-                var email = Value("Email")?.ToLowerInvariant();
+                var email = NormalizeImportEmail(Value("Email"));
                 var mobile = Value("Mobile Number");
                 var gender = Value("Gender");
                 var emergency = Value("Emergency Contact");
@@ -177,7 +178,9 @@ public sealed partial class RegistrationsController
                     var category = race.Categories.FirstOrDefault(x => Same(x.Name, Value("Category")));
                     var wave = race.StartWaves.FirstOrDefault(x => Same(x.Name, Value("Start Wave")));
                     var profiles = profilesByEmail[email].Take(2).ToArray();
-                    var profile = profiles.FirstOrDefault();
+                    var profile = profiles.Length == 1 ? profiles[0] : null;
+                    if (profile is not null && (first != profile.FirstName || last != profile.LastName))
+                        warning = $"CSV name {first} {last} differs from the saved profile name. This import uses the saved profile for {profile.FirstName} {profile.LastName}.";
                     if (matches.Length > 1)
                         error = "The CSV race name matches multiple races in this event. Use an unambiguous race name.";
                     else if (race.Status != RecordStatus.Active)
@@ -215,7 +218,7 @@ public sealed partial class RegistrationsController
                 }
             }
             rows.Add(new ImportRow(csv.Parser.RawRow, error, entry?.EffectiveBibDisplayName,
-                DefaultRaceReason: entry is null ? null : defaultRaceReason, CsvRace: csvRace, RaceName: raceName));
+                DefaultRaceReason: entry is null ? null : defaultRaceReason, CsvRace: csvRace, RaceName: raceName, Warning: warning));
             if (entry is not null) entries.Add(entry);
         }
         if (rows.Count == 0) return plan with { Error = "Add at least one registration below the template header." };
@@ -236,6 +239,8 @@ public sealed partial class RegistrationsController
     private static int CountDefaultRaceRows(IEnumerable<ImportRow> rows) =>
         rows.Count(row => row.Error is null && row.DefaultRaceReason is not null);
 
+    private static string? NormalizeImportEmail(string? email) => Optional(email)?.ToLowerInvariant();
+
     private static bool Same(string? a, string? b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
     private static async Task<byte[]> ReadUpload(IFormFile file, CancellationToken ct)
@@ -248,7 +253,7 @@ public sealed partial class RegistrationsController
 
     private string Actor() => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "";
     private static ITimeLimitedDataProtector Protector(IDataProtectionProvider protection) =>
-        protection.CreateProtector("RaceBib.Registration.Import.v4").ToTimeLimitedDataProtector();
+        protection.CreateProtector("RaceBib.Registration.Import.v5").ToTimeLimitedDataProtector();
 
     private string Fingerprint(Guid defaultRaceId, byte[] bytes, string? assignment, IEnumerable<Registration> entries) =>
         Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
@@ -256,7 +261,7 @@ public sealed partial class RegistrationsController
             file = Convert.ToHexString(SHA256.HashData(bytes)), defaultRaceId, assignment,
             assignments = entries.Select(x => new { x.RaceId, x.RaceCategoryId, x.StartWaveId, x.BibNumber,
                 existingRunnerId = db.Entry(x.Runner).State == EntityState.Unchanged ? x.Runner.Id : (Guid?)null,
-                x.Runner.FirstName, x.Runner.LastName, x.Runner.Birthdate })
+                normalizedEmail = NormalizeImportEmail(x.Runner.Email), x.Runner.FirstName, x.Runner.LastName, x.Runner.Birthdate })
         })));
 
     private static string ErrorCsv(IEnumerable<ImportRow> rows)

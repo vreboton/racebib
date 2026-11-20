@@ -25,7 +25,7 @@ async function mountImport(races = [activeRace, inactiveRace]) {
       'v-btn': { props: ['href'], template: '<a v-if="href" :href="href"><slot /></a><button v-else><slot /></button>' },
       'v-file-input': fileInput,
       'v-select': select,
-      'v-list-item': { props: ['subtitle'], template: '<div>{{ subtitle }}</div>' },
+      'v-list-item': { props: ['subtitle'], template: '<div>{{ subtitle }}<slot /></div>' },
     } },
   })
   await flushPromises()
@@ -152,6 +152,22 @@ it('describes optional classifications and default race fallback in preview and 
   await button('Confirm Import').trigger('click')
   await flushPromises()
   expect(wrapper.text()).toContain('Assigned 2 to the default race.')
+  wrapper.unmount()
+})
+
+it('shows the saved profile name in a row warning and keeps confirmation enabled', async () => {
+  vi.mocked(api.post).mockResolvedValueOnce({ data: {
+    rows: [{ row: 2, nameOnBib: 'L.S.', warning: 'CSV name Lin Santos differs. This import uses the saved profile for Lina Santos.' }],
+    defaultRaceCount: 0, validCount: 1, token: 'warning-preview',
+  } })
+  const { wrapper, button, upload, selectDefault } = await mountImport()
+  await upload('First Name,Last Name,Email,Name on Bib\nLin,Santos,lin@example.test,L.S.')
+  await selectDefault()
+  await button('Validate & Preview').trigger('click')
+  await flushPromises()
+  expect(wrapper.text()).toContain('L.S.')
+  expect(wrapper.text()).toContain('saved profile for Lina Santos')
+  expect(button('Confirm Import').attributes('disabled')).toBeUndefined()
   wrapper.unmount()
 })
 

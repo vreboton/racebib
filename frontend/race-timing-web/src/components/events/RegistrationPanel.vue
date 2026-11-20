@@ -123,7 +123,9 @@
           <p v-if="preview.defaultRaceCount">{{ preview.defaultRaceCount }} rows use the default race.</p>
           <v-list class="preview-rows" density="compact">
             <v-list-item v-for="row in preview.rows" :key="row.row" :title="'Row ' + row.row"
-              :subtitle="row.error || previewRowSummary(row)" />
+              :subtitle="row.error || previewRowSummary(row)">
+              <div v-if="row.warning" class="text-warning text-body-2">{{ row.warning }}</div>
+            </v-list-item>
           </v-list>
           <v-btn v-if="preview.rows.some(row => row.error)" variant="text" @click="downloadErrors">Download error report</v-btn>
         </template>
@@ -170,7 +172,7 @@ interface Row extends Draft { id: string; effectiveBibDisplayName: string; runne
 interface Change { action: string; timestampUtc: string }
 interface Preview {
   rows: { row: number; error?: string; nameOnBib?: string; bibNumber?: string | null; raceName?: string;
-    defaultRaceReason?: 'blank' | 'unrecognized'; csvRace?: string }[]
+    defaultRaceReason?: 'blank' | 'unrecognized'; csvRace?: string; warning?: string | null }[]
   defaultRaceCount: number
   validCount: number
   token: string | null

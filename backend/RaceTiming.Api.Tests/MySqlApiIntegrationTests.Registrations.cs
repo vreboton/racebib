@@ -208,7 +208,13 @@ public sealed partial class MySqlApiIntegrationTests
         var preview = await PreviewRegistrationCsv(client, path, raceId, file);
         Assert.True(preview.GetProperty("valid").GetBoolean());
         Assert.Equal(1, (await client.GetFromJsonAsync<JsonElement>(profiles)).GetProperty("total").GetInt32());
-        Assert.Equal("Lin Santos", preview.GetProperty("rows")[0].GetProperty("nameOnBib").GetString());
+        var rows = preview.GetProperty("rows");
+        Assert.Equal("Lin Santos", rows[0].GetProperty("nameOnBib").GetString());
+        Assert.Equal(JsonValueKind.Null, rows[0].GetProperty("error").ValueKind);
+        Assert.Contains("CSV name Changed Name", rows[0].GetProperty("warning").GetString());
+        Assert.Contains("saved profile for Lin Santos", rows[0].GetProperty("warning").GetString());
+        Assert.Equal(JsonValueKind.Null, rows[1].GetProperty("warning").ValueKind);
+        Assert.DoesNotContain("saved profile for Lin Santos", preview.GetProperty("errorCsv").GetString());
         using var form = ImportForm(raceId, file, token: preview.GetProperty("token").GetString());
         using var imported = await client.PostAsync(path + "/import/confirm", form);
         Assert.Equal(HttpStatusCode.OK, imported.StatusCode);
@@ -228,6 +234,70 @@ public sealed partial class MySqlApiIntegrationTests
         });
         var reimport = await PreviewRegistrationCsv(client, path, raceId, file);
         Assert.Contains("Duplicate registration", reimport.GetProperty("errorCsv").GetString());
+    }
+
+    [MySqlIntegrationFact]
+    [Trait("Category", "MySqlIntegration")]
+    public async Task CsvConfirmationRejectsStaleRunnerIdentityAndKeepsEquivalentEmailValid()
+    {
+        await using var data = new MySqlTestData(Services);
+        var account = await data.CreateAccountAsync();
+        var organizerId = await data.CreateOrganizerAsync(account, OrganizerRole.RaceDirector);
+        var eventId = await data.CreateEventAsync(organizerId);
+        using var client = Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await LoginAsync(client, account));
+        var raceId = await SeedRegistrationRace(client, eventId);
+        var profilePath = $"/api/v1/organizers/{organizerId}/runners";
+        var path = $"/api/v1/events/{eventId}/registrations";
+        const string email = "lin@example.test";
+        const string file = "First Name,Last Name,Email,Name on Bib\nLin,Santos,lin@example.test,L.S.";
+        var runnerId = await CreatedId(await client.PostAsJsonAsync(profilePath,
+            new { firstName = "Lin", lastName = "Santos", email }));
+
+        async Task UpdateProfile(string firstName, string profileEmail)
+        {
+            using var response = await client.PutAsJsonAsync($"{profilePath}/{runnerId}",
+                new { firstName, lastName = "Santos", email = profileEmail });
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
+
+        async Task Confirm(JsonElement preview, HttpStatusCode expected)
+        {
+            Assert.True(preview.GetProperty("valid").GetBoolean());
+            using var form = ImportForm(raceId, file, token: preview.GetProperty("token").GetString());
+            using var response = await client.PostAsync(path + "/import/confirm", form);
+            Assert.Equal(expected, response.StatusCode);
+        }
+
+        var original = await PreviewRegistrationCsv(client, path, raceId, file);
+        Assert.Equal(JsonValueKind.Null, original.GetProperty("rows")[0].GetProperty("warning").ValueKind);
+        await UpdateProfile("Lina", email);
+        await Confirm(original, HttpStatusCode.Conflict);
+
+        var renamed = await PreviewRegistrationCsv(client, path, raceId, file);
+        var warned = renamed.GetProperty("rows")[0];
+        Assert.Equal("L.S.", warned.GetProperty("nameOnBib").GetString());
+        Assert.Contains("Lina Santos", warned.GetProperty("warning").GetString());
+        await UpdateProfile("Lina", "new-address@example.test");
+        await Confirm(renamed, HttpStatusCode.Conflict);
+        Assert.Equal(1, (await client.GetFromJsonAsync<JsonElement>(profilePath)).GetProperty("total").GetInt32());
+
+        // Reassign the original email to a different profile with the same other identity fields.
+        var replacementId = await CreatedId(await client.PostAsJsonAsync(profilePath,
+            new { firstName = "Lina", lastName = "Santos", email }));
+        await Confirm(renamed, HttpStatusCode.Conflict);
+        Assert.Equal(0, (await client.GetFromJsonAsync<JsonElement>(path)).GetProperty("total").GetInt32());
+
+        var replacementPreview = await PreviewRegistrationCsv(client, path, raceId, file);
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+        var replacement = await db.Runners.SingleAsync(x => x.Id == replacementId);
+        replacement.Email = " LIN@EXAMPLE.TEST ";
+        await db.SaveChangesAsync();
+
+        await Confirm(replacementPreview, HttpStatusCode.OK);
+        var saved = await db.Registrations.SingleAsync(x => x.EventId == eventId);
+        Assert.Equal(replacementId, saved.RunnerId);
     }
 
     [MySqlIntegrationFact]
