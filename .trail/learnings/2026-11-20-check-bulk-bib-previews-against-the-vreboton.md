@@ -14,10 +14,10 @@ touches:
 ---
 
 ## Decided
-Check planned bibs against the MySQL column comparison during read-only preview because legacy values can be equal under the event-bib index collation even when BibAllocator considers them distinct.
+Check planned bibs against the MySQL column comparison during read-only preview and locked confirmation because legacy values can be equal under the event-bib index collation even when BibAllocator considers them distinct.
 
 ## Tried and ruled out
 Using only the allocator's ordinal comparison produced an approved ASCII bib that MySQL rejected as a duplicate of a legacy full-width number.
 
 ## Watch out
-A legacy equivalent can appear outside a race-filtered scope after approval. Keep the unique index and event transaction because the database conflict must roll back every bib, version increment, and audit in the batch.
+A legacy equivalent can appear outside a race-filtered scope after approval. Reject it at confirmation before writes. Keep the unique index and event transaction because any database conflict during a write must roll back every bib, version increment, and audit in the batch.

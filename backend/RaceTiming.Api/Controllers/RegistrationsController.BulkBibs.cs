@@ -12,6 +12,8 @@ namespace RaceTiming.Api.Controllers;
 public sealed partial class RegistrationsController
 {
     private const int BulkBibScopeLimit = 1000;
+    private const string BulkBibCollationConflict =
+        "A proposed bib is already reserved under the event's bib rules. Choose a different range and preview again.";
     private static readonly TimeSpan BulkBibPreviewLifetime = TimeSpan.FromMinutes(10);
 
     public sealed record BulkBibInput(Guid? RaceId, int? Start, int? End, int Width);
@@ -20,7 +22,11 @@ public sealed partial class RegistrationsController
     private sealed record BulkBibRow(Guid RegistrationId, string RunnerName, string Race, string? CurrentBib,
         string? ProposedBib, string? SkipReason);
 
-    private sealed record BulkBibPlan(List<Registration> Entries, BulkBibRow[] Rows, string? Error);
+    private sealed record BulkBibPlan(List<Registration> Entries, BulkBibRow[] Rows, string? AllocationError,
+        bool HasCollationConflict)
+    {
+        public string? Error => HasCollationConflict ? BulkBibCollationConflict : AllocationError;
+    }
     private sealed record BulkBibTicket(Guid EventId, string Actor, BulkBibInput Input, string Hash);
 
     [HttpPost("bibs/preview")]
@@ -63,7 +69,8 @@ public sealed partial class RegistrationsController
             if (ticket is null || ticket.EventId != eventId || ticket.Actor != Actor()) return StaleBulkBibPreview();
 
             var (plan, _) = await PrepareBulkBibs(item, ticket.Input, true, ct);
-            if (plan is null || plan.Error is not null || ticket.Hash != BulkBibHash(item, plan))
+            if (plan?.HasCollationConflict == true) return Conflict(BulkBibCollationConflict);
+            if (plan is null || plan.AllocationError is not null || ticket.Hash != BulkBibHash(item, plan))
                 return StaleBulkBibPreview();
 
             var assignedCount = 0;
@@ -105,21 +112,21 @@ public sealed partial class RegistrationsController
             .Select(x => x.BibNumber).ToListAsync(ct);
         var error = BibAllocator.Allocate(new(BibAssignmentMode.Automatic, input.Start, input.End, input.Width),
             occupied, new string?[eligibleCount], out var assigned);
-        if (!track && error is null && eligibleCount > 0)
+        var hasCollationConflict = false;
+        if (error is null && eligibleCount > 0)
         {
             // Legacy values can compare equal only under the unique index's database collation.
             var proposed = assigned.OfType<string>().ToArray();
-            if (await db.Registrations.AnyAsync(x => x.EventId == item.Id && x.BibNumber != null &&
-                proposed.Contains(x.BibNumber), ct))
-                error = "A proposed bib is already reserved under the event's bib rules. Choose a different range.";
+            hasCollationConflict = await db.Registrations.AnyAsync(x => x.EventId == item.Id && x.BibNumber != null &&
+                proposed.Contains(x.BibNumber), ct);
         }
-        if (error is null)
+        if (error is null && !hasCollationConflict)
         {
             var next = 0;
             for (var i = 0; i < rows.Length; i++)
                 if (rows[i].SkipReason is null) rows[i] = rows[i] with { ProposedBib = assigned[next++] };
         }
-        return (new(entries, rows, error), null);
+        return (new(entries, rows, error, hasCollationConflict), null);
     }
 
     private static string BulkBibHash(Event item, BulkBibPlan plan) =>

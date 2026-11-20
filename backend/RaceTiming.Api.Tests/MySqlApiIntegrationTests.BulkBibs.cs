@@ -222,7 +222,7 @@ public sealed partial class MySqlApiIntegrationTests
 
     [MySqlIntegrationFact]
     [Trait("Category", "MySqlIntegration")]
-    public async Task BulkBibsRollBackTheWholeBatchWhenMySqlRejectsAnAssignment()
+    public async Task BulkBibPreviewAndConfirmationRejectTheSameMySqlCollationCollision()
     {
         await using var data = new MySqlTestData(Services);
         var account = await data.CreateAccountAsync();
@@ -244,18 +244,35 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Equal(2, preview.GetProperty("changeCount").GetInt32());
 
         // Outside the approved scope, a legacy bib becomes equivalent to 002 under the unique index collation.
-        db.Add(BulkRunner(eventId, organizerId, otherRace.Id, "Legacy", 3, bib: "００２"));
+        var legacy = BulkRunner(eventId, organizerId, otherRace.Id, "Legacy", 3, bib: "００２");
+        db.Add(legacy);
+        db.AuditRecords.Add(new AuditRecord
+        {
+            OrganizerId = organizerId, ActorUserId = account.Id, TargetEntityType = "Registration",
+            TargetEntityId = legacy.Id.ToString(), Action = "Registration.BibChanged"
+        });
         await db.SaveChangesAsync();
         var before = await BulkState(db, eventId);
-        using var response = await ConfirmBulk(client, path, preview);
-        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
-        Assert.Equal(before, await BulkState(db, eventId));
+        var auditHistory = db.AuditRecords.AsNoTracking().Where(x => x.OrganizerId == organizerId).OrderBy(x => x.Id)
+            .Select(x => new { x.Id, x.ActorUserId, x.ActorIdentity, x.Action, x.TargetEntityType, x.TargetEntityId,
+                x.TimestampUtc, x.MetadataJson });
+        var auditBefore = await auditHistory.ToListAsync();
 
         var refreshed = await BulkPreview(client, path, input);
+        Assert.Equal(2, refreshed.GetProperty("eligibleCount").GetInt32());
         Assert.Equal(0, refreshed.GetProperty("changeCount").GetInt32());
         Assert.Equal(JsonValueKind.Null, refreshed.GetProperty("token").ValueKind);
-        Assert.Contains("already reserved", refreshed.GetProperty("error").GetString());
-        Assert.False(await db.AuditRecords.AnyAsync(x => x.OrganizerId == organizerId && x.Action == "Registration.BibAssigned"));
+        Assert.All(refreshed.GetProperty("rows").EnumerateArray(),
+            row => Assert.Equal(JsonValueKind.Null, row.GetProperty("proposedBib").ValueKind));
+        var message = refreshed.GetProperty("error").GetString();
+        Assert.Contains("already reserved", message);
+        Assert.Contains("different range and preview again", message);
+
+        using var response = await ConfirmBulk(client, path, preview);
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal(message, await response.Content.ReadAsStringAsync());
+        Assert.Equal(before, await BulkState(db, eventId));
+        Assert.Equal(auditBefore, await auditHistory.ToListAsync());
     }
 
     private static Registration BulkRunner(Guid eventId, Guid organizerId, Guid raceId, string lastName, int order,
