@@ -27,7 +27,8 @@ export interface Course extends Entry {
   distanceKm: number
   elevationGainMeters: number | null
   immutable: boolean
-  editBlock: 'historical' | 'lifecycle' | 'inactive' | null
+  editBlock: 'historical' | 'registrations' | 'inactive' | null
+  routeEditBlock?: 'historical' | 'lifecycle' | 'inactive' | null
   usable: boolean
   hasActiveRaces: boolean
   canDelete: boolean

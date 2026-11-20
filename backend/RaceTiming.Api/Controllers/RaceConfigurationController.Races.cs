@@ -36,6 +36,8 @@ public sealed partial class RaceConfigurationController
             if (!IsUsable(course)) return Invalid("Select an active Route with valid start and finish checkpoints.");
             if (raceId.HasValue && race.CourseId != course.Id)
             {
+                if (!CanSwitchCourse(item, race.Status))
+                    return ConflictProblem("A Category can switch Route Revisions only while its event is in Draft.");
                 if (await db.Registrations.AnyAsync(x => x.RaceId == race.Id, ct))
                     return ConflictProblem("A Category with registrations cannot switch Route Revisions here. Edit its Route from Race Configuration while the event is in Draft.");
                 if (course.Version <= race.Course.Version ||
@@ -159,6 +161,9 @@ public sealed partial class RaceConfigurationController
 
     private Task<Race?> FindRace(Guid eventId, Guid raceId, CancellationToken ct) =>
         db.Races.SingleOrDefaultAsync(x => x.EventId == eventId && x.Id == raceId, ct);
+
+    private static bool CanSwitchCourse(Event item, RecordStatus status) =>
+        item.Status == EventStatus.Draft && status == RecordStatus.Active;
 
     private Task<IActionResult> WithActiveRace(Guid eventId, Guid raceId, CancellationToken ct,
         Func<Event, Race, Task<IActionResult>> action) =>

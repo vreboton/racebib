@@ -78,12 +78,12 @@ public sealed partial class RaceConfigurationController(
         var activeCourseIds = races.Where(x => x.Status == RecordStatus.Active).Select(x => x.CourseId).ToHashSet();
         var protectedCourseIds = (await ProtectedCourseFamilies(eventId).ToListAsync(ct)).ToHashSet();
         var historicalCourseIds = (await HistoricalCourses(eventId).ToListAsync(ct)).ToHashSet();
-        var history = await db.Registrations.Where(x => x.EventId == eventId)
-            .Select(x => new { x.Id, x.RaceId, x.RaceCategoryId, x.StartWaveId }).ToListAsync(ct);
+        var history = await RegistrationSnapshots(db.Registrations.Where(x => x.EventId == eventId)).ToListAsync(ct);
         var registeredRaceIds = history.Select(x => x.RaceId).ToHashSet();
+        var registeredCourseIds = races.Where(x => registeredRaceIds.Contains(x.Id)).Select(x => x.CourseId).ToHashSet();
         var racesById = races.ToDictionary(x => x.Id);
         var affected = history.Where(x => racesById.TryGetValue(x.RaceId, out var race) && race.Status == RecordStatus.Active)
-            .ToLookup(x => racesById[x.RaceId].CourseId, x => x.Id);
+            .ToLookup(x => racesById[x.RaceId].CourseId);
         var categoryIds = history.Select(x => x.RaceCategoryId).ToHashSet();
         var waveIds = history.Select(x => x.StartWaveId).ToHashSet();
         var newerRevisions = (await (
@@ -97,25 +97,31 @@ public sealed partial class RaceConfigurationController(
         {
             timeZoneId = TimeZoneInfo.TryConvertWindowsIdToIanaId(item.TimeZoneId, out var zone) ? zone : item.TimeZoneId,
             canEdit = !Locked(item.Status) && canManage,
-            courses = courses.Select(x => new
+            courses = courses.Select(x =>
             {
-                x.Id, x.Name, x.Version, x.Description, x.DistanceKm, x.ElevationGainMeters, x.Status,
-                immutable = EditBlock(x, historicalCourseIds.Contains(x.Id), activeCourseIds.Contains(x.Id), item.Status) is not null,
-                editBlock = EditBlock(x, historicalCourseIds.Contains(x.Id), activeCourseIds.Contains(x.Id), item.Status),
-                hasActiveRaces = activeCourseIds.Contains(x.Id),
-                canDelete = canManage && x.Status == RecordStatus.Inactive &&
-                    !historicalCourseIds.Contains(x.Id) && !protectedCourseIds.Contains(x.Id),
-                affectedRegistrationCount = item.Status == EventStatus.Draft ? affected[x.Id].Count() : 0,
-                registrationConfirmation = item.Status == EventStatus.Draft ? RegistrationConfirmation(affected[x.Id]) : null,
-                usable = IsUsable(x),
-                checkpoints = x.Checkpoints.OrderBy(c => c.Sequence).Select(c => new
+                var editBlock = EditBlock(x, historicalCourseIds.Contains(x.Id), activeCourseIds.Contains(x.Id), item.Status);
+                return new
                 {
-                    c.Id, c.Name, c.Code, c.Sequence, c.DistanceFromStartKm, c.ElevationMeters,
-                    c.IsMandatory, c.IsStart, c.IsFinish, c.HasCutoff, c.CutoffDurationSeconds, c.Description
-                })
+                    x.Id, x.Name, x.Version, x.Description, x.DistanceKm, x.ElevationGainMeters, x.Status,
+                    immutable = editBlock is not null,
+                    editBlock = editBlock == "lifecycle" ? registeredCourseIds.Contains(x.Id) ? "registrations" : null : editBlock,
+                    routeEditBlock = editBlock,
+                    hasActiveRaces = activeCourseIds.Contains(x.Id),
+                    canDelete = canManage && x.Status == RecordStatus.Inactive &&
+                        !historicalCourseIds.Contains(x.Id) && !protectedCourseIds.Contains(x.Id),
+                    affectedRegistrationCount = item.Status == EventStatus.Draft ? affected[x.Id].Count() : 0,
+                    registrationConfirmation = canManage && item.Status == EventStatus.Draft
+                        ? RegistrationConfirmation(x.Id, affected[x.Id]) : null,
+                    usable = IsUsable(x),
+                    checkpoints = x.Checkpoints.OrderBy(c => c.Sequence).Select(c => new
+                    {
+                        c.Id, c.Name, c.Code, c.Sequence, c.DistanceFromStartKm, c.ElevationMeters,
+                        c.IsMandatory, c.IsStart, c.IsFinish, c.HasCutoff, c.CutoffDurationSeconds, c.Description
+                    })
+                };
             }),
             races = races.Select(x => RaceDto(x,
-                registeredRaceIds.Contains(x.Id) ? [] : newerRevisions[x.Id], categoryIds, waveIds))
+                CanSwitchCourse(item, x.Status) && !registeredRaceIds.Contains(x.Id) ? newerRevisions[x.Id] : [], categoryIds, waveIds))
         });
     });
 
@@ -132,14 +138,14 @@ public sealed partial class RaceConfigurationController(
 
     [HttpGet("races/{raceId:guid}")]
     public Task<IActionResult> GetRace(Guid eventId, Guid raceId, CancellationToken ct) =>
-        WithEvent(eventId, false, ct, async _ =>
+        WithEvent(eventId, false, ct, async item =>
         {
             var race = await db.Races.AsNoTracking().Include(x => x.Course).Include(x => x.Categories).Include(x => x.StartWaves)
                 .AsSplitQuery().SingleOrDefaultAsync(x => x.EventId == eventId && x.Id == raceId, ct);
             if (race is null) return NotFound();
             var history = await db.Registrations.Where(x => x.RaceId == raceId)
                 .Select(x => new { x.RaceCategoryId, x.StartWaveId }).Distinct().ToListAsync(ct);
-            var revisions = history.Count > 0 ? [] : await db.Courses
+            var revisions = !CanSwitchCourse(item, race.Status) || history.Count > 0 ? [] : await db.Courses
                 .Where(x => x.EventId == eventId && x.Status == RecordStatus.Active &&
                     x.Name == race.Course.Name && x.Version > race.Course.Version)
                 .Select(x => x.Id).ToListAsync(ct);

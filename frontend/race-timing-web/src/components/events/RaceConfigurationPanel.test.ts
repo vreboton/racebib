@@ -274,7 +274,7 @@ describe('race configuration actions', () => {
   it('explains registration and history locks while keeping duplication available', async () => {
     vi.mocked(loadConfiguration).mockResolvedValueOnce({
       ...configuration(), courses: [
-        { ...course, immutable: true, editBlock: 'lifecycle' },
+        { ...course, immutable: true, editBlock: 'registrations', routeEditBlock: 'lifecycle' },
         { ...course, id: 'historical', immutable: true, editBlock: 'historical' },
       ],
     })

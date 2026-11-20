@@ -22,8 +22,7 @@ public sealed partial class RegistrationsController
         "First Name", "Last Name", "Name on Bib", "Gender", "Birthdate", "Email", "Mobile Number",
         "Race", "Category", "Start Wave", "Bib Number", "Team", "Emergency Contact", "Registration Status", "Payment Status", "Runner ID"
     ];
-    private sealed record ImportRow(int Row, string? Error, string? NameOnBib = null, string? BibNumber = null,
-        string? RaceCategory = null, string? AgeGroup = null, string? StartWave = null);
+    private sealed record ImportRow(int Row, string? Error, string? NameOnBib = null, string? BibNumber = null);
     private sealed record ImportPlan(string[] Headers, Dictionary<string, int> Mapping,
         List<ImportRow> Rows, List<Registration> Entries, string? Error);
     private sealed record ImportTicket(Guid Id, Guid EventId, string Actor, string Hash);
@@ -112,7 +111,7 @@ public sealed partial class RegistrationsController
         if (mapping.Values.Any(i => i < 0 || i >= headers.Length)
             || mapping.Values.Distinct().Count() != mapping.Count
             || mapping.Keys.Except(Columns).Any() || !Columns.Take(2).Append("Race").All(mapping.ContainsKey))
-            return plan with { Error = "Map First Name, Last Name and Race Category to distinct columns." };
+            return plan with { Error = "Map First Name, Last Name and Race to distinct columns." };
 
         var races = await RacesWithRegistrationOptions(item.Id)
             .Where(x => x.Status == RecordStatus.Active).ToListAsync(ct);
@@ -129,7 +128,6 @@ public sealed partial class RegistrationsController
             string? Value(string key) => mapping.TryGetValue(key, out var index) ? Optional(csv.GetField(index)) : null;
             string? error;
             Registration? entry = null;
-            ImportRow? acceptedRow = null;
             if (csv.Parser.Count != headers.Length)
                 error = "Column count does not match the header.";
             else
@@ -155,7 +153,7 @@ public sealed partial class RegistrationsController
                 else if ((date is not null && birth is null) || birth > DateOnly.FromDateTime(DateTime.UtcNow))
                     error = "Use a valid birthdate in YYYY-MM-DD or M/D/YYYY format.";
                 else if (raceMatches.Length != 1)
-                    error = "Race Category must match one active Race Category in the event.";
+                    error = "Race must resolve to one active race in the event.";
                 else if (!TryStatus(Value("Registration Status"), RegistrationStatus.Pending, out var status)
                     || !TryStatus(Value("Payment Status"), PaymentStatus.Unspecified, out var payment))
                     error = "Enter valid registration and payment statuses.";
@@ -168,14 +166,14 @@ public sealed partial class RegistrationsController
                     if (identityError is not null)
                         error = identityError;
                     else if ((category is null && Value("Category") is not null) || (wave is null && Value("Start Wave") is not null))
-                        error = "The Age Group or Start Wave does not belong to this Race Category.";
+                        error = "Category or wave does not belong to this race.";
                     else if (profile is not null && birth.HasValue && profile.Birthdate != birth)
                         error = profile.Birthdate.HasValue
                             ? "CSV birthdate differs from the runner profile. Verify both sources, then correct the CSV or update the profile before importing."
                             : "The runner profile has no verified birthdate. Verify and save the birthdate on the profile before importing it.";
                     else if (profile is not null && !profile.Birthdate.HasValue &&
                         (category?.MinimumAge.HasValue == true || category?.MaximumAge.HasValue == true))
-                        error = "This Age Group requires a birthdate on the runner profile. Verify and save it, or choose an Age Group without age limits.";
+                        error = "This category requires a birthdate on the runner profile. Verify and save it, or choose a category without age limits.";
                     else
                     {
                         var runner = profile ?? new Runner { OrganizerId = item.OrganizerId,
@@ -195,13 +193,11 @@ public sealed partial class RegistrationsController
                         {
                             entry = new Registration { EventId = item.Id, OrganizerId = item.OrganizerId, Runner = runner, RunnerId = runner.Id };
                             Apply(entry, input, input.BibNumber);
-                            acceptedRow = new ImportRow(csv.Parser.RawRow, null, entry.EffectiveBibDisplayName,
-                                RaceCategory: race.Name, AgeGroup: category?.Name, StartWave: wave?.Name);
                         }
                     }
                 }
             }
-            rows.Add(acceptedRow ?? new ImportRow(csv.Parser.RawRow, error));
+            rows.Add(new ImportRow(csv.Parser.RawRow, error, entry?.EffectiveBibDisplayName));
             if (entry is not null) entries.Add(entry);
         }
         var allocationError = BibAllocator.Allocate(options, existing.Select(x => x.BibNumber),
@@ -253,8 +249,7 @@ public sealed partial class RegistrationsController
     private static bool HeaderMatches(string key, string header) => Same(key, header.Trim()) || key switch
     {
         "Name on Bib" => new[] { "Bib Name", "Display Name", "Preferred Name" }.Any(x => Same(x, header.Trim())),
-        "Race" => Same("Race Category", header.Trim()) || Same("Distance", header.Trim()) || Same("Race / Distance", header.Trim()),
-        "Category" => Same("Age Group", header.Trim()),
+        "Race" => Same("Distance", header.Trim()) || Same("Race / Distance", header.Trim()),
         "Team" => Same("Club", header.Trim()) || Same("Team / Club", header.Trim()),
         _ => false
     };

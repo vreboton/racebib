@@ -1,5 +1,5 @@
 using System.Security.Cryptography;
-using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using RaceTiming.Domain.Entities;
@@ -86,9 +86,9 @@ public sealed partial class RaceConfigurationController
             if (courseId.HasValue && course.Name == name && course.Description == description &&
                 course.DistanceKm == input.DistanceKm && course.ElevationGainMeters == input.ElevationGainMeters)
                 return Ok(new { course.Id });
-            var registrationIds = await AffectedRegistrations(course).Select(x => x.Id).ToListAsync(ct);
-            if (CheckConfirmation(registrationIds, confirmation) is { } conflict) return conflict;
-            var revise = NeedsRevision(historical, races, registrationIds.Count);
+            var registrations = await RegistrationSnapshots(AffectedRegistrations(course)).ToListAsync(ct);
+            if (CheckConfirmation(course.Id, registrations, confirmation) is { } conflict) return conflict;
+            var revise = NeedsRevision(historical, races, registrations.Count);
             if (courseId.HasValue && course.Name != name &&
                 (revise || course.Version > 1 || await db.Courses.AnyAsync(x =>
                     x.EventId == eventId && x.Id != course.Id && x.Name == course.Name, ct)))
@@ -215,9 +215,9 @@ public sealed partial class RaceConfigurationController
                 ordered.SequenceEqual(course.Checkpoints.OrderBy(x => x.Sequence).Select(CheckpointValue)))
                 return NoContent();
 
-            var registrationIds = await AffectedRegistrations(course).Select(x => x.Id).ToListAsync(ct);
-            if (CheckConfirmation(registrationIds, registrationConfirmation) is { } conflict) return conflict;
-            if (NeedsRevision(historical, races, registrationIds.Count))
+            var registrations = await RegistrationSnapshots(AffectedRegistrations(course)).ToListAsync(ct);
+            if (CheckConfirmation(course.Id, registrations, registrationConfirmation) is { } conflict) return conflict;
+            if (NeedsRevision(historical, races, registrations.Count))
             {
                 if (await ValidateDraftAssignments(item, course, ct) is { } invalid) return Invalid(invalid);
                 var revision = await CreateNextRevision(course, races, ct, copyCheckpoints: false);
@@ -297,14 +297,22 @@ public sealed partial class RaceConfigurationController
         return revision;
     }
 
-    private static string? RegistrationConfirmation(IEnumerable<Guid> ids)
+    private sealed record RegistrationSnapshot(Guid Id, Guid RaceId, Guid RunnerId, Guid? RaceCategoryId,
+        Guid? StartWaveId, string? BibNumber, RegistrationStatus Status);
+
+    private static IQueryable<RegistrationSnapshot> RegistrationSnapshots(IQueryable<Registration> registrations) =>
+        registrations.Select(x => new RegistrationSnapshot(x.Id, x.RaceId, x.RunnerId, x.RaceCategoryId,
+            x.StartWaveId, x.BibNumber, x.RegistrationStatus));
+
+    private static string? RegistrationConfirmation(Guid courseId, IEnumerable<RegistrationSnapshot> registrations)
     {
-        var snapshot = string.Join(",", ids.Order());
-        return snapshot.Length == 0 ? null : Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(snapshot)));
+        var snapshot = registrations.OrderBy(x => x.Id).ToArray();
+        return snapshot.Length == 0 ? null : Convert.ToHexString(SHA256.HashData(
+            JsonSerializer.SerializeToUtf8Bytes(new { courseId, assignments = snapshot })));
     }
 
-    private IActionResult? CheckConfirmation(List<Guid> ids, string? confirmation) =>
-        RegistrationConfirmation(ids) == confirmation ? null :
+    private IActionResult? CheckConfirmation(Guid courseId, List<RegistrationSnapshot> registrations, string? confirmation) =>
+        RegistrationConfirmation(courseId, registrations) == confirmation ? null :
             ConflictProblem("The affected registrations require confirmation. Reload Race Configuration, review the impact, and confirm the Route change.");
 
     private async Task<string?> ValidateDraftAssignments(Event item, Course course, CancellationToken ct)

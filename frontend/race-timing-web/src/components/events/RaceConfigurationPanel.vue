@@ -26,7 +26,7 @@
                   {{ point.isStart ? '· Start' : '' }} {{ point.isFinish ? '· Finish' : '' }}
                 </li>
               </ol>
-              <p v-if="course.editBlock === 'lifecycle'" class="text-medium-emphasis">
+              <p v-if="course.routeEditBlock === 'lifecycle' || course.editBlock === 'registrations'" class="text-medium-emphasis">
                 This Route is assigned to a Category outside Draft. Duplicate the Route to make an editable copy.
               </p>
               <p v-else-if="course.editBlock === 'historical'" class="text-medium-emphasis">

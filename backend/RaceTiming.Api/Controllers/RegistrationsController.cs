@@ -174,7 +174,7 @@ public sealed partial class RegistrationsController(
                 var age = date.Year - birth.Year;
                 if (birth.AddYears(age) > date) age--;
                 if (age < category.MinimumAge || age > category.MaximumAge)
-                    return "The runner is outside the Age Group limits.";
+                    return "The runner is outside the category age limits.";
             }
         }
         var allowedWave = existing?.StartWaveId;

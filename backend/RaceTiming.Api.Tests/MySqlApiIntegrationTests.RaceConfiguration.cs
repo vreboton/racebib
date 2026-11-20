@@ -471,8 +471,21 @@ public sealed partial class MySqlApiIntegrationTests
 
         evt.Status = EventStatus.Published;
         await db.SaveChangesAsync();
+        var published = Course(await Configuration(), latest);
+        Assert.Equal("registrations", published.GetProperty("editBlock").GetString());
+        Assert.Equal("lifecycle", published.GetProperty("routeEditBlock").GetString());
         using var publishedEdit = await client.PutAsJsonAsync($"{path}/courses/{latest}", materialEdit with { distanceKm = 14 });
         Assert.Equal(HttpStatusCode.Conflict, publishedEdit.StatusCode);
+        var independentRace = (await Configuration()).GetProperty("races").EnumerateArray()
+            .Single(x => x.GetProperty("courseId").GetGuid() == duplicates[0]);
+        var independentId = independentRace.GetProperty("id").GetGuid();
+        var publishedRevision = await CreatedId(await client.PostAsync($"{path}/courses/{duplicates[0]}/revisions", null));
+        using var publishedSwitch = await client.PutAsJsonAsync($"{path}/races/{independentId}",
+            new { name = "Independent race", courseId = publishedRevision, startAt });
+        Assert.Equal(HttpStatusCode.Conflict, publishedSwitch.StatusCode);
+        var publishedRace = await client.GetFromJsonAsync<JsonElement>($"{path}/races/{independentId}");
+        Assert.Equal(duplicates[0], publishedRace.GetProperty("courseId").GetGuid());
+        Assert.Empty(publishedRace.GetProperty("revisionIds").EnumerateArray());
         evt.Status = EventStatus.RegistrationClosed;
         await db.SaveChangesAsync();
         using var ready = await client.PatchAsJsonAsync(path + "/status", new { status = "Ready" });
@@ -935,6 +948,73 @@ public sealed partial class MySqlApiIntegrationTests
             Assert.True(await db.Courses.AnyAsync(x => x.Id == courseId));
             Assert.True(await db.Races.AnyAsync(x => x.CourseId == courseId));
         }
+    }
+
+    [MySqlIntegrationFact]
+    [Trait("Category", "MySqlIntegration")]
+    public async Task DraftCourseConfirmationRejectsChangedAssignmentsAndSerializesRegistrationCreation()
+    {
+        await using var data = new MySqlTestData(Services);
+        var account = await data.CreateAccountAsync();
+        var organizerId = await data.CreateOrganizerAsync(account, OrganizerRole.RaceDirector);
+        var eventId = await data.CreateEventAsync(organizerId);
+        using var client = Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await LoginAsync(client, account));
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+        var eventStart = await db.Events.Where(x => x.Id == eventId).Select(x => x.StartDate).SingleAsync();
+        var startAt = eventStart.AddMinutes(5).ToString("yyyy-MM-ddTHH:mm:ss") + "Z";
+        var path = $"/api/v1/events/{eventId}";
+        var courseId = await CreatedId(await client.PostAsJsonAsync(path + "/courses", new { name = "Trail", distanceKm = 10 }));
+        var coursePath = $"{path}/courses/{courseId}";
+        using var configured = await client.PutAsJsonAsync(coursePath + "/checkpoints", new
+        {
+            distanceKm = 10, checkpoints = new[]
+            {
+                new RoutePoint(null, "Start", "S", 1, 0, IsStart: true),
+                new RoutePoint(null, "Finish", "F", 2, 10, IsFinish: true)
+            }
+        });
+        Assert.Equal(HttpStatusCode.NoContent, configured.StatusCode);
+        var first = await CreatedId(await client.PostAsJsonAsync(path + "/races", new { name = "First", courseId, startAt }));
+        var second = await CreatedId(await client.PostAsJsonAsync(path + "/races", new { name = "Second", courseId, startAt }));
+        var profiles = $"/api/v1/organizers/{organizerId}/runners";
+        var runnerId = await CreatedId(await client.PostAsJsonAsync(profiles, new { firstName = "First", lastName = "Runner" }));
+        var anotherRunner = await CreatedId(await client.PostAsJsonAsync(profiles, new { firstName = "Second", lastName = "Runner" }));
+        var registrationId = await CreatedId(await client.PostAsJsonAsync(path + "/registrations", new { raceId = first, runnerId }));
+
+        async Task<string> ReadConfirmation() =>
+            (await client.GetFromJsonAsync<JsonElement>(path + "/configuration")).GetProperty("courses")
+            .EnumerateArray().Single(x => x.GetProperty("id").GetGuid() == courseId)
+            .GetProperty("registrationConfirmation").GetString()!;
+        Task<HttpResponseMessage> Edit(string confirmation) => client.PutAsJsonAsync(
+            $"{coursePath}?registrationConfirmation={confirmation}", new { name = "Trail", distanceKm = 12 });
+
+        var beforeMove = await ReadConfirmation();
+        using var moved = await client.PutAsJsonAsync($"{path}/registrations/{registrationId}", new { raceId = second, runnerId });
+        Assert.Equal(HttpStatusCode.OK, moved.StatusCode);
+        var afterMove = await ReadConfirmation();
+        Assert.NotEqual(beforeMove, afterMove);
+        using var stale = await Edit(beforeMove);
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+
+        var editWhileRegistering = Edit(afterMove);
+        var registerWhileEditing = client.PostAsJsonAsync(path + "/registrations", new { raceId = first, runnerId = anotherRunner });
+        using var editResult = await editWhileRegistering;
+        var secondRegistrationId = await CreatedId(await registerWhileEditing);
+        if (editResult.StatusCode == HttpStatusCode.Conflict)
+        {
+            Assert.Equal(1, await db.Courses.CountAsync(x => x.EventId == eventId));
+            using var retried = await Edit(await ReadConfirmation());
+            Assert.Equal(HttpStatusCode.OK, retried.StatusCode);
+        }
+        else Assert.Equal(HttpStatusCode.OK, editResult.StatusCode);
+
+        Assert.Equal(2, await db.Courses.CountAsync(x => x.EventId == eventId));
+        var assignedRevision = await db.Courses.Where(x => x.EventId == eventId && x.Version == 2).Select(x => x.Id).SingleAsync();
+        Assert.Equal(2, await db.Races.CountAsync(x => x.EventId == eventId && x.CourseId == assignedRevision && x.DistanceKm == 12));
+        Assert.Equal(second, await db.Registrations.Where(x => x.Id == registrationId).Select(x => x.RaceId).SingleAsync());
+        Assert.Equal(first, await db.Registrations.Where(x => x.Id == secondRegistrationId).Select(x => x.RaceId).SingleAsync());
     }
 
     private static async Task<Guid> CreatedId(HttpResponseMessage response)

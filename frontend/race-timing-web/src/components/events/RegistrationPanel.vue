@@ -99,7 +99,7 @@
   </v-dialog>
 
   <v-dialog v-model="showImport" max-width="800">
-    <v-card title="Import runner registrations">
+    <v-card title="Import runner registrations" subtitle="Race Category and Age Group use the Race and Category CSV columns.">
       <v-card-text>
         <v-alert v-if="error" type="error" class="mb-3">{{ error }}</v-alert>
         <p class="mb-2">For a name shared by multiple runners, verify the profile and map a Runner ID column.</p>
@@ -114,13 +114,13 @@
         <template v-if="preview">
           <div class="mapping">
             <v-select v-for="field in preview.fields" :key="field" :model-value="mapping[field] ?? null"
-              :items="headers" :label="importFieldLabels[field] ?? field" clearable @update:model-value="mapField(field, $event)" />
+              :items="headers" :label="field" clearable @update:model-value="mapField(field, $event)" />
           </div>
           <v-alert v-if="preview.error" type="warning" class="mb-2">{{ preview.error }}</v-alert>
           <p>{{ preview.validCount }} valid of {{ preview.rows.length }} rows in the last preview.</p>
           <v-list class="preview-rows" density="compact">
             <v-list-item v-for="row in preview.rows" :key="row.row" :title="'Row ' + row.row"
-              :subtitle="previewSummary(row)" />
+              :subtitle="row.error || [row.nameOnBib, row.bibNumber ?? 'Unassigned'].filter(Boolean).join(' · ')" />
           </v-list>
           <v-btn v-if="preview.rows.some(row => row.error)" variant="text" @click="downloadErrors">Download error report</v-btn>
         </template>
@@ -165,34 +165,15 @@ interface Draft {
 }
 interface Row extends Draft { id: string; effectiveBibDisplayName: string; runner: Profile }
 interface Change { action: string; timestampUtc: string }
-interface PreviewRow {
-  row: number
-  error?: string
-  nameOnBib?: string
-  bibNumber?: string | null
-  raceCategory?: string | null
-  ageGroup?: string | null
-  startWave?: string | null
-}
 interface Preview {
   headers: string[]
   fields: string[]
   mapping: Record<string, number>
-  rows: PreviewRow[]
+  rows: { row: number; error?: string; nameOnBib?: string; bibNumber?: string | null }[]
   validCount: number
   token: string | null
   error: string | null
   errorCsv: string
-}
-const importFieldLabels: Record<string, string> = { Race: 'Race Category', Category: 'Age Group' }
-function previewSummary(row: PreviewRow) {
-  if (row.error) return row.error
-  return [
-    row.nameOnBib, row.bibNumber ?? 'Unassigned',
-    row.raceCategory && `Race Category: ${row.raceCategory}`,
-    row.ageGroup && `Age Group: ${row.ageGroup}`,
-    row.startWave && `Start Wave: ${row.startWave}`,
-  ].filter(Boolean).join(' · ')
 }
 const props = defineProps<{ eventId: string; organizerId: string }>()
 const registrationUrl = '/events/' + props.eventId + '/registrations'
