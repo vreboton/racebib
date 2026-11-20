@@ -48,10 +48,14 @@ function configuration(categories: Configuration['races'][number]['categories'] 
   }
 }
 
-async function mountPanel() {
+async function mountPanel(openCourses = false) {
   const wrapper = shallowMount(RaceConfigurationPanel, { props: { eventId: 'event-1', zone: 'UTC' }, global: { stubs } })
   await flushPromises()
   const button = (label: string) => wrapper.findAll('button').find(item => item.text() === label)
+  if (openCourses) {
+    await (button('Course details and actions') ?? button('Add Race'))!.trigger('click')
+    await flushPromises()
+  }
   return { wrapper, button }
 }
 
@@ -59,12 +63,12 @@ describe('race configuration actions', () => {
   beforeEach(() => vi.resetAllMocks())
 
   it('requires confirmation before permanently deleting an unused course and refreshes the list', async () => {
-    const unused = { ...course, status: 'Inactive' as const, canDelete: true, hasActiveRaces: false }
+    const unused = { ...course, status: 'Inactive' as const, usable: false, canDelete: true, hasActiveRaces: false }
     vi.mocked(loadConfiguration)
       .mockResolvedValueOnce({ ...configuration(), races: [], courses: [unused] })
       .mockResolvedValueOnce({ ...configuration(), races: [], courses: [] })
     const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
-    const { wrapper, button } = await mountPanel()
+    const { wrapper, button } = await mountPanel(true)
     try {
       await button('Delete Course')!.trigger('click')
       expect(saveConfiguration).not.toHaveBeenCalled()
@@ -89,7 +93,7 @@ describe('race configuration actions', () => {
         { ...course, id: 'latest-revision', version: 2, hasActiveRaces: false },
       ],
     })
-    const editable = await mountPanel()
+    const editable = await mountPanel(true)
     expect(editable.button('Delete Course')).toBeUndefined()
     expect(editable.button('Retire Course')).toBeDefined()
     editable.wrapper.unmount()
@@ -97,7 +101,7 @@ describe('race configuration actions', () => {
     vi.mocked(loadConfiguration).mockResolvedValueOnce({
       ...configuration(), canEdit: false, courses: [{ ...course, canDelete: true, hasActiveRaces: false }],
     })
-    const readOnly = await mountPanel()
+    const readOnly = await mountPanel(true)
     expect(readOnly.button('Delete Course')).toBeUndefined()
     readOnly.wrapper.unmount()
   })
@@ -112,13 +116,13 @@ describe('race configuration actions', () => {
       .mockResolvedValueOnce({ ...history, courses: [retired] })
       .mockResolvedValueOnce({ ...history, courses: [historical] })
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    const { wrapper, button } = await mountPanel()
+    const { wrapper, button } = await mountPanel(true)
     try {
       await button('Retire Course')!.trigger('click')
       await flushPromises()
       expect(saveConfiguration).toHaveBeenCalledWith('event-1', 'courses/course-1/status', 'patch', { status: 'Inactive' })
       expect(wrapper.text()).toContain('Retired')
-      expect(button('Add Race')!.attributes('disabled')).toBeDefined()
+      expect(button('Add Race')!.attributes('disabled')).toBeUndefined()
       expect(button('Edit Course')).toBeUndefined()
       await button('Reactivate Course')!.trigger('click')
       await flushPromises()
@@ -136,7 +140,7 @@ describe('race configuration actions', () => {
     const inactive = { ...active, status: 'Inactive' as const, immutable: true, editBlock: 'inactive' as const, usable: false }
     vi.mocked(loadConfiguration).mockResolvedValueOnce({ ...configuration(), races: [], courses: [inactive] })
       .mockResolvedValueOnce({ ...configuration(), races: [], courses: [active] })
-    const { wrapper, button } = await mountPanel()
+    const { wrapper, button } = await mountPanel(true)
 
     expect(wrapper.text()).toContain('Reactivate this Course before editing it.')
     expect(button('Edit Course')).toBeUndefined()
@@ -151,7 +155,7 @@ describe('race configuration actions', () => {
 
   it('disables retirement for a course used by an active race', async () => {
     vi.mocked(loadConfiguration).mockResolvedValue({ ...configuration(), courses: [course] })
-    const { wrapper, button } = await mountPanel()
+    const { wrapper, button } = await mountPanel(true)
     expect(button('Retire Course')!.attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('An active race uses this Course.')
     expect(button('Edit Course')).toBeDefined()
@@ -164,7 +168,7 @@ describe('race configuration actions', () => {
     vi.mocked(loadConfiguration).mockResolvedValueOnce(attached)
       .mockResolvedValueOnce({ ...attached, courses: [course, copy] })
     vi.mocked(saveConfiguration).mockResolvedValueOnce({ id: copy.id })
-    const { wrapper, button } = await mountPanel()
+    const { wrapper, button } = await mountPanel(true)
 
     expect(button('Edit Course')).toBeDefined()
     expect(button('Edit Course Checkpoints')).toBeDefined()
@@ -194,7 +198,7 @@ describe('race configuration actions', () => {
       courses: [{ ...course, distanceKm: distance, checkpoints: [{ ...finish, distanceFromStartKm: distance }] }],
       races: attached.races.map(race => ({ ...race, distanceKm: distance })),
     })
-    const { wrapper, button } = await mountPanel()
+    const { wrapper, button } = await mountPanel(true)
     await button('Edit Course')!.trigger('click')
     const field = wrapper.get('input[aria-label="Distance (km)"]')
     expect(field.attributes('readonly')).toBeUndefined()
@@ -204,7 +208,7 @@ describe('race configuration actions', () => {
 
     expect(saveConfiguration).toHaveBeenCalledWith('event-1', 'courses/course-1', 'put',
       { name: 'Summit', description: 'Trail route', distanceKm: distance, elevationGainMeters: 800 })
-    expect(wrapper.text()).toContain(`Finish (F) · ${distance} km`)
+    expect(wrapper.text()).toContain(`Finish · ${distance} km`)
     wrapper.unmount()
   })
 
@@ -213,7 +217,7 @@ describe('race configuration actions', () => {
     vi.mocked(saveConfiguration).mockRejectedValueOnce({
       response: { status: 400, data: { title: "The course distance cannot be shorter than an intermediate checkpoint's distance from start." } },
     })
-    const { wrapper, button } = await mountPanel()
+    const { wrapper, button } = await mountPanel(true)
     await button('Edit Course')!.trigger('click')
     const field = wrapper.get('input[aria-label="Distance (km)"]')
     await field.setValue('4')
@@ -231,7 +235,7 @@ describe('race configuration actions', () => {
       ...configuration(), courses: [{ ...course, affectedRegistrationCount: 2, registrationConfirmation: 'snapshot' }],
     })
     const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
-    const { wrapper, button } = await mountPanel()
+    const { wrapper, button } = await mountPanel(true)
     try {
       await button('Edit Course')!.trigger('click')
       await wrapper.get('input[aria-label="Distance (km)"]').setValue('12')
@@ -258,7 +262,7 @@ describe('race configuration actions', () => {
       isStart: true, isFinish: false }
     const attached = { ...configuration(), courses: [{ ...course, checkpoints: [start, finish] }] }
     vi.mocked(loadConfiguration).mockResolvedValue(attached)
-    const { wrapper, button } = await mountPanel()
+    const { wrapper, button } = await mountPanel(true)
 
     await button('Edit Course Checkpoints')!.trigger('click')
     await wrapper.get('input[aria-label="Course distance (km)"]').setValue('12')
@@ -278,7 +282,7 @@ describe('race configuration actions', () => {
         { ...course, id: 'historical', immutable: true, editBlock: 'historical' },
       ],
     })
-    const { wrapper, button } = await mountPanel()
+    const { wrapper, button } = await mountPanel(true)
     expect(button('Edit Course')).toBeUndefined()
     expect(button('Edit Course Checkpoints')).toBeUndefined()
     expect(wrapper.text()).toContain('This Course is assigned to a race outside Draft.')
@@ -290,6 +294,8 @@ describe('race configuration actions', () => {
   it('saves race details and delegates category creation to the server', async () => {
     vi.mocked(loadConfiguration).mockResolvedValue(configuration())
     const { wrapper, button } = await mountPanel()
+    expect(wrapper.text()).not.toContain('Courses and revisions')
+    expect(button('Edit Course')).toBeUndefined()
     await button('Edit Race')!.trigger('click')
     await wrapper.get('input[aria-label="Name"]').setValue('Summit 10K')
     await wrapper.get('form').trigger('submit')

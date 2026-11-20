@@ -11,13 +11,9 @@
         </v-alert>
         <div class="d-flex align-center justify-space-between flex-wrap ga-2 mb-2">
           <h3>Races</h3>
-          <v-btn v-if="configuration.canEdit" color="primary" :disabled="!usableCourses.length" @click="editRace()">Add Race</v-btn>
+          <v-btn v-if="configuration.canEdit" color="primary" @click="usableCourses.length ? editRace() : browseCourses()">Add Race</v-btn>
         </div>
         <p v-if="!configuration.races.length" class="mb-2">No races yet.</p>
-        <div v-if="configuration.canEdit && !usableCourses.length" class="mb-2">
-          <p>Add a course with start and finish checkpoints before creating a race.</p>
-          <v-btn v-if="!configuration.courses.length" variant="text" @click="editCourse()">Add Course</v-btn>
-        </div>
         <v-expansion-panels multiple>
           <v-expansion-panel v-for="race in configuration.races" :key="race.id"
             :title="`${race.name} · ${race.distanceKm} km${race.status === 'Inactive' ? ' · Inactive' : ' · Active'}`">
@@ -41,9 +37,12 @@
                     {{ point.name }} &middot; {{ point.distanceFromStartKm }} km
                   </li>
                 </ol>
-                <div v-if="configuration.canEdit && !courseById.get(race.courseId)?.immutable" class="d-flex flex-wrap">
-                  <v-btn variant="text" @click="editCourse(courseById.get(race.courseId)!)">Edit course details</v-btn>
-                  <v-btn variant="text" @click="editRoute(courseById.get(race.courseId)!)">Edit checkpoints</v-btn>
+                <div class="d-flex flex-wrap">
+                  <template v-if="configuration.canEdit && !courseById.get(race.courseId)?.immutable">
+                    <v-btn variant="text" @click="editCourse(courseById.get(race.courseId)!)">Edit course details</v-btn>
+                    <v-btn variant="text" @click="editRoute(courseById.get(race.courseId)!)">Edit checkpoints</v-btn>
+                  </template>
+                  <v-btn variant="text" @click="browseCourses(race.courseId)">Course details and actions</v-btn>
                 </div>
               </template>
 
@@ -63,12 +62,21 @@
             </v-expansion-panel-text>
           </v-expansion-panel>
         </v-expansion-panels>
-        <details class="mt-5" :open="!usableCourses.length">
-          <summary class="font-weight-medium">Courses and revisions</summary>
-          <v-btn v-if="configuration.canEdit && configuration.courses.length" class="my-2" variant="tonal" @click="editCourse()">Add Course</v-btn>
+
+
+      </template>
+    </v-card-text>
+  </v-card>
+
+  <v-dialog v-if="courseOptions && configuration" v-model="courseOptions" :persistent="busy" max-width="760">
+    <v-card title="Course details and actions">
+      <v-card-text>
+          <v-alert v-if="error" type="error" variant="tonal" class="mb-3">{{ error }}</v-alert>
+          <p v-if="configuration.canEdit && !usableCourses.length">Set up a course with start and finish checkpoints to create a race.</p>
+          <v-btn v-if="configuration.canEdit" class="my-2" variant="tonal" @click="editCourse()">Add Course</v-btn>
           <p v-if="!configuration.courses.length">No Courses yet.</p>
-          <v-expansion-panels multiple>
-            <v-expansion-panel v-for="course in configuration.courses" :key="course.id"
+          <v-expansion-panels v-model="expandedCourse">
+            <v-expansion-panel v-for="course in configuration.courses" :key="course.id" :value="course.id"
               :title="courseLabel(course)">
               <v-expansion-panel-text>
                 <p v-if="course.description" class="mb-2">{{ course.description }}</p>
@@ -107,13 +115,12 @@
               </v-expansion-panel-text>
             </v-expansion-panel>
           </v-expansion-panels>
-        </details>
+      </v-card-text>
+      <v-card-actions><v-spacer /><v-btn :disabled="busy" @click="courseOptions = false">Close</v-btn></v-card-actions>
+    </v-card>
+  </v-dialog>
 
-      </template>
-    </v-card-text>
-  </v-card>
-
-  <v-dialog :model-value="Boolean(editor)" :persistent="busy" max-width="760" @update:model-value="editor = undefined">
+  <v-dialog :model-value="Boolean(editor) && !courseOptions" :persistent="busy" max-width="760" @update:model-value="editor = undefined">
     <v-card v-if="editor" :title="editor.title">
       <v-form @submit.prevent="submit">
         <v-card-text>
@@ -161,6 +168,7 @@
             </template>
             <template v-if="editor.kind === 'race'">
               <v-select v-model="editor.courseId" :items="editor.courses" label="Course" required />
+              <v-btn variant="text" class="mb-3" @click="browseCourses(editor.courseId)">Course details and actions</v-btn>
               <v-text-field v-model="editor.cutoffDurationSeconds" type="number" min="1" label="Cutoff (seconds)" />
             </template>
             <ScheduleInput v-if="editor.kind === 'race' || editor.kind === 'wave'" :key="editor.path"
@@ -207,6 +215,12 @@ type Editor = EditorBase & (
   | { kind: 'wave'; name: string; startAt: string; sequence: Numeric; capacity: Numeric }
 )
 const editor = ref<Editor>()
+const courseOptions = ref(false)
+const expandedCourse = ref<string>()
+function browseCourses(courseId?: string) {
+  expandedCourse.value = courseId
+  courseOptions.value = true
+}
 let pointKey = 0
 const usableCourses = computed(() => configuration.value?.courses.filter(c => c.usable) ?? [])
 const racesByCourse = computed(() => {
@@ -274,6 +288,7 @@ function retire(name: string, path: string) {
 }
 function base(title: string, path: string, id?: string): EditorBase {
   error.value = ''
+  courseOptions.value = false
   return { title, path: id ? `${path}/${id}` : path, method: id ? 'put' : 'post' }
 }
 function editCourse(course?: Course) {
@@ -285,6 +300,7 @@ function editCourse(course?: Course) {
     hasFinish: course?.checkpoints.some(point => point.isFinish) ?? false }
 }
 function editRoute(course: Course) {
+  courseOptions.value = false
   error.value = ''
   editor.value = { title: 'Edit Course Checkpoints', path: `courses/${course.id}/checkpoints`, method: 'put',
     kind: 'route', distanceKm: course.distanceKm, checkpoints: course.checkpoints.map(p => ({ ...p, key: ++pointKey })) }

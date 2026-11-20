@@ -34,6 +34,11 @@ Match additional checks to the change. [Build CI](.github/workflows/build.yml) c
 - Leave merging and repository settings changes to the repository owner. Deployments, production migrations, and recovery require separate explicit authorization.
 - Meet the issue's acceptance criteria, review the final diff, and record checks run, gaps, and migration, security, and deployment impact in the PR. Confirm CI for the latest revision and address review findings before requesting human approval. See the [collaboration workflow](docs/development/collaboration-workflow.md).
 
+### Git safety for commits and pushes
+
+- Review staged and unstaged changes and untracked paths. Stage only reviewed, intended paths or hunks. Preserve unrelated staged work, staging rehearsal files and worktrees, and local data. Keep secrets, environment files with credentials, database dumps, and production data out of commits and logs.
+- Before pushing, verify the current feature branch, the matching branch on `origin`, and every outgoing commit. Use a normal push to that branch only. Never force-push or push directly to `main`. Stop on conflicts or unexpected outgoing history and leave merge, rebase, and deployment outside the commit-and-push workflow.
+
 <!-- trail:start -->
 ## Trail — repo context graph
 
