@@ -75,6 +75,6 @@ public sealed partial class RegistrationsController
         entry.Id, entry.Version, entry.Runner.FirstName, entry.Runner.LastName, entry.BibNumber,
         race = entry.Race.Name, status = (int)entry.RegistrationStatus, checkedInAtUtc = CheckInTimestamp(entry),
         checkInError = RegistrationCheckIn.GetIneligibility(status, entry.RegistrationStatus, entry.Race.Status, entry.BibNumber),
-        canReverse = status is not (EventStatus.Completed or EventStatus.Cancelled)
+        canReverse = AllowsRegistrationWrites(status)
     };
 }

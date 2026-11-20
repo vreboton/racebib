@@ -89,3 +89,11 @@ it('requires a reason and confirmation before reversing a check-in', async () =>
   expect(button('Check in')).toBeDefined()
   wrapper.unmount()
 })
+
+it('hides reversal when the server reports that the event is closed for changes', async () => {
+  const { wrapper, button } = await mountPanel([{ ...checkedIn, canReverse: false }])
+  expect(wrapper.text()).toContain('Checked in')
+  expect(button('Reverse check-in')).toBeUndefined()
+  expect(api.delete).not.toHaveBeenCalled()
+  wrapper.unmount()
+})

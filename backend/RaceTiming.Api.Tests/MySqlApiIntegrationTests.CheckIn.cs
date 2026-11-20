@@ -223,6 +223,67 @@ public sealed partial class MySqlApiIntegrationTests
             client.PutAsJsonAsync($"{path}/{entry.Id}/check-in", new { version = entry.Version });
     }
 
+    [MySqlIntegrationFact]
+    [Trait("Category", "MySqlIntegration")]
+    public async Task TerminalEventsRejectReversalAndPreserveCheckInAndAuditHistory()
+    {
+        await using var data = new MySqlTestData(Services);
+        var account = await data.CreateAccountAsync();
+        var organizerId = await data.CreateOrganizerAsync(account);
+        using var client = await CheckInClient(account);
+
+        foreach (var status in new[] { EventStatus.Completed, EventStatus.Cancelled })
+        {
+            var eventId = await data.CreateEventAsync(organizerId);
+            var raceId = await SeedRegistrationRace(client, eventId);
+            using var scope = Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+            var item = await db.Events.SingleAsync(x => x.Id == eventId);
+            item.Status = status == EventStatus.Completed ? EventStatus.Live : EventStatus.RegistrationOpen;
+            var entry = new Registration
+            {
+                EventId = eventId, OrganizerId = organizerId, RaceId = raceId, BibNumber = "0007",
+                RegistrationStatus = RegistrationStatus.Confirmed,
+                Runner = new Runner { OrganizerId = organizerId, FirstName = "Lina", LastName = "Fixture" }
+            };
+            db.Registrations.Add(entry);
+            await db.SaveChangesAsync();
+
+            var path = $"/api/v1/events/{eventId}/registrations";
+            var detailsUrl = $"{path}/{entry.Id}";
+            var checkInUrl = detailsUrl + "/check-in";
+            using var checkIn = await client.PutAsJsonAsync(checkInUrl, new { version = entry.Version });
+            Assert.Equal(HttpStatusCode.OK, checkIn.StatusCode);
+            var checkedIn = await checkIn.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.True(checkedIn.GetProperty("canReverse").GetBoolean());
+            var timestamp = checkedIn.GetProperty("checkedInAtUtc").GetDateTime();
+            var version = checkedIn.GetProperty("version").GetInt64();
+            var before = await client.GetFromJsonAsync<JsonElement>(detailsUrl);
+            var audit = Assert.Single(before.GetProperty("history").EnumerateArray());
+            Assert.Equal("Registration.CheckedIn", audit.GetProperty("action").GetString());
+
+            using var transition = await client.PatchAsJsonAsync($"/api/v1/events/{eventId}/status", new { status });
+            Assert.True(transition.IsSuccessStatusCode);
+            var search = await client.GetFromJsonAsync<JsonElement>(path + "/check-in?search=0007");
+            var row = Assert.Single(search.GetProperty("items").EnumerateArray());
+            Assert.False(row.GetProperty("canReverse").GetBoolean());
+
+            using var request = new HttpRequestMessage(HttpMethod.Delete, checkInUrl)
+            {
+                Content = JsonContent.Create(new { version, reason = "Desk correction" })
+            };
+            using var reversal = await client.SendAsync(request);
+            Assert.Equal(HttpStatusCode.Conflict, reversal.StatusCode);
+            Assert.Contains("Registration changes are closed", await reversal.Content.ReadAsStringAsync());
+
+            var after = await client.GetFromJsonAsync<JsonElement>(detailsUrl);
+            var registration = after.GetProperty("registration");
+            Assert.Equal(timestamp, registration.GetProperty("checkedInAtUtc").GetDateTime());
+            Assert.Equal(version, registration.GetProperty("version").GetInt64());
+            Assert.Equal(before.GetProperty("history").GetRawText(), after.GetProperty("history").GetRawText());
+        }
+    }
+
     private async Task<HttpClient> CheckInClient(TestAccount account)
     {
         var client = Factory.CreateClient();

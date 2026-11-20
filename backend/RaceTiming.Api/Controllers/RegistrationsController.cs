@@ -342,6 +342,9 @@ public sealed partial class RegistrationsController(
     private void Record(Registration entry, string action, Dictionary<string, object?>? metadata = null) =>
         audit.Record(User, action, "Registration", entry.Id.ToString(), entry.OrganizerId, metadata);
 
+    private static bool AllowsRegistrationWrites(EventStatus status) =>
+        status is not (EventStatus.Completed or EventStatus.Cancelled);
+
     private async Task<IActionResult> WithEvent(Guid eventId, bool write, CancellationToken ct, Func<Event, Task<IActionResult>> action)
     {
         var scope = await db.Events.AsNoTracking().Where(x => x.Id == eventId)
@@ -355,7 +358,7 @@ public sealed partial class RegistrationsController(
             var item = write ? await RaceConfigurationController.FindEventForWrite(db, eventId, ct)
                 : await db.Events.AsNoTracking().SingleOrDefaultAsync(x => x.Id == eventId, ct);
             if (item is null) return NotFound();
-            if (write && item.Status is EventStatus.Completed or EventStatus.Cancelled)
+            if (write && !AllowsRegistrationWrites(item.Status))
                 return Conflict("Registration changes are closed for this event.");
             var result = await action(item);
             if (transaction is not null && result is not ObjectResult { StatusCode: >= 400 }
