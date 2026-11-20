@@ -154,6 +154,42 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                     b.ToTable("AspNetUserTokens", (string)null);
                 });
 
+            modelBuilder.Entity("RaceTiming.Domain.Entities.AcceptedTiming", b =>
+                {
+                    b.Property<Guid>("RegistrationId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("OccurrenceId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<int>("DecisionRevision")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("ObservationId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("RaceId")
+                        .HasColumnType("char(36)");
+
+                    b.HasKey("RegistrationId", "OccurrenceId");
+
+                    b.HasIndex("ObservationId")
+                        .IsUnique();
+
+                    b.HasIndex("ObservationId", "DecisionRevision");
+
+                    b.HasIndex("RaceId", "OccurrenceId");
+
+                    b.HasIndex("EventId", "RaceId", "OccurrenceId");
+
+                    b.HasIndex("ObservationId", "EventId", "RegistrationId", "RaceId");
+
+                    b.ToTable("AcceptedTimings", (string)null);
+                });
+
             modelBuilder.Entity("RaceTiming.Domain.Entities.AuditRecord", b =>
                 {
                     b.Property<Guid>("Id")
@@ -202,6 +238,57 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                     b.HasIndex("OrganizerId", "TimestampUtc");
 
                     b.ToTable("AuditRecords");
+                });
+
+            modelBuilder.Entity("RaceTiming.Domain.Entities.CheckpointAssignment", b =>
+                {
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("CheckpointId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("UserId")
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<bool>("Active")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<Guid>("Generation")
+                        .HasColumnType("char(36)");
+
+                    b.HasKey("EventId", "CheckpointId", "UserId");
+
+                    b.HasIndex("CheckpointId", "EventId");
+
+                    b.HasIndex("UserId", "Active");
+
+                    b.ToTable("CheckpointAssignments", (string)null);
+                });
+
+            modelBuilder.Entity("RaceTiming.Domain.Entities.CheckpointMapping", b =>
+                {
+                    b.Property<Guid>("OccurrenceId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("CheckpointId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("CourseId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("char(36)");
+
+                    b.HasKey("OccurrenceId");
+
+                    b.HasIndex("CheckpointId", "EventId");
+
+                    b.HasIndex("CourseId", "EventId");
+
+                    b.HasIndex("OccurrenceId", "CourseId");
+
+                    b.ToTable("CheckpointMappings", (string)null);
                 });
 
             modelBuilder.Entity("RaceTiming.Domain.Entities.Course", b =>
@@ -362,6 +449,48 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                     b.ToTable("Events");
                 });
 
+            modelBuilder.Entity("RaceTiming.Domain.Entities.OfficialGunDeclaration", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("ActorUserId")
+                        .IsRequired()
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<DateTime>("DeclaredAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime>("GunAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<Guid>("RaceId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("varchar(300)");
+
+                    b.Property<Guid?>("SupersedesId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid?>("WaveId")
+                        .HasColumnType("char(36)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ActorUserId");
+
+                    b.HasIndex("SupersedesId")
+                        .IsUnique();
+
+                    b.HasIndex("RaceId", "WaveId", "DeclaredAtUtc");
+
+                    b.ToTable("OfficialGunDeclarations", (string)null);
+                });
+
             modelBuilder.Entity("RaceTiming.Domain.Entities.Organizer", b =>
                 {
                     b.Property<Guid>("Id")
@@ -502,6 +631,33 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                     b.ToTable("OrganizerMemberships");
                 });
 
+            modelBuilder.Entity("RaceTiming.Domain.Entities.PhysicalCheckpoint", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("varchar(40)");
+
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("varchar(160)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EventId", "Code")
+                        .IsUnique();
+
+                    b.ToTable("PhysicalCheckpoints", (string)null);
+                });
+
             modelBuilder.Entity("RaceTiming.Domain.Entities.Race", b =>
                 {
                     b.Property<Guid>("Id")
@@ -584,6 +740,50 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                         {
                             t.HasCheckConstraint("CK_RaceCategory_AgeRange", "`MinimumAge` IS NULL OR `MaximumAge` IS NULL OR `MaximumAge` >= `MinimumAge`");
                         });
+                });
+
+            modelBuilder.Entity("RaceTiming.Domain.Entities.RaceTimingSetup", b =>
+                {
+                    b.Property<Guid>("RaceId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime>("ArmedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<Guid>("CourseId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<int>("CutoffBasis")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("CutoffDurationSeconds")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<int>("ResultsBasis")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("ScheduledGunUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("TimeZoneId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<DateTime>("WindowEndUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime>("WindowStartUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.HasKey("RaceId");
+
+                    b.HasIndex("CourseId", "EventId");
+
+                    b.ToTable("RaceTimingSetups", (string)null);
                 });
 
             modelBuilder.Entity("RaceTiming.Domain.Entities.Registration", b =>
@@ -761,6 +961,212 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                     b.ToTable("StartWaves");
                 });
 
+            modelBuilder.Entity("RaceTiming.Domain.Entities.TimingDecision", b =>
+                {
+                    b.Property<Guid>("ObservationId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<int>("Revision")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ActorUserId")
+                        .IsRequired()
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<DateTime>("DecidedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<Guid?>("OccurrenceId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<int>("Outcome")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("varchar(300)");
+
+                    b.HasKey("ObservationId", "Revision");
+
+                    b.HasIndex("ActorUserId");
+
+                    b.HasIndex("OccurrenceId");
+
+                    b.ToTable("TimingDecisions", (string)null);
+                });
+
+            modelBuilder.Entity("RaceTiming.Domain.Entities.TimingObservation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("ActorUserId")
+                        .IsRequired()
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<Guid>("AssignmentGeneration")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("BibNumber")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<Guid>("CheckpointId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("IdempotencyKey")
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime>("ObservedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<Guid?>("ProposedOccurrenceId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("RaceId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime>("ReceivedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<Guid>("RegistrationId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<int>("Source")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EventId", "CheckpointId", "ActorUserId");
+
+                    b.HasIndex("EventId", "CheckpointId", "ReceivedAtUtc");
+
+                    b.HasIndex("EventId", "RegistrationId", "ObservedAtUtc");
+
+                    b.HasIndex("EventId", "RegistrationId", "RaceId");
+
+                    b.HasIndex("RaceId", "ProposedOccurrenceId", "CheckpointId");
+
+                    b.HasIndex("EventId", "ActorUserId", "DeviceId", "IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("UX_TimingObservations_Operation");
+
+                    b.ToTable("TimingObservations", (string)null);
+                });
+
+            modelBuilder.Entity("RaceTiming.Domain.Entities.TimingRosterEntry", b =>
+                {
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("RegistrationId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("BibNumber")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<Guid>("RaceId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid?>("WaveId")
+                        .HasColumnType("char(36)");
+
+                    b.HasKey("EventId", "RegistrationId");
+
+                    b.HasIndex("EventId", "BibNumber")
+                        .IsUnique();
+
+                    b.HasIndex("RaceId", "EventId");
+
+                    b.HasIndex("RaceId", "WaveId");
+
+                    b.HasIndex("RegistrationId", "EventId");
+
+                    b.ToTable("TimingRosterEntries", (string)null);
+                });
+
+            modelBuilder.Entity("RaceTiming.Domain.Entities.TimingVisit", b =>
+                {
+                    b.Property<Guid>("RaceId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("OccurrenceId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("CheckpointId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<int?>("CutoffDurationSeconds")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("DistanceKm")
+                        .HasPrecision(8, 3)
+                        .HasColumnType("decimal(8,3)");
+
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<bool>("IsFinish")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<bool>("IsMandatory")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<bool>("IsStart")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("varchar(160)");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("int");
+
+                    b.HasKey("RaceId", "OccurrenceId");
+
+                    b.HasIndex("OccurrenceId");
+
+                    b.HasIndex("CheckpointId", "EventId");
+
+                    b.HasIndex("RaceId", "CheckpointId");
+
+                    b.HasIndex("RaceId", "EventId");
+
+                    b.HasIndex("RaceId", "Sequence")
+                        .IsUnique();
+
+                    b.ToTable("TimingVisits", (string)null);
+                });
+
+            modelBuilder.Entity("RaceTiming.Domain.Entities.TimingWave", b =>
+                {
+                    b.Property<Guid>("RaceId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("WaveId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<DateTime>("ScheduledGunUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.HasKey("RaceId", "WaveId");
+
+                    b.HasIndex("WaveId", "RaceId");
+
+                    b.ToTable("TimingWaves", (string)null);
+                });
+
             modelBuilder.Entity("RaceTiming.Infrastructure.Identity.ApplicationUser", b =>
                 {
                     b.Property<string>("Id")
@@ -909,12 +1315,74 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("RaceTiming.Domain.Entities.AcceptedTiming", b =>
+                {
+                    b.HasOne("RaceTiming.Domain.Entities.TimingDecision", null)
+                        .WithMany()
+                        .HasForeignKey("ObservationId", "DecisionRevision")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("RaceTiming.Domain.Entities.TimingVisit", null)
+                        .WithMany()
+                        .HasForeignKey("RaceId", "OccurrenceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("RaceTiming.Domain.Entities.TimingObservation", null)
+                        .WithMany()
+                        .HasForeignKey("ObservationId", "EventId", "RegistrationId", "RaceId")
+                        .HasPrincipalKey("Id", "EventId", "RegistrationId", "RaceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("RaceTiming.Domain.Entities.AuditRecord", b =>
                 {
                     b.HasOne("RaceTiming.Domain.Entities.Organizer", null)
                         .WithMany()
                         .HasForeignKey("OrganizerId")
                         .OnDelete(DeleteBehavior.SetNull);
+                });
+
+            modelBuilder.Entity("RaceTiming.Domain.Entities.CheckpointAssignment", b =>
+                {
+                    b.HasOne("RaceTiming.Infrastructure.Identity.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("RaceTiming.Domain.Entities.PhysicalCheckpoint", null)
+                        .WithMany()
+                        .HasForeignKey("CheckpointId", "EventId")
+                        .HasPrincipalKey("Id", "EventId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("RaceTiming.Domain.Entities.CheckpointMapping", b =>
+                {
+                    b.HasOne("RaceTiming.Domain.Entities.PhysicalCheckpoint", null)
+                        .WithMany()
+                        .HasForeignKey("CheckpointId", "EventId")
+                        .HasPrincipalKey("Id", "EventId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("RaceTiming.Domain.Entities.Course", null)
+                        .WithMany()
+                        .HasForeignKey("CourseId", "EventId")
+                        .HasPrincipalKey("Id", "EventId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("RaceTiming.Domain.Entities.CourseCheckpoint", null)
+                        .WithMany()
+                        .HasForeignKey("OccurrenceId", "CourseId")
+                        .HasPrincipalKey("Id", "CourseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("RaceTiming.Domain.Entities.Course", b =>
@@ -948,6 +1416,31 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Organizer");
+                });
+
+            modelBuilder.Entity("RaceTiming.Domain.Entities.OfficialGunDeclaration", b =>
+                {
+                    b.HasOne("RaceTiming.Infrastructure.Identity.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("ActorUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("RaceTiming.Domain.Entities.RaceTimingSetup", null)
+                        .WithMany()
+                        .HasForeignKey("RaceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("RaceTiming.Domain.Entities.OfficialGunDeclaration", null)
+                        .WithMany()
+                        .HasForeignKey("SupersedesId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("RaceTiming.Domain.Entities.TimingWave", null)
+                        .WithMany()
+                        .HasForeignKey("RaceId", "WaveId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("RaceTiming.Domain.Entities.OrganizerInvitation", b =>
@@ -984,6 +1477,15 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                     b.Navigation("Organizer");
                 });
 
+            modelBuilder.Entity("RaceTiming.Domain.Entities.PhysicalCheckpoint", b =>
+                {
+                    b.HasOne("RaceTiming.Domain.Entities.Event", null)
+                        .WithMany()
+                        .HasForeignKey("EventId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("RaceTiming.Domain.Entities.Race", b =>
                 {
                     b.HasOne("RaceTiming.Domain.Entities.Event", "Event")
@@ -1013,6 +1515,23 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Race");
+                });
+
+            modelBuilder.Entity("RaceTiming.Domain.Entities.RaceTimingSetup", b =>
+                {
+                    b.HasOne("RaceTiming.Domain.Entities.Course", null)
+                        .WithMany()
+                        .HasForeignKey("CourseId", "EventId")
+                        .HasPrincipalKey("Id", "EventId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("RaceTiming.Domain.Entities.Race", null)
+                        .WithMany()
+                        .HasForeignKey("RaceId", "EventId")
+                        .HasPrincipalKey("Id", "EventId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("RaceTiming.Domain.Entities.Registration", b =>
@@ -1079,6 +1598,109 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Race");
+                });
+
+            modelBuilder.Entity("RaceTiming.Domain.Entities.TimingDecision", b =>
+                {
+                    b.HasOne("RaceTiming.Infrastructure.Identity.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("ActorUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("RaceTiming.Domain.Entities.TimingObservation", null)
+                        .WithMany()
+                        .HasForeignKey("ObservationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("RaceTiming.Domain.Entities.CourseCheckpoint", null)
+                        .WithMany()
+                        .HasForeignKey("OccurrenceId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("RaceTiming.Domain.Entities.TimingObservation", b =>
+                {
+                    b.HasOne("RaceTiming.Domain.Entities.CheckpointAssignment", null)
+                        .WithMany()
+                        .HasForeignKey("EventId", "CheckpointId", "ActorUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("RaceTiming.Domain.Entities.TimingRosterEntry", null)
+                        .WithMany()
+                        .HasForeignKey("EventId", "RegistrationId", "RaceId")
+                        .HasPrincipalKey("EventId", "RegistrationId", "RaceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("RaceTiming.Domain.Entities.TimingVisit", null)
+                        .WithMany()
+                        .HasForeignKey("RaceId", "ProposedOccurrenceId", "CheckpointId")
+                        .HasPrincipalKey("RaceId", "OccurrenceId", "CheckpointId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("RaceTiming.Domain.Entities.TimingRosterEntry", b =>
+                {
+                    b.HasOne("RaceTiming.Domain.Entities.RaceTimingSetup", null)
+                        .WithMany()
+                        .HasForeignKey("RaceId", "EventId")
+                        .HasPrincipalKey("RaceId", "EventId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("RaceTiming.Domain.Entities.TimingWave", null)
+                        .WithMany()
+                        .HasForeignKey("RaceId", "WaveId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("RaceTiming.Domain.Entities.Registration", null)
+                        .WithMany()
+                        .HasForeignKey("RegistrationId", "EventId")
+                        .HasPrincipalKey("Id", "EventId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("RaceTiming.Domain.Entities.TimingVisit", b =>
+                {
+                    b.HasOne("RaceTiming.Domain.Entities.CourseCheckpoint", null)
+                        .WithMany()
+                        .HasForeignKey("OccurrenceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("RaceTiming.Domain.Entities.PhysicalCheckpoint", null)
+                        .WithMany()
+                        .HasForeignKey("CheckpointId", "EventId")
+                        .HasPrincipalKey("Id", "EventId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("RaceTiming.Domain.Entities.RaceTimingSetup", null)
+                        .WithMany()
+                        .HasForeignKey("RaceId", "EventId")
+                        .HasPrincipalKey("RaceId", "EventId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("RaceTiming.Domain.Entities.TimingWave", b =>
+                {
+                    b.HasOne("RaceTiming.Domain.Entities.RaceTimingSetup", null)
+                        .WithMany()
+                        .HasForeignKey("RaceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("RaceTiming.Domain.Entities.StartWave", null)
+                        .WithMany()
+                        .HasForeignKey("WaveId", "RaceId")
+                        .HasPrincipalKey("Id", "RaceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("RaceTiming.Domain.Entities.Course", b =>

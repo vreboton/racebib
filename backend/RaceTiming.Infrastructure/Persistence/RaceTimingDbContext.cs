@@ -22,9 +22,31 @@ public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> op
     public DbSet<Runner> Runners => Set<Runner>();
     public DbSet<Registration> Registrations => Set<Registration>();
 
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        GuardTimingHistory();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        GuardTimingHistory();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    private void GuardTimingHistory()
+    {
+        if (ChangeTracker.Entries().Any(x => x.State is EntityState.Modified or EntityState.Deleted &&
+            x.Entity is TimingObservation or TimingDecision or OfficialGunDeclaration or
+                RaceTimingSetup or TimingVisit or TimingWave or TimingRosterEntry))
+            throw new InvalidOperationException("Timing evidence and frozen configuration are append-only.");
+    }
+
     protected override void OnModelCreating(ModelBuilder b)
     {
         base.OnModelCreating(b);
+        TimingModel.Configure(b);
 
         b.Entity<RevokedToken>(e =>
         {

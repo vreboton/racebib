@@ -1,0 +1,220 @@
+using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using RaceTiming.Api.Controllers;
+using RaceTiming.Application;
+using RaceTiming.Domain.Entities;
+using RaceTiming.Domain.Enums;
+using RaceTiming.Infrastructure.Persistence;
+using Xunit;
+
+namespace RaceTiming.Api.Tests;
+
+public sealed partial class MySqlApiIntegrationTests
+{
+    [MySqlIntegrationFact]
+    [Trait("Category", "MySqlIntegration")]
+    public async Task TimingPreservesRepeatedVisitsAndRebuildsAcceptedSlotsUnderConcurrentSubmissions()
+    {
+        await using var data = new MySqlTestData(Services);
+        var director = await data.CreateAccountAsync();
+        var operatorAccount = await data.CreateAccountAsync();
+        var secondOperator = await data.CreateAccountAsync(systemAdministrator: true);
+        var organizer = await data.CreateOrganizerAsync(director, OrganizerRole.RaceDirector);
+        var eventId = await data.CreateEventAsync(organizer);
+        var otherEventId = await data.CreateEventAsync(organizer);
+        using var manager = await CheckInClient(director);
+        using var station = await CheckInClient(operatorAccount);
+        using var second = await CheckInClient(secondOperator);
+        var path = $"/api/v1/events/{eventId}/timing";
+
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+        var item = await db.Events.SingleAsync(x => x.Id == eventId);
+        var now = DateTimeOffset.FromUnixTimeSeconds(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        item.StartDate = now.UtcDateTime.AddHours(-1);
+        item.EndDate = now.UtcDateTime.AddDays(2);
+        var course = new Course { EventId = eventId, Name = "Out and back", DistanceKm = 10 };
+        var points = Enumerable.Range(1, 4).Select(i => new CourseCheckpoint
+        {
+            CourseId = course.Id, Code = $"P{i}", Name = $"Visit {i}", Sequence = i, DistanceFromStartKm = (i - 1) * 10m / 3m,
+            IsStart = i == 1, IsFinish = i == 4
+        }).ToArray();
+        var race = new Race { EventId = eventId, CourseId = course.Id, Name = "Timing", DistanceKm = 10, StartAtUtc = now.UtcDateTime.AddMinutes(-30) };
+        var runner = new Runner { OrganizerId = organizer, FirstName = "Synthetic", LastName = "Runner" };
+        var registration = new Registration
+        {
+            EventId = eventId, RaceId = race.Id, RunnerId = runner.Id, OrganizerId = organizer,
+            BibNumber = "0042", RegistrationStatus = RegistrationStatus.Confirmed
+        };
+        var wave = new StartWave { RaceId = race.Id, Name = "Wave 1", Sequence = 1, StartAtUtc = now.UtcDateTime.AddMinutes(-25) };
+        registration.StartWaveId = wave.Id;
+        db.AddRange(course, race, wave, runner, registration);
+        db.AddRange(points);
+        await db.SaveChangesAsync();
+
+        try
+        {
+            var gate = await CreatedId(await manager.PostAsJsonAsync(path + "/checkpoints", new { name = "Gate", code = "G" }));
+            var aid = await CreatedId(await manager.PostAsJsonAsync(path + "/checkpoints", new { name = "Aid", code = "A" }));
+            foreach (var point in points)
+            {
+                var target = point.IsStart || point.IsFinish ? gate : aid;
+                using var mapped = await manager.PutAsJsonAsync(path + $"/courses/{course.Id}/occurrences/{point.Id}/checkpoint", new { checkpointId = target });
+                Assert.Equal(HttpStatusCode.NoContent, mapped.StatusCode);
+            }
+
+            item.Status = EventStatus.Live;
+            await db.SaveChangesAsync();
+            using var arm = await manager.PostAsJsonAsync(path + $"/races/{race.Id}/arm", new { });
+            Assert.Equal(HttpStatusCode.Created, arm.StatusCode);
+            using var remap = await manager.PutAsJsonAsync(path + $"/courses/{course.Id}/occurrences/{points[1].Id}/checkpoint", new { checkpointId = gate });
+            Assert.Equal(HttpStatusCode.Conflict, remap.StatusCode);
+            using var gun = await manager.PostAsJsonAsync(path + $"/races/{race.Id}/gun-starts",
+                new { gunAtUtc = now.AddMinutes(-20), reason = "Actual race start" });
+            Assert.Equal(HttpStatusCode.Created, gun.StatusCode);
+
+            using var waveGun = await manager.PostAsJsonAsync(path + $"/races/{race.Id}/gun-starts",
+                new { waveId = wave.Id, gunAtUtc = now.AddMinutes(-19), reason = "Actual wave start" });
+            Assert.Equal(HttpStatusCode.Created, waveGun.StatusCode);
+
+            var lateRunner = new Runner { OrganizerId = organizer, FirstName = "Late", LastName = "Entrant" };
+            var lateRegistration = new Registration
+            {
+                EventId = eventId, RaceId = race.Id, RunnerId = lateRunner.Id, OrganizerId = organizer,
+                BibNumber = "0100", RegistrationStatus = RegistrationStatus.Confirmed, StartWaveId = wave.Id
+            };
+            db.AddRange(lateRunner, lateRegistration);
+            await db.SaveChangesAsync();
+            var amendmentPath = path + $"/races/{race.Id}/roster/{lateRegistration.Id}";
+            using var amendment = await manager.PostAsJsonAsync(amendmentPath, new { reason = "Late entry approved" });
+            Assert.Equal(HttpStatusCode.NoContent, amendment.StatusCode);
+            using var repeatedAmendment = await manager.PostAsJsonAsync(amendmentPath, new { reason = "Repeat approval" });
+            Assert.Equal(HttpStatusCode.Conflict, repeatedAmendment.StatusCode);
+            Assert.Contains("Late entry approved", (await db.AuditRecords.SingleAsync(x =>
+                x.Action == "Timing.RosterAmended" && x.TargetEntityId == lateRegistration.Id.ToString())).MetadataJson);
+
+            var stationPath = path + $"/checkpoints/{aid}";
+            using (var constraints = Services.CreateScope())
+            {
+                var constrainedDb = constraints.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+                constrainedDb.Add(new CheckpointAssignment
+                {
+                    EventId = otherEventId, CheckpointId = aid, UserId = operatorAccount.Id,
+                    Generation = Guid.NewGuid(), Active = true
+                });
+                await Assert.ThrowsAsync<DbUpdateException>(() => constrainedDb.SaveChangesAsync());
+            }
+            var generation = await Grant(manager, stationPath, operatorAccount.Id);
+            var device = Guid.NewGuid();
+            using var forbidden = await second.GetAsync(stationPath + "/registrations?bib=0042");
+            Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
+            var secondGeneration = await Grant(manager, stationPath, secondOperator.Id);
+            using var otherEvent = await station.GetAsync($"/api/v1/events/{otherEventId}/timing/checkpoints/{aid}/registrations?bib=0042");
+            Assert.Equal(HttpStatusCode.Forbidden, otherEvent.StatusCode);
+            using var lookup = await station.GetAsync(stationPath + "/registrations?bib=0042");
+            Assert.Equal(HttpStatusCode.OK, lookup.StatusCode);
+            var match = await lookup.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Equal(2, match.GetProperty("occurrences").GetArrayLength());
+            using var lateLookup = await station.GetAsync(stationPath + "/registrations?bib=0100");
+            Assert.Equal(HttpStatusCode.OK, lateLookup.StatusCode);
+
+            var gatePath = path + $"/checkpoints/{gate}";
+            var gateGeneration = await Grant(manager, gatePath, operatorAccount.Id);
+            var start = new TimingController.ObservationInput(Guid.NewGuid(), registration.Id, race.Id, "0042",
+                points[0].Id, now.AddMinutes(-18), device, gateGeneration, TimingSource.Manual);
+            var startReceipt = await Send(station, gatePath, Guid.NewGuid(), start);
+            Assert.Equal("Accepted", startReceipt.Body.GetProperty("outcome").GetString());
+
+            var lateVisit = new TimingController.ObservationInput(Guid.NewGuid(), registration.Id, race.Id, "0042",
+                points[2].Id, now.AddMinutes(-1), device, generation, TimingSource.Scanner);
+            var key = Guid.NewGuid();
+            var retries = await Task.WhenAll(Send(station, stationPath, key, lateVisit), Send(station, stationPath, key, lateVisit));
+            Assert.Contains(retries, x => x.Status == HttpStatusCode.Created);
+            Assert.Contains(retries, x => x.Status == HttpStatusCode.OK);
+            Assert.All(retries, x => Assert.Equal("Accepted", x.Body.GetProperty("outcome").GetString()));
+            Assert.Equal(retries[0].Body.GetProperty("receivedAtUtc").GetString(), retries[1].Body.GetProperty("receivedAtUtc").GetString());
+            Assert.Equal(HttpStatusCode.Conflict, (await Send(station, stationPath, key, lateVisit with { Source = TimingSource.Manual })).Status);
+
+            var earlier = lateVisit with { ObservationId = Guid.NewGuid(), OccurrenceId = null, ObservedAtUtc = now.AddMinutes(-3) };
+            var ambiguous = await Send(station, stationPath, Guid.NewGuid(), earlier);
+            Assert.Equal("AmbiguousOccurrence", ambiguous.Body.GetProperty("outcome").GetString());
+            var competing = earlier with { ObservationId = Guid.NewGuid(), OccurrenceId = points[1].Id,
+                AssignmentGeneration = secondGeneration, DeviceId = Guid.NewGuid() };
+            var confirmation = station.PostAsJsonAsync(stationPath + $"/observations/{earlier.ObservationId}/confirm",
+                new { occurrenceId = points[1].Id, assignmentGeneration = generation, expectedRevision = 1 });
+            var competition = Send(second, stationPath, Guid.NewGuid(), competing);
+            using var confirmed = await confirmation;
+            var competitor = await competition;
+            Assert.Equal(HttpStatusCode.OK, confirmed.StatusCode);
+            Assert.Equal(HttpStatusCode.Created, competitor.Status);
+            var confirmedBody = await confirmed.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Equal(new[] { "Accepted", "SlotConflict" },
+                new[] { confirmedBody.GetProperty("outcome").GetString(), competitor.Body.GetProperty("outcome").GetString() }.Order());
+
+            var clock = lateVisit with { ObservationId = Guid.NewGuid(), ObservedAtUtc = now.AddHours(1) };
+            var suspect = await Send(station, stationPath, Guid.NewGuid(), clock);
+            Assert.Equal("SuspiciousClock", suspect.Body.GetProperty("outcome").GetString());
+            Assert.Equal(clock.ObservedAtUtc, suspect.Body.GetProperty("observedAtUtc").GetDateTimeOffset());
+
+            using var denyCorrection = await station.PostAsJsonAsync(path + $"/observations/{lateVisit.ObservationId}/resolve",
+                new { expectedRevision = 1, reason = "Wrong visit" });
+            Assert.Equal(HttpStatusCode.Forbidden, denyCorrection.StatusCode);
+            using var invalidate = await manager.PostAsJsonAsync(path + $"/observations/{lateVisit.ObservationId}/resolve",
+                new { expectedRevision = 1, reason = "Wrong visit" });
+            Assert.Equal(HttpStatusCode.OK, invalidate.StatusCode);
+
+            var observations = await db.Set<TimingObservation>().Where(x => x.EventId == eventId).ToListAsync();
+            var observationIds = observations.Select(x => x.Id).ToArray();
+            var decisions = await db.Set<TimingDecision>().Where(x => observationIds.Contains(x.ObservationId)).ToListAsync();
+            var existing = await db.Set<AcceptedTiming>().Where(x => x.EventId == eventId).ToListAsync();
+            var rebuilt = TimingProjection.Reconstruct(observations.OrderByDescending(x => x.Id), decisions.OrderByDescending(x => x.Revision));
+            Assert.Equal(existing.OrderBy(x => x.OccurrenceId).Select(x => (x.OccurrenceId, x.ObservationId)),
+                rebuilt.OrderBy(x => x.OccurrenceId).Select(x => (x.OccurrenceId, x.ObservationId)));
+            Assert.Equal(2, existing.Count);
+            Assert.Contains(existing, x => x.OccurrenceId == points[0].Id && x.ObservationId == start.ObservationId);
+            Assert.Contains(existing, x => x.OccurrenceId == points[1].Id);
+            Assert.Equal(5, observations.Count);
+
+            using var revoke = await manager.PutAsJsonAsync(stationPath + $"/assignments/{operatorAccount.Id}", new { active = false });
+            Assert.Equal(HttpStatusCode.OK, revoke.StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await Send(station, stationPath, key, lateVisit)).Status);
+            Assert.NotEqual(generation, await Grant(manager, stationPath, operatorAccount.Id));
+            Assert.Equal(HttpStatusCode.Forbidden, (await Send(station, stationPath, key, lateVisit)).Status);
+        }
+        finally
+        {
+            await db.Set<AcceptedTiming>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
+            await db.Set<TimingDecision>().Where(x => db.Set<TimingObservation>().Any(o => o.EventId == eventId && o.Id == x.ObservationId)).ExecuteDeleteAsync();
+            await db.Set<TimingObservation>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
+            await db.Set<OfficialGunDeclaration>().Where(x => x.RaceId == race.Id).ExecuteDeleteAsync();
+            await db.Set<TimingRosterEntry>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
+            await db.Set<TimingWave>().Where(x => x.RaceId == race.Id).ExecuteDeleteAsync();
+            await db.Set<TimingVisit>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
+            await db.Set<RaceTimingSetup>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
+            await db.Set<CheckpointAssignment>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
+            await db.Set<CheckpointMapping>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
+            await db.Set<PhysicalCheckpoint>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
+        }
+    }
+
+    private static async Task<Guid> Grant(HttpClient client, string path, string userId)
+    {
+        using var response = await client.PutAsJsonAsync(path + $"/assignments/{userId}", new { active = true });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("generation").GetGuid();
+    }
+
+    private static async Task<(HttpStatusCode Status, JsonElement Body)> Send(
+        HttpClient client, string path, Guid key, TimingController.ObservationInput input)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, path + "/observations") { Content = JsonContent.Create(input) };
+        request.Headers.Add("Idempotency-Key", key.ToString());
+        using var response = await client.SendAsync(request);
+        var payload = await response.Content.ReadAsStringAsync();
+        var body = string.IsNullOrWhiteSpace(payload) ? default : JsonSerializer.Deserialize<JsonElement>(payload);
+        return (response.StatusCode, body);
+    }
+}

@@ -41,7 +41,8 @@ public sealed class AuditLogger(RaceTiming.Infrastructure.Persistence.RaceTiming
             MetadataJson = metadata is null ? null : System.Text.Json.JsonSerializer.Serialize(metadata
                 .Where(pair => pair.Value is string value && !IsSensitiveKey(pair.Key) &&
                     ((SafeMetadataKeys.Contains(pair.Key) && SafeMetadataValues.Contains(value)) ||
-                     (action == CheckInReversed && targetType == "Registration" && pair.Key == "reason" &&
+                     ((action == CheckInReversed && targetType == "Registration" ||
+                       action == "Timing.RosterAmended" && targetType == nameof(TimingRosterEntry)) && pair.Key == "reason" &&
                       IsCheckInReversalReason(value)) ||
                      (action == BulkBibAssigned && targetType == "Registration" && pair.Key == "eventId" &&
                       Guid.TryParseExact(value, "D", out _))))
