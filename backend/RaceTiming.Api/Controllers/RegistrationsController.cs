@@ -19,7 +19,7 @@ public sealed partial class RegistrationsController(
     RaceTimingDbContext db, IOrganizerMembershipAuthorization authorization, IAuditLogger audit) : ControllerBase
 {
     public sealed record RegistrationInput(Guid RaceId, Guid RunnerId, Guid? CategoryId, Guid? WaveId,
-        string? BibDisplayName, string? BibNumber, string? Team, RegistrationStatus Status,
+        string? BibDisplayName, string? BibNumber, string? Team, RegistrationStatus? Status,
         PaymentStatus PaymentStatus, BibAssignment? Assignment, long? Version = null);
 
     [HttpGet]
@@ -115,7 +115,8 @@ public sealed partial class RegistrationsController(
         if (id.HasValue && entry is null) return NotFound();
         if (entry is not null && entry.Version != input.Version) return StaleRegistration();
         var previousStatus = entry?.RegistrationStatus;
-        if (!CanSetStatus(previousStatus, input.Status))
+        var status = input.Status ?? previousStatus ?? RegistrationStatus.Pending;
+        if (!CanSetStatus(previousStatus, status))
             return BadRequest("That registration status transition is unavailable.");
         if (entry is not null && entry.RunnerId != input.RunnerId)
             return BadRequest("The runner on an existing registration is fixed.");
@@ -129,7 +130,7 @@ public sealed partial class RegistrationsController(
         var race = await RacesWithRegistrationOptions(item.Id).SingleOrDefaultAsync(x => x.Id == input.RaceId, ct);
         var categoryError = ResolveCategory(race, input.CategoryId, entry, out var categoryId, out var needsManagedCategory);
         if (categoryError is not null) return BadRequest(categoryError);
-        input = input with { CategoryId = categoryId };
+        input = input with { CategoryId = categoryId, Status = status };
         var error = Validate(item, race, runner, input, entry);
         if (error is not null) return BadRequest(error);
         var previousBib = entry?.BibNumber;
@@ -144,7 +145,7 @@ public sealed partial class RegistrationsController(
             if (error is not null) return Conflict(error);
             selectedBib = bibs[0];
         }
-        if ((previousStatus == RegistrationStatus.Cancelled || input.Status == RegistrationStatus.Cancelled)
+        if ((previousStatus == RegistrationStatus.Cancelled || status == RegistrationStatus.Cancelled)
             && previousBib != selectedBib)
             return Conflict("Withdrawing or reopening a registration must keep its existing bib reserved.");
         if (needsManagedCategory)
@@ -155,8 +156,8 @@ public sealed partial class RegistrationsController(
         Apply(entry, input, selectedBib);
         if (!id.HasValue) db.Registrations.Add(entry);
         else entry.Version++;
-        if (previousStatus is { } status && status != entry.RegistrationStatus)
-            RecordStatusChange(entry, status);
+        if (previousStatus is { } previous && previous != status)
+            RecordStatusChange(entry, previous);
         Record(entry, id.HasValue ? "Registration.Updated" : "Registration.Created");
         if (previousBib != entry.BibNumber) Record(entry, "Registration.BibChanged");
         await db.SaveChangesAsync(ct);
@@ -222,8 +223,8 @@ public sealed partial class RegistrationsController(
 
     private static string? Validate(Event item, Race? race, Runner runner, RegistrationInput input, Registration? existing)
     {
-        if (!Enum.IsDefined(input.Status) || !Enum.IsDefined(input.PaymentStatus))
-            return "Select valid registration and payment statuses.";
+        if (!Enum.IsDefined(input.PaymentStatus))
+            return "Select a valid payment status.";
         if (input.BibDisplayName?.Trim().Length > 120 ||
             (input.BibDisplayName is string name && (new StringInfo(name.Trim()).LengthInTextElements > 60 || name.Any(char.IsControl))))
             return "Name on Bib must be at most 60 printed characters without control characters.";
@@ -269,7 +270,7 @@ public sealed partial class RegistrationsController(
         entry.BibNumber = bib;
         entry.BibDisplayName = Optional(input.BibDisplayName);
         entry.Team = Optional(input.Team);
-        entry.RegistrationStatus = input.Status;
+        entry.RegistrationStatus = input.Status ?? RegistrationStatus.Pending;
         entry.PaymentStatus = input.PaymentStatus;
     }
 

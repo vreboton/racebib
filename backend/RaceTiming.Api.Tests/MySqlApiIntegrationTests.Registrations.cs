@@ -290,10 +290,14 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Equal(3, registration.GetProperty("status").GetInt32());
         Assert.Single(details.GetProperty("history").EnumerateArray(),
             record => record.GetProperty("action").GetString() == "Registration.Cancelled");
-        var current = input with { version = 4, bibNumber = "0008", status = "Pending" };
+        using var leaveWithdrawn = await administratorClient.PutAsJsonAsync($"{path}/{id}",
+            new { raceId, runnerId, version = 4, bibNumber = "0008", bibDisplayName = "Maya" });
+        Assert.Equal(HttpStatusCode.OK, leaveWithdrawn.StatusCode);
+        Assert.Equal(3, (await leaveWithdrawn.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("status").GetInt32());
+        var current = input with { version = 5, bibNumber = "0008", status = "Pending" };
         using var reopened = await administratorClient.PutAsJsonAsync($"{path}/{id}", current);
         Assert.Equal(HttpStatusCode.OK, reopened.StatusCode);
-        using var resultLike = await client.PutAsJsonAsync($"{path}/{id}", current with { version = 5, status = "Dns" });
+        using var resultLike = await client.PutAsJsonAsync($"{path}/{id}", current with { version = 6, status = "Dns" });
         Assert.Equal(HttpStatusCode.BadRequest, resultLike.StatusCode);
 
         using (var scope = Services.CreateScope())
@@ -304,10 +308,10 @@ public sealed partial class MySqlApiIntegrationTests
             await db.SaveChangesAsync();
         }
         using var historicalEdit = await client.PutAsJsonAsync($"{path}/{id}",
-            current with { version = 5, status = "Dns", bibDisplayName = "Historical" });
+            current with { version = 6, status = "Dns", bibDisplayName = "Historical" });
         Assert.Equal(HttpStatusCode.OK, historicalEdit.StatusCode);
         Assert.Equal(5, (await historicalEdit.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("status").GetInt32());
-        using var historicalCancel = await client.PostAsJsonAsync($"{path}/{id}/cancel", new { version = 6 });
+        using var historicalCancel = await client.PostAsJsonAsync($"{path}/{id}/cancel", new { version = 7 });
         Assert.Equal(HttpStatusCode.BadRequest, historicalCancel.StatusCode);
         Assert.Contains(details.GetProperty("history").EnumerateArray(),
             record => record.GetProperty("action").GetString() == "Registration.BibChanged");
