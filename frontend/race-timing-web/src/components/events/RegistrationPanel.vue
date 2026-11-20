@@ -1,9 +1,11 @@
 <template>
-  <v-btn-toggle v-model="workspace" mandatory aria-label="Registration workspace" class="mt-3">
+  <v-btn-toggle v-model="workspace" mandatory aria-label="Registration workspace" class="mt-3 flex-wrap h-auto">
     <v-btn value="manage">Manage registrations</v-btn>
     <v-btn value="check-in">Check-in</v-btn>
+    <v-btn value="readiness">Race readiness</v-btn>
   </v-btn-toggle>
   <CheckInPanel v-if="workspace === 'check-in'" :event-id="eventId" />
+  <RaceReadinessPanel v-if="workspace === 'readiness'" :event-id="eventId" />
   <v-card v-show="workspace === 'manage'" class="my-4" variant="outlined" :loading="busy">
     <v-card-title>Runner registrations</v-card-title>
     <v-card-text>
@@ -157,6 +159,7 @@
 <script setup lang="ts">
 import BulkBibDialog from './BulkBibDialog.vue'
 import CheckInPanel from './CheckInPanel.vue'
+import RaceReadinessPanel from './RaceReadinessPanel.vue'
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../../services/api'
 import { getApiError } from '../../services/events'
