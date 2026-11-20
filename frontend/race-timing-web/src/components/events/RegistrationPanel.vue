@@ -1,5 +1,10 @@
 <template>
-  <v-card class="my-4" variant="outlined" :loading="busy">
+  <v-btn-toggle v-model="workspace" mandatory aria-label="Registration workspace" class="mt-3">
+    <v-btn value="manage">Manage registrations</v-btn>
+    <v-btn value="check-in">Check-in</v-btn>
+  </v-btn-toggle>
+  <CheckInPanel v-if="workspace === 'check-in'" :event-id="eventId" />
+  <v-card v-show="workspace === 'manage'" class="my-4" variant="outlined" :loading="busy">
     <v-card-title>Runner registrations</v-card-title>
     <v-card-text>
       <v-alert v-if="error" type="error" class="mb-4">{{ error }}</v-alert>
@@ -148,6 +153,7 @@
 </template>
 
 <script setup lang="ts">
+import CheckInPanel from './CheckInPanel.vue'
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../../services/api'
 import { getApiError } from '../../services/events'
@@ -187,6 +193,7 @@ interface Preview {
   errorCsv: string
 }
 const props = defineProps<{ eventId: string; organizerId: string }>()
+const workspace = ref('manage')
 const registrationUrl = '/events/' + props.eventId + '/registrations'
 const runnerUrl = '/organizers/' + props.organizerId + '/runners'
 const choices = (items: string[]) => items.map((title, value) => ({ title, value }))

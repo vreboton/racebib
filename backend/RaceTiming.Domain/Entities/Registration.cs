@@ -21,6 +21,7 @@ public sealed class Registration
     public static string DisplayName(string? bibDisplayName, string firstName, string lastName) =>
         string.IsNullOrWhiteSpace(bibDisplayName)
         ? $"{firstName} {lastName}" : bibDisplayName.Trim();
+    public DateTime? CheckedInAtUtc { get; set; }
     public long Version { get; set; } = 1;
     public RegistrationStatus RegistrationStatus { get; set; } = RegistrationStatus.Pending;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
