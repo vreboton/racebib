@@ -113,7 +113,7 @@ public sealed partial class MySqlApiIntegrationTests
         var raceId = await SeedRegistrationRace(client, eventId);
         var path = $"/api/v1/events/{eventId}/registrations";
         const string mixed = """{"mode":2,"start":1,"end":9,"width":3}""";
-        const string file = "\uFEFFFirst Name,Last Name,Name on Bib,Race,Bib Number\r\nAna,Reyes,\"Ána, Junior\",10,\r\nBen,Cruz,Benny,10,001\r\n";
+        const string file = "\uFEFFFirst Name,Last Name,Name on Bib,Race,Bib Number\r\nÁna,Reyes,\"Ána, Junior\",10,\r\nBen,Cruz,Benny,10,001\r\n";
         using var deniedForm = ImportForm(file, mixed);
         using var denied = await deniedClient.PostAsync(path + "/import/preview", deniedForm);
         Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
@@ -122,7 +122,7 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
         var missing = await PreviewRegistrationCsv(client, path, "First Name,Race\nAna,10");
         Assert.False(missing.GetProperty("valid").GetBoolean());
-        var duplicate = await PreviewRegistrationCsv(client, path, file + "Ana,Reyes,Ana,10,003\r\n", mixed);
+        var duplicate = await PreviewRegistrationCsv(client, path, file + "Ána,Reyes,Ana,10,003\r\n", mixed);
         Assert.False(duplicate.GetProperty("valid").GetBoolean());
         Assert.Contains("Duplicate", duplicate.GetProperty("errorCsv").GetString());
         var fixture = await PreviewRegistrationCsv(client, path, file, mixed);
@@ -145,6 +145,7 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Equal("001", list[0].GetProperty("bibNumber").GetString());
         Assert.Equal("002", list[1].GetProperty("bibNumber").GetString());
         Assert.Equal("Ána, Junior", list[1].GetProperty("effectiveBibDisplayName").GetString());
+        Assert.Equal("Ána", list[1].GetProperty("runner").GetProperty("firstName").GetString());
 
         var runnerUrl = $"/api/v1/organizers/{organizerId}/runners";
         // A legacy bib can collide under MySQL's accent-insensitive collation.

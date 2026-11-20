@@ -28,7 +28,7 @@ Use these exact header names. The download includes all sixteen. Columns may be 
 First Name,Last Name,Name on Bib,Gender,Birthdate,Email,Mobile Number,Race,Category,Start Wave,Bib Number,Team,Emergency Contact,Registration Status,Payment Status,Runner ID
 ```
 
-A race cell may contain an exact race name or an unambiguous numeric distance in km. Category and wave cells use names from that race. Enter dates as YYYY-MM-DD or M/D/YYYY. Enter status names as listed in the API below. Keep bib numbers as text in your spreadsheet to preserve leading zeros.
+The Race column identifies the Race Category by exact name or an unambiguous numeric distance in km. Use the Category and Start Wave columns for the Age Group and Start Wave names from that Race Category. Keep the CSV headers exactly as listed. Enter dates as YYYY-MM-DD or M/D/YYYY. Enter status names as listed in the API below. Keep bib numbers as text in your spreadsheet to preserve leading zeros.
 
 The importer accepts either of these ways to link an existing organizer profile.
 

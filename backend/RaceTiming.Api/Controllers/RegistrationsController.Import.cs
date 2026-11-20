@@ -161,7 +161,7 @@ public sealed partial class RegistrationsController
                 else if (Value("Race") is null)
                     error = "Race is required.";
                 else if (raceMatches.Length != 1)
-                    error = "Race must resolve to one active race in the event.";
+                    error = "The Race column must match one active Race Category in the event.";
                 else if (!TryStatus(Value("Registration Status"), RegistrationStatus.Pending, out var status)
                     || !TryStatus(Value("Payment Status"), PaymentStatus.Unspecified, out var payment))
                     error = "Enter valid registration and payment statuses.";
@@ -174,14 +174,14 @@ public sealed partial class RegistrationsController
                     if (identityError is not null)
                         error = identityError;
                     else if ((category is null && Value("Category") is not null) || (wave is null && Value("Start Wave") is not null))
-                        error = "Category or wave does not belong to this race.";
+                        error = "The Age Group or Start Wave does not belong to this Race Category.";
                     else if (profile is not null && birth.HasValue && profile.Birthdate != birth)
                         error = profile.Birthdate.HasValue
                             ? "CSV birthdate differs from the runner profile. Verify both sources, then correct the CSV or update the profile before importing."
                             : "The runner profile has no verified birthdate. Verify and save the birthdate on the profile before importing it.";
                     else if (profile is not null && !profile.Birthdate.HasValue &&
                         (category?.MinimumAge.HasValue == true || category?.MaximumAge.HasValue == true))
-                        error = "This category requires a birthdate on the runner profile. Verify and save it, or choose a category without age limits.";
+                        error = "This Age Group requires a birthdate on the runner profile. Verify and save it, or choose an Age Group without age limits.";
                     else
                     {
                         var runner = profile ?? new Runner { OrganizerId = item.OrganizerId,

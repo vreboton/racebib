@@ -105,7 +105,7 @@
         <v-btn color="primary" class="mb-4" :href="templateUrl" download="racebib-registration-template.csv">
           Download CSV Template
         </v-btn>
-        <p class="mb-2">Keep the template headers and fill in First Name, Last Name, and Race. For runners who share a name, use the verified Runner ID.</p>
+        <p class="mb-2">Keep the template headers and fill in First Name, Last Name, and the Race column for the Race Category. For runners who share a name, use the verified Runner ID.</p>
         <v-file-input label="Registration CSV" accept=".csv,text/csv" :model-value="csvFile" :disabled="busy"
           @update:model-value="selectFile" />
         <v-select v-model="importAssignment.mode" :items="modes" label="Bib assignment" :disabled="busy" @update:model-value="invalidate" />
