@@ -8,7 +8,7 @@ Choose a category or wave from the selected race. Age-limited categories use age
 
 ## Name on Bib and publication
 
-Name on Bib belongs to the registration and accepts a Unicode preferred name, nickname or pseudonym. The limit is 60 text elements and 120 UTF-16 code units. A blank value publishes the registered full name on printed bibs and public participant outputs. The RD editor shows the exact fallback once a profile is selected. Edit the value from **Registration details**. Print an assigned bib from those details.
+Name on Bib belongs to the registration and accepts a Unicode preferred name, nickname or pseudonym. The limit is 60 text elements and 120 UTF-16 code units. For manual registration, a blank value uses the registered full name on printed bibs and public participant outputs. CSV import saves the trimmed CSV first and last names as Name on Bib when the field is blank. The RD editor shows the exact fallback once a profile is selected. Edit the value from **Registration details**. Print an assigned bib from those details.
 
 The public participants page and its downloadable CSV expose bib number, effective Name on Bib and race for confirmed registrations in a published, active organizer event. Use the same public identity contract when integrating results, leaderboards or live timing. This repository currently has no public results, leaderboard or live timing presentation to update. Registered names and profile contact fields are available in organizer management views. A fallback full name is part of the public identity only when Name on Bib is blank.
 
@@ -34,7 +34,7 @@ Race values match event race names exactly after trimming, ignoring case. A blan
 
 Imports set registration status to **Confirmed** and payment status to **Paid**. The old Runner ID and status headers are unsupported. Enter dates as YYYY-MM-DD or M/D/YYYY, and keep bib numbers as text in the spreadsheet to preserve leading zeros.
 
-An existing profile's birthdate is authoritative for age limits. If the CSV supplies a different date, verify the discrepancy and correct the CSV or update the profile. If the profile lacks a birthdate and the category has age limits, verify and save the date on the profile, or choose a category without age limits. A valid CSV date may populate a new profile. Imports do not update existing profile fields.
+An existing profile's birthdate is authoritative for age limits. A valid CSV birthdate may differ from the saved date. Import retains the saved date for an existing profile and uses it for age eligibility. CSV birthdates must still be valid when provided. If the profile lacks a birthdate and the category has age limits, verify and save the date on the profile, or choose a category without age limits. A valid CSV date may populate a new profile. Imports do not update existing profile fields.
 
 Confirmation is all-or-nothing. Error reports contain row numbers and predefined messages. Public CSV export escapes spreadsheet formula prefixes.
 

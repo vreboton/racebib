@@ -195,21 +195,22 @@ public sealed partial class MySqlApiIntegrationTests
         var runnerId = await CreatedId(await client.PostAsJsonAsync(profiles,
             new { firstName = "Lin", lastName = "Santos", email = "lin@example.test", gender = "Original" }));
 
-        const string header = "First Name,Last Name,Email,Gender\n";
+        const string header = "First Name,Last Name,Email,Gender,Name on Bib\n";
         var bad = await PreviewRegistrationCsv(client, path, raceId,
-            header + "Missing,Email,,\nInvalid,Email,bad@host,");
+            header + "Missing,Email,,,\nInvalid,Email,bad@host,,");
         Assert.Contains("Email is required", bad.GetProperty("errorCsv").GetString());
         Assert.Contains("Enter a valid email address", bad.GetProperty("errorCsv").GetString());
         var duplicate = await PreviewRegistrationCsv(client, path, raceId,
-            header + "A,Runner, DUPLICATE@example.test ,\nB,Runner,duplicate@example.test,");
+            header + "A,Runner, DUPLICATE@example.test ,,\nB,Runner,duplicate@example.test,,");
         Assert.Contains("Duplicate email", duplicate.GetProperty("errorCsv").GetString());
 
-        const string file = header + "Changed,Name, LIN@EXAMPLE.TEST ,Changed\nAnother,Runner, NEW@EXAMPLE.TEST ,New";
+        const string file = header + " Changed , Name , LIN@EXAMPLE.TEST ,Changed,\nAnother,Runner, NEW@EXAMPLE.TEST ,New,   ";
         var preview = await PreviewRegistrationCsv(client, path, raceId, file);
         Assert.True(preview.GetProperty("valid").GetBoolean());
         Assert.Equal(1, (await client.GetFromJsonAsync<JsonElement>(profiles)).GetProperty("total").GetInt32());
         var rows = preview.GetProperty("rows");
-        Assert.Equal("Lin Santos", rows[0].GetProperty("nameOnBib").GetString());
+        Assert.Equal("Changed Name", rows[0].GetProperty("nameOnBib").GetString());
+        Assert.Equal("Another Runner", rows[1].GetProperty("nameOnBib").GetString());
         Assert.Equal(JsonValueKind.Null, rows[0].GetProperty("error").ValueKind);
         Assert.Contains("CSV name Changed Name", rows[0].GetProperty("warning").GetString());
         Assert.Contains("saved profile for Lin Santos", rows[0].GetProperty("warning").GetString());
@@ -221,12 +222,17 @@ public sealed partial class MySqlApiIntegrationTests
 
         var stored = await client.GetFromJsonAsync<JsonElement>($"{profiles}/{runnerId}");
         Assert.Equal("Lin", stored.GetProperty("firstName").GetString());
+        Assert.Equal("Santos", stored.GetProperty("lastName").GetString());
         Assert.Equal("Original", stored.GetProperty("gender").GetString());
         var profilesAfter = (await client.GetFromJsonAsync<JsonElement>(profiles)).GetProperty("items");
         Assert.Contains(profilesAfter.EnumerateArray(), row => row.GetProperty("email").GetString() == "new@example.test");
         var registrations = (await client.GetFromJsonAsync<JsonElement>(path)).GetProperty("items").EnumerateArray().ToArray();
         Assert.Equal(2, registrations.Length);
-        Assert.Contains(registrations, row => row.GetProperty("runnerId").GetGuid() == runnerId);
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+        var persisted = await db.Registrations.Where(row => row.EventId == eventId).ToListAsync();
+        Assert.Equal("Changed Name", persisted.Single(row => row.RunnerId == runnerId).BibDisplayName);
+        Assert.Equal("Another Runner", persisted.Single(row => row.RunnerId != runnerId).BibDisplayName);
         Assert.All(registrations, row =>
         {
             Assert.Equal((int)RegistrationStatus.Confirmed, row.GetProperty("status").GetInt32());
@@ -298,6 +304,7 @@ public sealed partial class MySqlApiIntegrationTests
         await Confirm(replacementPreview, HttpStatusCode.OK);
         var saved = await db.Registrations.SingleAsync(x => x.EventId == eventId);
         Assert.Equal(replacementId, saved.RunnerId);
+        Assert.Equal("L.S.", saved.BibDisplayName);
     }
 
     [MySqlIntegrationFact]
@@ -322,13 +329,14 @@ public sealed partial class MySqlApiIntegrationTests
             new { firstName = "Sam", lastName = "Cruz", email = "sam@example.test", birthdate = "2008-01-03" }));
 
         const string header = "First Name,Last Name,Email,Birthdate,Gender,Race,Category\n";
-        const string withoutBirthdate = header + "Alex,Cruz,alex@example.test,,CSV value,10,Masters";
+        const string withoutBirthdate = header + "Alex,Cruz,alex@example.test,,CSV value,10K,Masters";
+        const string differentBirthdate = header + "Alex,Cruz,alex@example.test,2008-01-03,CSV value,10K,Masters";
         var missing = await PreviewRegistrationCsv(client, path, raceId, withoutBirthdate);
         Assert.Contains("requires a birthdate on the runner profile", missing.GetProperty("errorCsv").GetString());
         var backfill = await PreviewRegistrationCsv(client, path, raceId,
             header + "Alex,Cruz,alex@example.test,1970-01-03,,10,Masters");
-        Assert.Contains("save the birthdate on the profile", backfill.GetProperty("errorCsv").GetString());
-        var underage = await PreviewRegistrationCsv(client, path, raceId, header + "Sam,Cruz,sam@example.test,,,10,Masters");
+        Assert.Contains("requires a birthdate on the runner profile", backfill.GetProperty("errorCsv").GetString());
+        var underage = await PreviewRegistrationCsv(client, path, raceId, header + "Sam,Cruz,sam@example.test,1970-01-03,,10K,Masters");
         Assert.Contains("outside the category age limits", underage.GetProperty("errorCsv").GetString());
 
         async Task SetBirthdate(string date)
@@ -341,23 +349,31 @@ public sealed partial class MySqlApiIntegrationTests
         }
 
         await SetBirthdate("1970-01-03");
-        var conflict = await PreviewRegistrationCsv(client, path, raceId, header + "Alex,Cruz,alex@example.test,1975-01-03,,10,Masters");
-        Assert.Contains("CSV birthdate differs", conflict.GetProperty("errorCsv").GetString());
+        var invalid = await PreviewRegistrationCsv(client, path, raceId,
+            header + "Alex,Cruz,alex@example.test,not-a-date,,10K,Masters");
+        Assert.Contains("Use a valid birthdate", invalid.GetProperty("errorCsv").GetString());
         var preview = await PreviewRegistrationCsv(client, path, raceId, withoutBirthdate);
         Assert.True(preview.GetProperty("valid").GetBoolean());
         await SetBirthdate("1971-01-03");
         using var stale = ImportForm(raceId, withoutBirthdate, token: preview.GetProperty("token").GetString());
         using var rejected = await client.PostAsync(path + "/import/confirm", stale);
         Assert.Equal(HttpStatusCode.Conflict, rejected.StatusCode);
-        preview = await PreviewRegistrationCsv(client, path, raceId, withoutBirthdate);
-        using var form = ImportForm(raceId, withoutBirthdate, token: preview.GetProperty("token").GetString());
+        preview = await PreviewRegistrationCsv(client, path, raceId, differentBirthdate);
+        Assert.True(preview.GetProperty("valid").GetBoolean());
+        using var form = ImportForm(raceId, differentBirthdate, token: preview.GetProperty("token").GetString());
         using var imported = await client.PostAsync(path + "/import/confirm", form);
         Assert.Equal(HttpStatusCode.OK, imported.StatusCode);
         var stored = await client.GetFromJsonAsync<JsonElement>($"{profiles}/{runnerId}");
         Assert.Equal("1971-01-03", stored.GetProperty("birthdate").GetString());
         Assert.Equal("Original", stored.GetProperty("gender").GetString());
-        var newRunner = await PreviewRegistrationCsv(client, path, raceId, header + "New,Runner,new@example.test,1970-04-02,,10,Masters");
+        const string newFile = header + "New,Runner,new@example.test,1970-04-02,,10K,Masters";
+        var newRunner = await PreviewRegistrationCsv(client, path, raceId, newFile);
         Assert.True(newRunner.GetProperty("valid").GetBoolean());
+        using var newForm = ImportForm(raceId, newFile, token: newRunner.GetProperty("token").GetString());
+        using var newImport = await client.PostAsync(path + "/import/confirm", newForm);
+        Assert.Equal(HttpStatusCode.OK, newImport.StatusCode);
+        var created = (await client.GetFromJsonAsync<JsonElement>(profiles + "?search=new%40example.test")).GetProperty("items");
+        Assert.Equal("1970-04-02", created[0].GetProperty("birthdate").GetString());
     }
 
     [MySqlIntegrationFact]

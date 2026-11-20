@@ -57,6 +57,13 @@ it.each([
   const { wrapper, button, upload, defaultRace, selectDefault } = await mountImport()
   const link = wrapper.find('a[download="racebib-registration-template.csv"]')
   expect(link.text()).toBe('Download CSV Template')
+  expect(link.element.parentElement?.tagName).toBe('P')
+  expect(link.attributes('class')).toBeUndefined()
+  const uploadInput = wrapper.findComponent({ name: 'FixtureFileInput' }).element
+  const bibAssignment = wrapper.findAllComponents({ name: 'FixtureSelect' })
+    .filter(item => item.props('label') === 'Bib assignment').at(-1)!.element
+  expect(uploadInput.compareDocumentPosition(bibAssignment) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(bibAssignment.compareDocumentPosition(defaultRace.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   expect(decodeURIComponent(link.attributes('href')?.split(',')[1] ?? '')).toBe('\uFEFF' + canonical + '\r\n')
   expect(api.post).not.toHaveBeenCalled()
   const file = await upload(csv)

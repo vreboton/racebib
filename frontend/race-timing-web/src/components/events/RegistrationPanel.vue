@@ -101,14 +101,11 @@
     <v-card title="Import runner registrations" subtitle="Race Category and Age Group use the Race and Category CSV columns.">
       <v-card-text>
         <v-alert v-if="error" type="error" class="mb-3">{{ error }}</v-alert>
-        <v-btn color="primary" class="mb-4" :href="templateUrl" download="racebib-registration-template.csv">
-          Download CSV Template
-        </v-btn>
-        <p class="mb-2">Fill in First Name, Last Name, and Email. RaceBib uses email to find or create runner profiles. Category and Start Wave are optional.</p>
+        <p class="mb-3">
+          Upload a CSV containing First Name, Last Name, and Email. Category and Start Wave are optional.
+          <a :href="templateUrl" download="racebib-registration-template.csv">Download CSV Template</a>
+        </p>
         <v-alert v-if="!eligibleRaces.length" type="warning" class="mb-3">Add an active race to this event before importing.</v-alert>
-        <v-select v-model="defaultRaceId" :items="eligibleRaces" item-title="name" item-value="id" label="Default Race"
-          :disabled="busy || !eligibleRaces.length" @update:model-value="invalidate" />
-        <p class="mb-2">Blank or unrecognized CSV race names use the default race.</p>
         <v-file-input label="Registration CSV" accept=".csv,text/csv" :model-value="csvFile" :disabled="busy"
           @update:model-value="selectFile" />
         <v-select v-model="importAssignment.mode" :items="modes" label="Bib assignment" :disabled="busy" @update:model-value="invalidate" />
@@ -117,6 +114,9 @@
           <v-text-field v-model.number="importAssignment.end" label="Range end" type="number" :disabled="busy" @update:model-value="invalidate" />
           <v-text-field v-model.number="importAssignment.width" label="Minimum digits" type="number" :disabled="busy" @update:model-value="invalidate" />
         </div>
+        <v-select v-model="defaultRaceId" :items="eligibleRaces" item-title="name" item-value="id" label="Default Race"
+          :disabled="busy || !eligibleRaces.length" @update:model-value="invalidate" />
+        <p class="mb-2">Blank or unrecognized CSV race names use the default race.</p>
         <template v-if="preview">
           <v-alert v-if="preview.error" type="warning" class="mb-2">{{ preview.error }}</v-alert>
           <p v-if="preview.rows.length">{{ preview.validCount }} valid of {{ preview.rows.length }} rows in the last preview.</p>

@@ -188,11 +188,7 @@ public sealed partial class RegistrationsController
                     else if (profiles.Length > 1)
                         error = "This email matches multiple runner profiles in this organizer. Resolve the duplicate profiles before importing.";
                     else if ((category is null && Value("Category") is not null) || (wave is null && Value("Start Wave") is not null))
-                        error = "The Age Group or Start Wave does not belong to this Race Category.";
-                    else if (profile is not null && birth.HasValue && profile.Birthdate != birth)
-                        error = profile.Birthdate.HasValue
-                            ? "CSV birthdate differs from the runner profile. Verify both sources, then correct the CSV or update the profile before importing."
-                            : "The runner profile has no verified birthdate. Verify and save the birthdate on the profile before importing it.";
+                        error = "Category or wave does not belong to this race.";
                     else if (profile is not null && !profile.Birthdate.HasValue &&
                         (category?.MinimumAge.HasValue == true || category?.MaximumAge.HasValue == true))
                         error = "This Age Group requires a birthdate on the runner profile. Verify and save it, or choose an Age Group without age limits.";
@@ -202,7 +198,7 @@ public sealed partial class RegistrationsController
                             FirstName = first, LastName = last, Email = email, Birthdate = birth, Gender = gender,
                             MobileNumber = mobile, EmergencyContact = emergency };
                         var input = new RegistrationInput(race.Id, runner.Id, category?.Id, wave?.Id,
-                            Value("Name on Bib"), Value("Bib Number"), Value("Team"),
+                            Value("Name on Bib") ?? $"{first} {last}", Value("Bib Number"), Value("Team"),
                             RegistrationStatus.Confirmed, PaymentStatus.Paid, options);
                         if (registered.Contains(runner.Id))
                             error = "Duplicate registration. This runner is already registered for this event.";
@@ -253,13 +249,13 @@ public sealed partial class RegistrationsController
 
     private string Actor() => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "";
     private static ITimeLimitedDataProtector Protector(IDataProtectionProvider protection) =>
-        protection.CreateProtector("RaceBib.Registration.Import.v5").ToTimeLimitedDataProtector();
+        protection.CreateProtector("RaceBib.Registration.Import.v6").ToTimeLimitedDataProtector();
 
     private string Fingerprint(Guid defaultRaceId, byte[] bytes, string? assignment, IEnumerable<Registration> entries) =>
         Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
         {
             file = Convert.ToHexString(SHA256.HashData(bytes)), defaultRaceId, assignment,
-            assignments = entries.Select(x => new { x.RaceId, x.RaceCategoryId, x.StartWaveId, x.BibNumber,
+            assignments = entries.Select(x => new { x.RaceId, x.RaceCategoryId, x.StartWaveId, x.BibNumber, x.BibDisplayName,
                 existingRunnerId = db.Entry(x.Runner).State == EntityState.Unchanged ? x.Runner.Id : (Guid?)null,
                 normalizedEmail = NormalizeImportEmail(x.Runner.Email), x.Runner.FirstName, x.Runner.LastName, x.Runner.Birthdate })
         })));
