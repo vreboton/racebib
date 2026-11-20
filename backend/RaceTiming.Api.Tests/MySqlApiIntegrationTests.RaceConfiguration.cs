@@ -1,6 +1,8 @@
+using System.Data;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -950,6 +952,7 @@ public sealed partial class MySqlApiIntegrationTests
         }
 
         await CheckConcurrentRegistrationAndDraftEdit(data, client, organizerId);
+        await CheckConcurrentCsvConfirmationAndDraftEdit(data, client, organizerId);
     }
 
     private async Task CheckConcurrentRegistrationAndDraftEdit(MySqlTestData data, HttpClient client, Guid organizerId)
@@ -1010,6 +1013,135 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Equal(2, await db.Races.CountAsync(x => x.EventId == eventId && x.CourseId == assignedRevision && x.DistanceKm == 12));
         Assert.Equal(second, await db.Registrations.Where(x => x.Id == registrationId).Select(x => x.RaceId).SingleAsync());
         Assert.Equal(first, await db.Registrations.Where(x => x.Id == secondRegistrationId).Select(x => x.RaceId).SingleAsync());
+    }
+
+    private async Task CheckConcurrentCsvConfirmationAndDraftEdit(MySqlTestData data, HttpClient client, Guid organizerId)
+    {
+        var eventId = await data.CreateEventAsync(organizerId);
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+        var eventStart = await db.Events.Where(x => x.Id == eventId).Select(x => x.StartDate).SingleAsync();
+        var startAt = eventStart.AddMinutes(5).ToString("yyyy-MM-ddTHH:mm:ss") + "Z";
+        var path = $"/api/v1/events/{eventId}";
+        var courseId = await CreatedId(await client.PostAsJsonAsync(path + "/courses", new { name = "CSV Trail", distanceKm = 10 }));
+        var coursePath = $"{path}/courses/{courseId}";
+        using var configured = await client.PutAsJsonAsync(coursePath + "/checkpoints", new
+        {
+            distanceKm = 10, checkpoints = new[]
+            {
+                new RoutePoint(null, "Start", "S", 1, 0, IsStart: true),
+                new RoutePoint(null, "Finish", "F", 2, 10, IsFinish: true)
+            }
+        });
+        Assert.Equal(HttpStatusCode.NoContent, configured.StatusCode);
+        var first = await CreatedId(await client.PostAsJsonAsync(path + "/races", new { name = "Summit", courseId, startAt }));
+        var second = await CreatedId(await client.PostAsJsonAsync(path + "/races", new { name = "Ridge", courseId, startAt }));
+        var firstGroup = await CreatedId(await client.PostAsJsonAsync($"{path}/races/{first}/categories", new { name = "Open" }));
+        var secondGroup = await CreatedId(await client.PostAsJsonAsync($"{path}/races/{second}/categories", new { name = "Open" }));
+        var runnerId = await CreatedId(await client.PostAsJsonAsync($"/api/v1/organizers/{organizerId}/runners",
+            new { firstName = "Existing", lastName = "Runner" }));
+        var registrations = path + "/registrations";
+        var existingId = await CreatedId(await client.PostAsJsonAsync(registrations,
+            new { raceId = first, runnerId, categoryId = firstGroup, bibNumber = "100" }));
+
+        async Task<string> ReadConfirmation() =>
+            (await client.GetFromJsonAsync<JsonElement>(path + "/configuration")).GetProperty("courses")
+            .EnumerateArray().Single(x => x.GetProperty("id").GetGuid() == courseId)
+            .GetProperty("registrationConfirmation").GetString()!;
+        Task<HttpResponseMessage> Edit(string confirmation, CancellationToken ct = default) => client.PutAsJsonAsync(
+            $"{coursePath}?registrationConfirmation={confirmation}", new { name = "CSV Trail", distanceKm = 12 }, ct);
+
+        const string csv = "First Name,Last Name,Email,Race,Category,Bib Number\n"
+            + "Csv,One,csv.one@example.test,Summit,Open,101\n"
+            + "Csv,Two,csv.two@example.test,Ridge,Open,102";
+        // Named Race values work with both the mapping and fixed templates. The stacked importer also needs a fallback.
+        MultipartFormDataContent CsvForm(string? token = null)
+        {
+            var form = new MultipartFormDataContent
+            {
+                { new StringContent(csv, Encoding.UTF8, "text/csv"), "file", "concurrent.csv" },
+                { new StringContent(second.ToString()), "defaultRaceId" }
+            };
+            if (token is not null) form.Add(new StringContent(token), "token");
+            return form;
+        }
+
+        var staleConfirmation = await ReadConfirmation();
+        using var previewForm = CsvForm();
+        using var preview = await client.PostAsync(registrations + "/import/preview", previewForm);
+        var previewResult = await preview.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(previewResult.GetProperty("valid").GetBoolean(), previewResult.GetRawText());
+        Assert.Equal(2, previewResult.GetProperty("validCount").GetInt32());
+        using var confirmationForm = CsvForm(previewResult.GetProperty("token").GetString());
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+        var ct = timeout.Token;
+        using var gateScope = Services.CreateScope();
+        var gateDb = gateScope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+        await using var gate = await gateDb.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+        await gateDb.Organizers.FromSqlInterpolated($"SELECT * FROM Organizers WHERE Id = {organizerId} FOR UPDATE")
+            .AsNoTracking().ToListAsync(ct);
+
+        var confirmImport = client.PostAsync(registrations + "/import/confirm", confirmationForm, ct);
+        Task<HttpResponseMessage> editRoute;
+        try
+        {
+            // CSV must hold the Event row before it can wait for the organizer row.
+            while (true)
+            {
+                try
+                {
+                    await using var probe = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+                    await db.Database.ExecuteSqlInterpolatedAsync(
+                        $"SELECT Id FROM Events WHERE Id = {eventId} FOR UPDATE NOWAIT", ct);
+                    await probe.RollbackAsync(ct);
+                }
+                catch (MySqlConnector.MySqlException ex) when (ex.Number == 3572)
+                {
+                    break;
+                }
+                Assert.False(confirmImport.IsCompleted, "CSV confirmation completed before obtaining the Event row.");
+                await Task.Delay(25, ct);
+            }
+            Assert.Equal(1, await db.Registrations.CountAsync(x => x.EventId == eventId, ct));
+            editRoute = Edit(staleConfirmation, ct);
+            Assert.False(confirmImport.IsCompleted, "The organizer row should still hold CSV confirmation.");
+        }
+        finally
+        {
+            await gate.RollbackAsync();
+        }
+
+        using var imported = await confirmImport;
+        Assert.Equal(HttpStatusCode.OK, imported.StatusCode);
+        Assert.Equal(2, (await imported.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("importedCount").GetInt32());
+        using var stale = await editRoute;
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        var conflict = await stale.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Contains("affected registrations require confirmation", conflict.GetProperty("title").GetString());
+        Assert.Equal(1, await db.Courses.CountAsync(x => x.EventId == eventId));
+        using var replayForm = CsvForm(previewResult.GetProperty("token").GetString());
+        using var replay = await client.PostAsync(registrations + "/import/confirm", replayForm);
+        Assert.Equal(HttpStatusCode.Conflict, replay.StatusCode);
+
+        var confirmed = await ReadConfirmation();
+        Assert.NotEqual(staleConfirmation, confirmed);
+        using var revised = await Edit(confirmed);
+        Assert.Equal(HttpStatusCode.OK, revised.StatusCode);
+        var revisionId = (await revised.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        Assert.NotEqual(courseId, revisionId);
+        Assert.Equal(2, await db.Races.CountAsync(x => x.EventId == eventId && x.CourseId == revisionId && x.DistanceKm == 12));
+        Assert.Equal(10, await db.Courses.Where(x => x.Id == courseId).Select(x => x.DistanceKm).SingleAsync());
+
+        var saved = await db.Registrations.Where(x => x.EventId == eventId).OrderBy(x => x.BibNumber)
+            .Select(x => new { x.Id, x.RunnerId, x.Runner.Email, x.RaceId, x.RaceCategoryId, x.BibNumber }).ToListAsync();
+        Assert.Equal(3, saved.Count);
+        Assert.Equal((existingId, runnerId, first, (Guid?)firstGroup, "100"),
+            (saved[0].Id, saved[0].RunnerId, saved[0].RaceId, saved[0].RaceCategoryId, saved[0].BibNumber));
+        Assert.Equal(("csv.one@example.test", first, (Guid?)firstGroup, "101"),
+            (saved[1].Email, saved[1].RaceId, saved[1].RaceCategoryId, saved[1].BibNumber));
+        Assert.Equal(("csv.two@example.test", second, (Guid?)secondGroup, "102"),
+            (saved[2].Email, saved[2].RaceId, saved[2].RaceCategoryId, saved[2].BibNumber));
     }
 
     private static async Task<Guid> CreatedId(HttpResponseMessage response)
