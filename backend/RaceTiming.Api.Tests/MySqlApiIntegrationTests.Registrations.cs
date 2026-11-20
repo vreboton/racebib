@@ -221,7 +221,8 @@ public sealed partial class MySqlApiIntegrationTests
         var id = await CreatedId(await client.PostAsJsonAsync(path, input));
         using var duplicate = await client.PostAsJsonAsync(path, input);
         Assert.Equal(HttpStatusCode.Conflict, duplicate.StatusCode);
-        await CreatedId(await client.PostAsJsonAsync($"/api/v1/events/{secondEventId}/registrations",
+        var secondPath = $"/api/v1/events/{secondEventId}/registrations";
+        var secondId = await CreatedId(await client.PostAsJsonAsync(secondPath,
             input with { raceId = secondRaceId, bibDisplayName = "  " }));
 
         var publicPath = $"/api/v1/public/events/{eventId}/participants";
@@ -244,6 +245,10 @@ public sealed partial class MySqlApiIntegrationTests
         var fallback = (await publicClient.GetFromJsonAsync<JsonElement>(
             $"/api/v1/public/events/{secondEventId}/participants"))[0];
         Assert.Equal("María Dalisay", fallback.GetProperty("nameOnBib").GetString());
+        using var legacyNoOp = await client.PutAsJsonAsync($"{secondPath}/{secondId}",
+            input with { raceId = secondRaceId, bibDisplayName = "" });
+        Assert.Equal(HttpStatusCode.OK, legacyNoOp.StatusCode);
+        Assert.Equal(1, (await legacyNoOp.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("version").GetInt64());
 
         using (var scope = Services.CreateScope())
         {
@@ -255,12 +260,31 @@ public sealed partial class MySqlApiIntegrationTests
         var secondSnapshot = await administratorClient.GetFromJsonAsync<JsonElement>($"{path}/{id}");
         Assert.Equal(1, firstSnapshot.GetProperty("registration").GetProperty("version").GetInt64());
         Assert.Equal(1, secondSnapshot.GetProperty("registration").GetProperty("version").GetInt64());
-        using var edit = await client.PutAsJsonAsync($"{path}/{id}", input with { bibDisplayName = "Maya", bibNumber = "Bíb" });
+        var unchanged = input with { bibDisplayName = "  " + input.bibDisplayName + "  ", bibNumber = "Bíb" };
+        using var firstNoOp = await client.PutAsJsonAsync($"{path}/{id}", unchanged);
+        using var repeatedNoOp = await administratorClient.PutAsJsonAsync($"{path}/{id}", unchanged);
+        foreach (var response in new[] { firstNoOp, repeatedNoOp })
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal(1, (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("version").GetInt64());
+        }
+        var afterNoOps = await client.GetFromJsonAsync<JsonElement>($"{path}/{id}");
+        Assert.Equal(firstSnapshot.GetProperty("history").GetArrayLength(), afterNoOps.GetProperty("history").GetArrayLength());
+
+        var changed = unchanged with { bibDisplayName = "Maya" };
+        using var edit = await client.PutAsJsonAsync($"{path}/{id}", changed);
         Assert.Equal(HttpStatusCode.OK, edit.StatusCode);
-        using var staleEdit = await administratorClient.PutAsJsonAsync($"{path}/{id}", input);
+        Assert.Equal(2, (await edit.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("version").GetInt64());
+        using var staleEdit = await administratorClient.PutAsJsonAsync($"{path}/{id}", changed);
         Assert.Equal(HttpStatusCode.Conflict, staleEdit.StatusCode);
         Assert.Equal("registration_version_conflict",
             (await staleEdit.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+        using var currentNoOp = await administratorClient.PutAsJsonAsync($"{path}/{id}", changed with { version = 2 });
+        Assert.Equal(HttpStatusCode.OK, currentNoOp.StatusCode);
+        Assert.Equal(2, (await currentNoOp.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("version").GetInt64());
+        var afterEdit = await client.GetFromJsonAsync<JsonElement>($"{path}/{id}");
+        Assert.Single(afterEdit.GetProperty("history").EnumerateArray(),
+            record => record.GetProperty("action").GetString() == "Registration.Updated");
         using var staleBibEdit = await client.PutAsJsonAsync($"{path}/{id}/bib", new { bibNumber = "0009", version = 1 });
         Assert.Equal(HttpStatusCode.Conflict, staleBibEdit.StatusCode);
         using var staleCancel = await client.PostAsJsonAsync($"{path}/{id}/cancel", new { version = 1 });
@@ -290,14 +314,22 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Equal(3, registration.GetProperty("status").GetInt32());
         Assert.Single(details.GetProperty("history").EnumerateArray(),
             record => record.GetProperty("action").GetString() == "Registration.Cancelled");
-        using var leaveWithdrawn = await administratorClient.PutAsJsonAsync($"{path}/{id}",
-            new { raceId, runnerId, version = 4, bibNumber = "0008", bibDisplayName = "Maya" });
+        var withdrawn = new { raceId, runnerId, version = 4, bibNumber = "0008", bibDisplayName = "Maya", paymentStatus = "Paid" };
+        using var forbiddenBibEdit = await administratorClient.PutAsJsonAsync($"{path}/{id}", withdrawn with { bibNumber = "0009" });
+        Assert.Equal(HttpStatusCode.Conflict, forbiddenBibEdit.StatusCode);
+        using var leaveWithdrawn = await administratorClient.PutAsJsonAsync($"{path}/{id}", withdrawn);
         Assert.Equal(HttpStatusCode.OK, leaveWithdrawn.StatusCode);
-        Assert.Equal(3, (await leaveWithdrawn.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("status").GetInt32());
-        var current = input with { version = 5, bibNumber = "0008", status = "Pending" };
+        var withdrawnResult = await leaveWithdrawn.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(3, withdrawnResult.GetProperty("status").GetInt32());
+        Assert.Equal(4, withdrawnResult.GetProperty("version").GetInt64());
+        var current = changed with { version = 4, bibNumber = "0008", status = "Pending" };
         using var reopened = await administratorClient.PutAsJsonAsync($"{path}/{id}", current);
         Assert.Equal(HttpStatusCode.OK, reopened.StatusCode);
-        using var resultLike = await client.PutAsJsonAsync($"{path}/{id}", current with { version = 6, status = "Dns" });
+        Assert.Equal(5, (await reopened.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("version").GetInt64());
+        var afterReopen = await client.GetFromJsonAsync<JsonElement>($"{path}/{id}");
+        Assert.Single(afterReopen.GetProperty("history").EnumerateArray(),
+            record => record.GetProperty("action").GetString() == "Registration.Reopened");
+        using var resultLike = await client.PutAsJsonAsync($"{path}/{id}", current with { version = 5, status = "Dns" });
         Assert.Equal(HttpStatusCode.BadRequest, resultLike.StatusCode);
 
         using (var scope = Services.CreateScope())
@@ -308,10 +340,10 @@ public sealed partial class MySqlApiIntegrationTests
             await db.SaveChangesAsync();
         }
         using var historicalEdit = await client.PutAsJsonAsync($"{path}/{id}",
-            current with { version = 6, status = "Dns", bibDisplayName = "Historical" });
+            current with { version = 5, status = "Dns", bibDisplayName = "Historical" });
         Assert.Equal(HttpStatusCode.OK, historicalEdit.StatusCode);
         Assert.Equal(5, (await historicalEdit.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("status").GetInt32());
-        using var historicalCancel = await client.PostAsJsonAsync($"{path}/{id}/cancel", new { version = 7 });
+        using var historicalCancel = await client.PostAsJsonAsync($"{path}/{id}/cancel", new { version = 6 });
         Assert.Equal(HttpStatusCode.BadRequest, historicalCancel.StatusCode);
         Assert.Contains(details.GetProperty("history").EnumerateArray(),
             record => record.GetProperty("action").GetString() == "Registration.BibChanged");

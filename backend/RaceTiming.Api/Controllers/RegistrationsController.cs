@@ -154,8 +154,13 @@ public sealed partial class RegistrationsController(
         entry ??= new Registration { EventId = item.Id, OrganizerId = item.OrganizerId, Runner = runner };
         entry.Runner = runner;
         Apply(entry, input, selectedBib);
-        if (!id.HasValue) db.Registrations.Add(entry);
-        else entry.Version++;
+        if (id.HasValue)
+        {
+            // Inspect the normalized changes before modifying the version or adding audit records.
+            if (db.Entry(entry).State == EntityState.Unchanged) return Ok(Admin(entry));
+            entry.Version++;
+        }
+        else db.Registrations.Add(entry);
         if (previousStatus is { } previous && previous != status)
             RecordStatusChange(entry, previous);
         Record(entry, id.HasValue ? "Registration.Updated" : "Registration.Created");
@@ -268,8 +273,10 @@ public sealed partial class RegistrationsController(
         entry.RaceCategoryId = input.CategoryId;
         entry.StartWaveId = input.WaveId;
         entry.BibNumber = bib;
-        entry.BibDisplayName = Optional(input.BibDisplayName);
-        entry.Team = Optional(input.Team);
+        var bibDisplayName = Optional(input.BibDisplayName);
+        if (Optional(entry.BibDisplayName) != bibDisplayName) entry.BibDisplayName = bibDisplayName;
+        var team = Optional(input.Team);
+        if (Optional(entry.Team) != team) entry.Team = team;
         entry.RegistrationStatus = input.Status ?? RegistrationStatus.Pending;
         entry.PaymentStatus = input.PaymentStatus;
     }
