@@ -38,7 +38,7 @@ public sealed partial class MySqlApiIntegrationTests
         await Retire(open.Id);
 
         using var historicalEdit = await client.PutAsJsonAsync($"{path}/{original}",
-            new { raceId, runnerId, bibNumber = "007", team = "Updated" });
+            new { raceId, runnerId, bibNumber = "007", team = "Updated", version = 1 });
         Assert.Equal(HttpStatusCode.OK, historicalEdit.StatusCode);
         Assert.Equal(open.Id, (await historicalEdit.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("categoryId").GetGuid());
         Assert.All(await ReadCategories(), x => Assert.Equal(RecordStatus.Inactive, x.Status));
@@ -93,13 +93,13 @@ public sealed partial class MySqlApiIntegrationTests
             Assert.Equal(HttpStatusCode.NoContent, retireTarget.StatusCode);
 
             using var invalid = await client.PutAsJsonAsync($"{path}/{original}",
-                new { raceId = targetRace, runnerId, bibNumber = "008" });
+                new { raceId = targetRace, runnerId, bibNumber = "008", version = 2 });
             Assert.Equal(HttpStatusCode.Conflict, invalid.StatusCode);
             Assert.Equal(RecordStatus.Inactive,
                 (await db.RaceCategories.AsNoTracking().SingleAsync(x => x.Id == retiredOpen.Id)).Status);
 
             using var move = await client.PutAsJsonAsync($"{path}/{original}",
-                new { raceId = targetRace, runnerId, bibNumber = "007" });
+                new { raceId = targetRace, runnerId, bibNumber = "007", version = 2 });
             Assert.Equal(HttpStatusCode.OK, move.StatusCode);
             Assert.Equal(retiredOpen.Id, (await move.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("categoryId").GetGuid());
             Assert.Equal(RecordStatus.Active,
@@ -169,7 +169,7 @@ public sealed partial class MySqlApiIntegrationTests
             file.Replace("csv-race-only@", "ambiguous@"));
         Assert.Equal(0, ambiguousPreview.GetProperty("validCount").GetInt32());
 
-        using var edit = await client.PutAsJsonAsync($"{path}/{registrationId}", new { raceId, runnerId, team = "Updated" });
+        using var edit = await client.PutAsJsonAsync($"{path}/{registrationId}", new { raceId, runnerId, team = "Updated", version = 1 });
         Assert.Equal(HttpStatusCode.OK, edit.StatusCode);
         Assert.Equal(categoryId, (await edit.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("categoryId").GetGuid());
     }
@@ -180,16 +180,27 @@ public sealed partial class MySqlApiIntegrationTests
     {
         await using var data = new MySqlTestData(Services);
         var account = await data.CreateAccountAsync();
+        var administrator = await data.CreateAccountAsync();
         var outsider = await data.CreateAccountAsync();
         await data.CreateOrganizerAsync(outsider);
         var organizerId = await data.CreateOrganizerAsync(account, OrganizerRole.RaceDirector);
+        using (var scope = Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+            db.OrganizerMemberships.Add(new() { OrganizerId = organizerId, UserId = administrator.Id,
+                Role = OrganizerRole.EventAdministrator });
+            await db.SaveChangesAsync();
+        }
         var eventId = await data.CreateEventAsync(organizerId);
         var secondEventId = await data.CreateEventAsync(organizerId);
         using var client = Factory.CreateClient();
+        using var administratorClient = Factory.CreateClient();
         using var publicClient = Factory.CreateClient();
         using var outsideClient = Factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await LoginAsync(client, account));
         outsideClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await LoginAsync(outsideClient, outsider));
+        administratorClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", await LoginAsync(administratorClient, administrator));
         var raceId = await SeedRegistrationRace(client, eventId);
         var secondRaceId = await SeedRegistrationRace(client, secondEventId);
         var profiles = $"/api/v1/organizers/{organizerId}/runners";
@@ -200,7 +211,7 @@ public sealed partial class MySqlApiIntegrationTests
         }));
         var path = $"/api/v1/events/{eventId}/registrations";
         var input = new { runnerId, raceId, categoryId = (Guid?)null,
-            bibDisplayName = "小光 🏃", bibNumber = "0007", status = "Confirmed", paymentStatus = "Paid" };
+            bibDisplayName = "小光 🏃", bibNumber = "0007", status = "Confirmed", paymentStatus = "Paid", version = 1 };
         using var denied = await outsideClient.PostAsJsonAsync(path, input);
         Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
         using var wrongRace = await client.PostAsJsonAsync(path, input with { raceId = secondRaceId });
@@ -240,18 +251,64 @@ public sealed partial class MySqlApiIntegrationTests
             (await db.Registrations.SingleAsync(x => x.Id == id)).BibNumber = "Bíb";
             await db.SaveChangesAsync();
         }
+        var firstSnapshot = await client.GetFromJsonAsync<JsonElement>($"{path}/{id}");
+        var secondSnapshot = await administratorClient.GetFromJsonAsync<JsonElement>($"{path}/{id}");
+        Assert.Equal(1, firstSnapshot.GetProperty("registration").GetProperty("version").GetInt64());
+        Assert.Equal(1, secondSnapshot.GetProperty("registration").GetProperty("version").GetInt64());
         using var edit = await client.PutAsJsonAsync($"{path}/{id}", input with { bibDisplayName = "Maya", bibNumber = "Bíb" });
         Assert.Equal(HttpStatusCode.OK, edit.StatusCode);
-        using var bibEdit = await client.PutAsJsonAsync($"{path}/{id}/bib", new { bibNumber = "0008" });
+        using var staleEdit = await administratorClient.PutAsJsonAsync($"{path}/{id}", input);
+        Assert.Equal(HttpStatusCode.Conflict, staleEdit.StatusCode);
+        Assert.Equal("registration_version_conflict",
+            (await staleEdit.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+        using var staleBibEdit = await client.PutAsJsonAsync($"{path}/{id}/bib", new { bibNumber = "0009", version = 1 });
+        Assert.Equal(HttpStatusCode.Conflict, staleBibEdit.StatusCode);
+        using var staleCancel = await client.PostAsJsonAsync($"{path}/{id}/cancel", new { version = 1 });
+        Assert.Equal(HttpStatusCode.Conflict, staleCancel.StatusCode);
+        using var deniedEdit = await outsideClient.PutAsJsonAsync($"{path}/{id}", input with { version = 2 });
+        Assert.Equal(HttpStatusCode.Forbidden, deniedEdit.StatusCode);
+        using var wrongEvent = await client.PutAsJsonAsync($"/api/v1/events/{secondEventId}/registrations/{id}", input with { version = 2 });
+        Assert.Equal(HttpStatusCode.NotFound, wrongEvent.StatusCode);
+
+        using var bibEdit = await client.PutAsJsonAsync($"{path}/{id}/bib", new { bibNumber = "0008", version = 2 });
         Assert.Equal(HttpStatusCode.NoContent, bibEdit.StatusCode);
-        using var cancel = await client.PostAsync($"{path}/{id}/cancel", null);
+        using var cancel = await client.PostAsJsonAsync($"{path}/{id}/cancel", new { version = 3 });
         Assert.Equal(HttpStatusCode.NoContent, cancel.StatusCode);
+        using var repeatedStale = await client.PostAsJsonAsync($"{path}/{id}/cancel", new { version = 3 });
+        Assert.Equal(HttpStatusCode.Conflict, repeatedStale.StatusCode);
+        using var repeatedCurrent = await client.PostAsJsonAsync($"{path}/{id}/cancel", new { version = 4 });
+        Assert.Equal(HttpStatusCode.NoContent, repeatedCurrent.StatusCode);
+        using var reservedBib = await client.PutAsJsonAsync($"{path}/{id}/bib", new { bibNumber = "0009", version = 4 });
+        Assert.Equal(HttpStatusCode.Conflict, reservedBib.StatusCode);
+        using var invalid = await client.PutAsJsonAsync($"{path}/{id}", input with { version = 4, bibNumber = "0008" });
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
         var details = await client.GetFromJsonAsync<JsonElement>($"{path}/{id}");
         var registration = details.GetProperty("registration");
         Assert.Equal("Maya", registration.GetProperty("effectiveBibDisplayName").GetString());
         Assert.Equal("0008", registration.GetProperty("bibNumber").GetString());
         Assert.Equal(2, registration.GetProperty("paymentStatus").GetInt32());
         Assert.Equal(3, registration.GetProperty("status").GetInt32());
+        Assert.Single(details.GetProperty("history").EnumerateArray(),
+            record => record.GetProperty("action").GetString() == "Registration.Cancelled");
+        var current = input with { version = 4, bibNumber = "0008", status = "Pending" };
+        using var reopened = await administratorClient.PutAsJsonAsync($"{path}/{id}", current);
+        Assert.Equal(HttpStatusCode.OK, reopened.StatusCode);
+        using var resultLike = await client.PutAsJsonAsync($"{path}/{id}", current with { version = 5, status = "Dns" });
+        Assert.Equal(HttpStatusCode.BadRequest, resultLike.StatusCode);
+
+        using (var scope = Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+            var historical = await db.Registrations.SingleAsync(x => x.Id == id);
+            historical.RegistrationStatus = RegistrationStatus.Dns;
+            await db.SaveChangesAsync();
+        }
+        using var historicalEdit = await client.PutAsJsonAsync($"{path}/{id}",
+            current with { version = 5, status = "Dns", bibDisplayName = "Historical" });
+        Assert.Equal(HttpStatusCode.OK, historicalEdit.StatusCode);
+        Assert.Equal(5, (await historicalEdit.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("status").GetInt32());
+        using var historicalCancel = await client.PostAsJsonAsync($"{path}/{id}/cancel", new { version = 6 });
+        Assert.Equal(HttpStatusCode.BadRequest, historicalCancel.StatusCode);
         Assert.Contains(details.GetProperty("history").EnumerateArray(),
             record => record.GetProperty("action").GetString() == "Registration.BibChanged");
         Assert.Empty((await publicClient.GetFromJsonAsync<JsonElement>(publicPath)).EnumerateArray());
@@ -337,6 +394,23 @@ public sealed partial class MySqlApiIntegrationTests
         using var result2 = results[1];
         Assert.Single(results, response => response.StatusCode == HttpStatusCode.Created);
         Assert.Single(results, response => response.StatusCode == HttpStatusCode.Conflict);
+
+        var manualRunner = await CreatedId(await client.PostAsJsonAsync(runnerUrl, new { firstName = "Edit", lastName = "Runner" }));
+        var manualId = await CreatedId(await client.PostAsJsonAsync(path, new { runnerId = manualRunner, raceId, bibNumber = "005" }));
+        var manual = (await client.GetFromJsonAsync<JsonElement>($"{path}/{manualId}")).GetProperty("registration");
+        const string competingFile = "First Name,Last Name,Email,Bib Number\nCSV,Competitor,competing@example.test,004";
+        var competingPreview = await PreviewRegistrationCsv(client, path, raceId, competingFile);
+        Assert.True(competingPreview.GetProperty("valid").GetBoolean());
+        using var competingForm = ImportForm(raceId, competingFile, token: competingPreview.GetProperty("token").GetString());
+        var competingResults = await Task.WhenAll(
+            client.PutAsJsonAsync($"{path}/{manualId}/bib", new { bibNumber = "004", version = manual.GetProperty("version").GetInt64() }),
+            client.PostAsync(path + "/import/confirm", competingForm));
+        using var bibCorrection = competingResults[0];
+        using var csvConfirmation = competingResults[1];
+        Assert.Single(competingResults, result => result.IsSuccessStatusCode);
+        Assert.Single(competingResults, result => result.StatusCode == HttpStatusCode.Conflict);
+        var savedRows = (await client.GetFromJsonAsync<JsonElement>(path)).GetProperty("items");
+        Assert.Single(savedRows.EnumerateArray(), row => row.GetProperty("bibNumber").GetString() == "004");
     }
 
     [MySqlIntegrationFact]

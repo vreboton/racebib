@@ -989,7 +989,7 @@ public sealed partial class MySqlApiIntegrationTests
             $"{coursePath}?registrationConfirmation={confirmation}", new { name = "Trail", distanceKm = 12 });
 
         var beforeMove = await ReadConfirmation();
-        using var moved = await client.PutAsJsonAsync($"{path}/registrations/{registrationId}", new { raceId = second, runnerId });
+        using var moved = await client.PutAsJsonAsync($"{path}/registrations/{registrationId}", new { raceId = second, runnerId, version = 1 });
         Assert.Equal(HttpStatusCode.OK, moved.StatusCode);
         var afterMove = await ReadConfirmation();
         Assert.NotEqual(beforeMove, afterMove);

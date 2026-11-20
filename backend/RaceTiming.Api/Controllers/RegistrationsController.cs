@@ -20,7 +20,7 @@ public sealed partial class RegistrationsController(
 {
     public sealed record RegistrationInput(Guid RaceId, Guid RunnerId, Guid? CategoryId, Guid? WaveId,
         string? BibDisplayName, string? BibNumber, string? Team, RegistrationStatus Status,
-        PaymentStatus PaymentStatus, BibAssignment? Assignment);
+        PaymentStatus PaymentStatus, BibAssignment? Assignment, long? Version = null);
 
     [HttpGet]
     public Task<IActionResult> List(Guid eventId, string? search, Guid? raceId, RegistrationStatus? status,
@@ -64,20 +64,27 @@ public sealed partial class RegistrationsController(
     public Task<IActionResult> Update(Guid eventId, Guid id, RegistrationInput input, CancellationToken ct) =>
         WithEvent(eventId, true, ct, item => Save(item, id, input, ct));
 
+    public sealed record VersionInput(long? Version);
+
     [HttpPost("{id:guid}/cancel")]
-    public Task<IActionResult> Cancel(Guid eventId, Guid id, CancellationToken ct) =>
+    public Task<IActionResult> Cancel(Guid eventId, Guid id, VersionInput input, CancellationToken ct) =>
         WithEvent(eventId, true, ct, async _ =>
         {
             var entry = await db.Registrations.SingleOrDefaultAsync(x => x.EventId == eventId && x.Id == id, ct);
             if (entry is null) return NotFound();
-            if (entry.RegistrationStatus == RegistrationStatus.Cancelled) return NoContent();
+            if (entry.Version != input.Version) return StaleRegistration();
+            var previousStatus = entry.RegistrationStatus;
+            if (previousStatus == RegistrationStatus.Cancelled) return NoContent();
+            if (!CanSetStatus(previousStatus, RegistrationStatus.Cancelled))
+                return BadRequest("This registration cannot be withdrawn from its current status.");
             entry.RegistrationStatus = RegistrationStatus.Cancelled;
-            Record(entry, "Registration.Cancelled");
+            entry.Version++;
+            RecordStatusChange(entry, previousStatus);
             await db.SaveChangesAsync(ct);
             return NoContent();
         });
 
-    public sealed record BibInput(string? BibNumber, BibAssignment? Assignment);
+    public sealed record BibInput(string? BibNumber, BibAssignment? Assignment, long? Version = null);
 
     [HttpPut("{id:guid}/bib")]
     public Task<IActionResult> ChangeBib(Guid eventId, Guid id, BibInput input, CancellationToken ct) =>
@@ -85,6 +92,7 @@ public sealed partial class RegistrationsController(
         {
             var entry = await db.Registrations.SingleOrDefaultAsync(x => x.EventId == eventId && x.Id == id, ct);
             if (entry is null) return NotFound();
+            if (entry.Version != input.Version) return StaleRegistration();
             if (entry.RegistrationStatus == RegistrationStatus.Cancelled)
                 return Conflict("Reopen the registration before changing its reserved bib.");
             var occupied = await db.Registrations.Where(x => x.EventId == eventId && x.Id != id)
@@ -93,6 +101,7 @@ public sealed partial class RegistrationsController(
             if (error is not null) return Conflict(error);
             if (entry.BibNumber == bibs[0]) return NoContent();
             entry.BibNumber = bibs[0];
+            entry.Version++;
             Record(entry, "Registration.BibChanged");
             await db.SaveChangesAsync(ct);
             return NoContent();
@@ -104,6 +113,10 @@ public sealed partial class RegistrationsController(
             ? await db.Registrations.SingleOrDefaultAsync(x => x.EventId == item.Id && x.Id == id, ct)
             : null;
         if (id.HasValue && entry is null) return NotFound();
+        if (entry is not null && entry.Version != input.Version) return StaleRegistration();
+        var previousStatus = entry?.RegistrationStatus;
+        if (!CanSetStatus(previousStatus, input.Status))
+            return BadRequest("That registration status transition is unavailable.");
         if (entry is not null && entry.RunnerId != input.RunnerId)
             return BadRequest("The runner on an existing registration is fixed.");
         await RunnerProfileWriteLock.Acquire(db, item.OrganizerId, ct);
@@ -131,8 +144,9 @@ public sealed partial class RegistrationsController(
             if (error is not null) return Conflict(error);
             selectedBib = bibs[0];
         }
-        if (entry is not null && input.Status == RegistrationStatus.Cancelled && previousBib != selectedBib)
-            return Conflict("Cancellation must keep the existing bib reserved.");
+        if ((previousStatus == RegistrationStatus.Cancelled || input.Status == RegistrationStatus.Cancelled)
+            && previousBib != selectedBib)
+            return Conflict("Withdrawing or reopening a registration must keep its existing bib reserved.");
         if (needsManagedCategory)
             input = input with { CategoryId = await ApplyManagedCategory(db, input.RaceId,
                 await PlanManagedCategory(db, input.RaceId, ct), ct) };
@@ -140,6 +154,9 @@ public sealed partial class RegistrationsController(
         entry.Runner = runner;
         Apply(entry, input, selectedBib);
         if (!id.HasValue) db.Registrations.Add(entry);
+        else entry.Version++;
+        if (previousStatus is { } status && status != entry.RegistrationStatus)
+            RecordStatusChange(entry, status);
         Record(entry, id.HasValue ? "Registration.Updated" : "Registration.Created");
         if (previousBib != entry.BibNumber) Record(entry, "Registration.BibChanged");
         await db.SaveChangesAsync(ct);
@@ -263,15 +280,53 @@ public sealed partial class RegistrationsController(
 
     private static object Admin(Registration x) => new
     {
-        x.Id, x.RunnerId, x.RaceId, categoryId = x.RaceCategoryId, waveId = x.StartWaveId,
+        x.Id, x.Version, x.RunnerId, x.RaceId, categoryId = x.RaceCategoryId, waveId = x.StartWaveId,
         x.BibNumber, x.BibDisplayName, x.EffectiveBibDisplayName, x.Team,
         status = (int)x.RegistrationStatus, paymentStatus = (int)x.PaymentStatus,
         runner = new { x.Runner.FirstName, x.Runner.LastName, x.Runner.Email, x.Runner.Gender,
             x.Runner.Birthdate, x.Runner.MobileNumber, x.Runner.EmergencyContact }
     };
 
-    private void Record(Registration entry, string action) =>
-        audit.Record(User, action, "Registration", entry.Id.ToString(), entry.OrganizerId);
+    private static bool CanSetStatus(RegistrationStatus? from, RegistrationStatus to) =>
+        Enum.IsDefined(to) && (from == to || (from, to) switch
+        {
+            (null, RegistrationStatus.Pending or RegistrationStatus.Confirmed or RegistrationStatus.Waitlisted) => true,
+            (RegistrationStatus.Pending or RegistrationStatus.Waitlisted,
+                RegistrationStatus.Confirmed or RegistrationStatus.Cancelled) => true,
+            (RegistrationStatus.Confirmed, RegistrationStatus.Pending or RegistrationStatus.Cancelled) => true,
+            (RegistrationStatus.Cancelled, RegistrationStatus.Pending) => true,
+            _ => false
+        });
+
+    private ConflictObjectResult StaleRegistration()
+    {
+        var problem = new ProblemDetails
+        {
+            Status = StatusCodes.Status409Conflict,
+            Title = "This registration has changed. Refresh it before submitting again."
+        };
+        problem.Extensions["code"] = "registration_version_conflict";
+        return Conflict(problem);
+    }
+
+    private void RecordStatusChange(Registration entry, RegistrationStatus previous)
+    {
+        var action = (previous, entry.RegistrationStatus) switch
+        {
+            (RegistrationStatus.Cancelled, RegistrationStatus.Pending) => "Registration.Reopened",
+            (RegistrationStatus.Confirmed, RegistrationStatus.Pending) => "Registration.StatusCorrected",
+            (_, RegistrationStatus.Cancelled) => "Registration.Cancelled",
+            _ => "Registration.StatusChanged"
+        };
+        Record(entry, action, new Dictionary<string, object?>
+        {
+            ["from"] = previous.ToString(),
+            ["to"] = entry.RegistrationStatus.ToString()
+        });
+    }
+
+    private void Record(Registration entry, string action, Dictionary<string, object?>? metadata = null) =>
+        audit.Record(User, action, "Registration", entry.Id.ToString(), entry.OrganizerId, metadata);
 
     private async Task<IActionResult> WithEvent(Guid eventId, bool write, CancellationToken ct, Func<Event, Task<IActionResult>> action)
     {
@@ -293,6 +348,10 @@ public sealed partial class RegistrationsController(
                 && result is not StatusCodeResult { StatusCode: >= 400 })
                 await transaction.CommitAsync(ct);
             return result;
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return StaleRegistration();
         }
         catch (Exception ex) when (RaceConfigurationController.IsWriteConflict(ex))
         {
