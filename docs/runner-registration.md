@@ -16,13 +16,19 @@ The RD or registration provider administers the applicable Registration Guidelin
 
 ## Import a CSV
 
-1. Open the event and select **Import CSV**. Use the [fictional sample](./runner-registration-sample.csv) as a template.
-2. Upload a UTF-8, comma-delimited spreadsheet or Google Forms export. A BOM, quoted fields and quoted commas are supported. The limit is 1 MiB, 1,000 data rows and 100 source columns.
-3. Choose a bib mode and validate the file. RaceBib suggests mappings using recognised headers.
-4. Map missing fields, review row outcomes and proposed bibs, and validate again after changes. Download the error report if needed. Correct the errors in the original file and upload it again.
-5. Confirm a valid preview within 20 minutes. Confirmation rechecks the source and proposed assignments against current records. If anything changed, preview again. If confirmation succeeds, the result shows the committed row count.
+1. Open the event, select **Import CSV**, and choose **Download CSV Template**. The [fictional sample](./runner-registration-sample.csv) shows two completed rows.
+2. Fill in First Name, Last Name, and Race on every data row. Leave optional values blank as needed.
+3. Upload a UTF-8, comma-delimited CSV, choose a bib assignment mode, then select **Validate & Preview**. A BOM, quoted fields, and quoted commas are supported. The limit is 1 MiB and 1,000 data rows.
+4. Review row outcomes and proposed bibs. Download the error report for invalid rows, correct the source file, and validate it again.
+5. Select **Confirm Import** within 20 minutes of a valid preview. Confirmation rechecks the file and proposed assignments against current records. If anything changed, validate again.
 
-Map **First Name**, **Last Name** and **Race**. A race cell may contain an exact race name or an unambiguous numeric distance in km. Category and wave cells use names from that race. Optional fields include Runner ID, Name on Bib, Gender, Birthdate, Email, Mobile Number, Category, Start Wave, Bib Number, Team / Club, Emergency Contact, Registration Status and Payment Status. Supported name aliases include Bib Name, Display Name and Preferred Name. Enter dates as YYYY-MM-DD or M/D/YYYY. Enter status names as listed in the API below.
+Use these exact header names. The download includes all sixteen. Columns may be reordered, and optional columns may be omitted. Missing required headers, duplicate headers, and unknown headers prevent import. Capitalization and spacing must match the template.
+
+```csv
+First Name,Last Name,Name on Bib,Gender,Birthdate,Email,Mobile Number,Race,Category,Start Wave,Bib Number,Team,Emergency Contact,Registration Status,Payment Status,Runner ID
+```
+
+A race cell may contain an exact race name or an unambiguous numeric distance in km. Category and wave cells use names from that race. Enter dates as YYYY-MM-DD or M/D/YYYY. Enter status names as listed in the API below. Keep bib numbers as text in your spreadsheet to preserve leading zeros.
 
 The importer accepts either of these ways to link an existing organizer profile.
 
@@ -62,7 +68,7 @@ Authenticated organizer management routes use the existing bearer-token scope ch
 
 Registration list query parameters are search, raceId, status and one-based page. POST and PUT accept runnerId, raceId, categoryId, waveId, bibDisplayName, bibNumber, team, status, paymentStatus and assignment. Create or select the organizer profile first. Registration statuses in order are Pending, Confirmed, Waitlisted, Cancelled, Dnf, Dns and Disqualified. Payment statuses in order are Unspecified, Unpaid, Paid, Waived and Refunded. Admin response status values are zero-based integers. Bib assignment has mode (0 existing, 1 automatic, 2 mixed), start, end and width.
 
-The import routes accept a multipart file, optional mapping JSON with canonical field names and zero-based header positions, and optional assignment JSON with numeric mode. Confirm also accepts the preview token. Resubmit the same file, mapping and assignment. A protected ticket binds the actor, event, original bytes and resolved assignment to the preview. The confirmation receipt and all registrations commit together. Uploaded records live in request processing only. The app does not store uploaded files or their rows separately.
+The import routes accept a multipart file and optional assignment JSON with numeric mode. Confirm also accepts the preview token. Preview returns row results, validation feedback, an error CSV, and a token for valid files. It validates headers directly from the file. Request mapping and preview mapping fields have been removed. Preview tokens issued before this change require a new preview. Resubmit the same file and assignment. A protected ticket binds the actor, event, original bytes and resolved assignment to the preview. The confirmation receipt and all registrations commit together. Uploaded records live in request processing only. The app does not store uploaded files or their rows separately.
 
 ## Migration and verification
 

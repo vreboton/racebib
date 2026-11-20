@@ -23,38 +23,38 @@ public sealed partial class RegistrationsController
         "Race", "Category", "Start Wave", "Bib Number", "Team", "Emergency Contact", "Registration Status", "Payment Status", "Runner ID"
     ];
     private sealed record ImportRow(int Row, string? Error, string? NameOnBib = null, string? BibNumber = null);
-    private sealed record ImportPlan(string[] Headers, Dictionary<string, int> Mapping,
-        List<ImportRow> Rows, List<Registration> Entries, string? Error);
+    private static readonly string[] RequiredColumns = ["First Name", "Last Name", "Race"];
+    private sealed record ImportPlan(List<ImportRow> Rows, List<Registration> Entries, string? Error = null);
     private sealed record ImportTicket(Guid Id, Guid EventId, string Actor, string Hash);
 
     [HttpPost("import/preview")]
     [RequestSizeLimit(2 * MaxBytes)]
-    public Task<IActionResult> Preview(Guid eventId, IFormFile file, [FromForm] string? mapping,
+    public Task<IActionResult> Preview(Guid eventId, IFormFile file,
         [FromForm] string? assignment, [FromServices] IDataProtectionProvider protection, CancellationToken ct) =>
         WithEvent(eventId, false, ct, async item =>
         {
             try
             {
                 var bytes = await ReadUpload(file, ct);
-                var plan = await Prepare(item, bytes, mapping, assignment, ct);
+                var plan = await Prepare(item, bytes, assignment, ct);
                 var valid = plan.Error is null && plan.Entries.Count > 0 && plan.Rows.All(x => x.Error is null);
                 var token = valid ? Protector(protection).Protect(JsonSerializer.Serialize(
-                    new ImportTicket(Guid.NewGuid(), eventId, Actor(), Fingerprint(bytes, mapping, assignment,
+                    new ImportTicket(Guid.NewGuid(), eventId, Actor(), Fingerprint(bytes, assignment,
                         plan.Entries))), TimeSpan.FromMinutes(20)) : null;
-                return Ok(new { plan.Headers, fields = Columns, plan.Mapping, plan.Rows, valid, token,
+                return Ok(new { plan.Rows, valid, token,
                     plan.Error, validCount = plan.Rows.Count(x => x.Error is null),
                     errorCsv = ErrorCsv(plan.Rows) });
             }
             catch (Exception ex) when (ex is CsvHelperException or DecoderFallbackException or JsonException or InvalidDataException)
             {
-                return BadRequest("Upload a valid UTF-8 CSV within the file and row limits and select valid mapping options.");
+                return BadRequest("Download the RaceBib CSV template and upload a well-formed UTF-8 CSV within the 1 MiB and 1,000 row limits. Check the bib assignment settings.");
             }
         });
 
     [HttpPost("import/confirm")]
     [RequestSizeLimit(2 * MaxBytes)]
     public Task<IActionResult> Confirm(Guid eventId, IFormFile file, [FromForm] string token,
-        [FromForm] string? mapping, [FromForm] string? assignment, [FromServices] IDataProtectionProvider protection,
+        [FromForm] string? assignment, [FromServices] IDataProtectionProvider protection,
         CancellationToken ct) => WithEvent(eventId, true, ct, async item =>
     {
         try
@@ -68,10 +68,10 @@ public sealed partial class RegistrationsController
                 return Conflict("This preview was already imported.");
             var bytes = await ReadUpload(file, ct);
             await RunnerProfileWriteLock.Acquire(db, item.OrganizerId, ct);
-            var plan = await Prepare(item, bytes, mapping, assignment, ct);
+            var plan = await Prepare(item, bytes, assignment, ct);
             if (plan.Error is not null || plan.Entries.Count == 0 || plan.Rows.Any(x => x.Error is not null)
-                || ticket.Hash != Fingerprint(bytes, mapping, assignment, plan.Entries))
-                return Conflict("The file, mapping, assignment or event data changed. Preview again.");
+                || ticket.Hash != Fingerprint(bytes, assignment, plan.Entries))
+                return Conflict("The file, bib assignment or event data changed. Preview again.");
 
             db.Registrations.AddRange(plan.Entries);
             foreach (var entry in plan.Entries)
@@ -90,28 +90,34 @@ public sealed partial class RegistrationsController
         }
     });
 
-    private async Task<ImportPlan> Prepare(Event item, byte[] bytes, string? mappingJson, string? assignmentJson, CancellationToken ct)
+    private async Task<ImportPlan> Prepare(Event item, byte[] bytes, string? assignmentJson, CancellationToken ct)
     {
         var source = new UTF8Encoding(false, true).GetString(bytes).TrimStart('\uFEFF');
         using var csv = new CsvReader(new StringReader(source), CultureInfo.InvariantCulture);
-        if (!csv.Read()) throw new InvalidDataException();
+        if (!csv.Read())
+            return new([], [], "The CSV has no header row. Download the RaceBib CSV template and keep its header row.");
         csv.ReadHeader();
         var headers = csv.HeaderRecord!;
-        if (headers.Length > 100) throw new InvalidDataException();
-        var mapping = mappingJson is null
-            ? Columns.Select(key => (key, index: Array.FindIndex(headers, header => HeaderMatches(key, header))))
-                .Where(x => x.index >= 0).ToDictionary(x => x.key, x => x.index)
-            : JsonSerializer.Deserialize<Dictionary<string, int>>(mappingJson) ?? throw new InvalidDataException();
+        var columnIndexes = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var i = 0; i < headers.Length; i++)
+        {
+            var header = headers[i];
+            if (!Columns.Contains(header, StringComparer.Ordinal))
+                return new([], [], $"Unrecognized header in column {i + 1}. Download the RaceBib CSV template and use its exact column names.");
+            if (!columnIndexes.TryAdd(header, i))
+                return new([], [], $"Duplicate header '{header}'. Keep only one copy of each column in the RaceBib CSV template.");
+        }
+
+        var missing = RequiredColumns.Where(column => !columnIndexes.ContainsKey(column)).ToArray();
+        if (missing.Length > 0)
+            return new([], [], $"Missing required headers: {string.Join(", ", missing)}. Download the RaceBib CSV template.");
+
         var options = assignmentJson is null ? new BibAssignment()
             : JsonSerializer.Deserialize<BibAssignment>(assignmentJson, new JsonSerializerOptions(JsonSerializerDefaults.Web))
                 ?? throw new InvalidDataException();
         var rows = new List<ImportRow>();
         var entries = new List<Registration>();
-        var plan = new ImportPlan(headers, mapping, rows, entries, null);
-        if (mapping.Values.Any(i => i < 0 || i >= headers.Length)
-            || mapping.Values.Distinct().Count() != mapping.Count
-            || mapping.Keys.Except(Columns).Any() || !Columns.Take(2).Append("Race").All(mapping.ContainsKey))
-            return plan with { Error = "Map First Name, Last Name and Race to distinct columns." };
+        var plan = new ImportPlan(rows, entries);
 
         var races = await RacesWithRegistrationOptions(item.Id)
             .Where(x => x.Status == RecordStatus.Active).ToListAsync(ct);
@@ -125,7 +131,7 @@ public sealed partial class RegistrationsController
         while (csv.Read())
         {
             if (rows.Count >= MaxRows) throw new InvalidDataException();
-            string? Value(string key) => mapping.TryGetValue(key, out var index) ? Optional(csv.GetField(index)) : null;
+            string? Value(string key) => columnIndexes.TryGetValue(key, out var index) ? Optional(csv.GetField(index)) : null;
             string? error;
             Registration? entry = null;
             if (csv.Parser.Count != headers.Length)
@@ -152,6 +158,8 @@ public sealed partial class RegistrationsController
                     error = "Check the format or length of the runner contact fields.";
                 else if ((date is not null && birth is null) || birth > DateOnly.FromDateTime(DateTime.UtcNow))
                     error = "Use a valid birthdate in YYYY-MM-DD or M/D/YYYY format.";
+                else if (Value("Race") is null)
+                    error = "Race is required.";
                 else if (raceMatches.Length != 1)
                     error = "Race must resolve to one active race in the event.";
                 else if (!TryStatus(Value("Registration Status"), RegistrationStatus.Pending, out var status)
@@ -200,6 +208,7 @@ public sealed partial class RegistrationsController
             rows.Add(new ImportRow(csv.Parser.RawRow, error, entry?.EffectiveBibDisplayName));
             if (entry is not null) entries.Add(entry);
         }
+        if (rows.Count == 0) return plan with { Error = "Add at least one registration below the template header." };
         var allocationError = BibAllocator.Allocate(options, existing.Select(x => x.BibNumber),
             entries.Select(x => x.BibNumber).ToArray(), out var bibs);
         if (allocationError is not null) return plan with { Error = allocationError };
@@ -246,14 +255,6 @@ public sealed partial class RegistrationsController
 
     private static bool Same(string? a, string? b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
-    private static bool HeaderMatches(string key, string header) => Same(key, header.Trim()) || key switch
-    {
-        "Name on Bib" => new[] { "Bib Name", "Display Name", "Preferred Name" }.Any(x => Same(x, header.Trim())),
-        "Race" => Same("Distance", header.Trim()) || Same("Race / Distance", header.Trim()),
-        "Team" => Same("Club", header.Trim()) || Same("Team / Club", header.Trim()),
-        _ => false
-    };
-
     private static bool TryStatus<T>(string? value, T fallback, out T result) where T : struct, Enum
     {
         result = fallback;
@@ -270,12 +271,12 @@ public sealed partial class RegistrationsController
 
     private string Actor() => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "";
     private static ITimeLimitedDataProtector Protector(IDataProtectionProvider protection) =>
-        protection.CreateProtector("RaceBib.Registration.Import.v2").ToTimeLimitedDataProtector();
+        protection.CreateProtector("RaceBib.Registration.Import.v3").ToTimeLimitedDataProtector();
 
-    private string Fingerprint(byte[] bytes, string? mapping, string? assignment, IEnumerable<Registration> entries) =>
+    private string Fingerprint(byte[] bytes, string? assignment, IEnumerable<Registration> entries) =>
         Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
         {
-            file = Convert.ToHexString(SHA256.HashData(bytes)), mapping, assignment,
+            file = Convert.ToHexString(SHA256.HashData(bytes)), assignment,
             assignments = entries.Select(x => new { x.RaceId, x.RaceCategoryId, x.StartWaveId, x.BibNumber,
                 existingRunnerId = db.Entry(x.Runner).State == EntityState.Unchanged ? x.Runner.Id : (Guid?)null,
                 x.Runner.FirstName, x.Runner.LastName, x.Runner.Birthdate })

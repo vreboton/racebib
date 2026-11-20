@@ -102,22 +102,21 @@
     <v-card title="Import runner registrations">
       <v-card-text>
         <v-alert v-if="error" type="error" class="mb-3">{{ error }}</v-alert>
-        <p class="mb-2">For a name shared by multiple runners, verify the profile and map a Runner ID column.</p>
-        <v-file-input label="Registration CSV" accept=".csv,text/csv" :model-value="csvFile"
+        <v-btn color="primary" class="mb-4" :href="templateUrl" download="racebib-registration-template.csv">
+          Download CSV Template
+        </v-btn>
+        <p class="mb-2">Keep the template headers and fill in First Name, Last Name, and Race. For runners who share a name, use the verified Runner ID.</p>
+        <v-file-input label="Registration CSV" accept=".csv,text/csv" :model-value="csvFile" :disabled="busy"
           @update:model-value="selectFile" />
-        <v-select v-model="importAssignment.mode" :items="modes" label="Bib assignment" @update:model-value="invalidate" />
+        <v-select v-model="importAssignment.mode" :items="modes" label="Bib assignment" :disabled="busy" @update:model-value="invalidate" />
         <div v-if="importAssignment.mode !== 0" class="d-flex flex-wrap ga-2">
-          <v-text-field v-model.number="importAssignment.start" label="Range start" type="number" @update:model-value="invalidate" />
-          <v-text-field v-model.number="importAssignment.end" label="Range end" type="number" @update:model-value="invalidate" />
-          <v-text-field v-model.number="importAssignment.width" label="Minimum digits" type="number" @update:model-value="invalidate" />
+          <v-text-field v-model.number="importAssignment.start" label="Range start" type="number" :disabled="busy" @update:model-value="invalidate" />
+          <v-text-field v-model.number="importAssignment.end" label="Range end" type="number" :disabled="busy" @update:model-value="invalidate" />
+          <v-text-field v-model.number="importAssignment.width" label="Minimum digits" type="number" :disabled="busy" @update:model-value="invalidate" />
         </div>
         <template v-if="preview">
-          <div class="mapping">
-            <v-select v-for="field in preview.fields" :key="field" :model-value="mapping[field] ?? null"
-              :items="headers" :label="field" clearable @update:model-value="mapField(field, $event)" />
-          </div>
           <v-alert v-if="preview.error" type="warning" class="mb-2">{{ preview.error }}</v-alert>
-          <p>{{ preview.validCount }} valid of {{ preview.rows.length }} rows in the last preview.</p>
+          <p v-if="preview.rows.length">{{ preview.validCount }} valid of {{ preview.rows.length }} rows in the last preview.</p>
           <v-list class="preview-rows" density="compact">
             <v-list-item v-for="row in preview.rows" :key="row.row" :title="'Row ' + row.row"
               :subtitle="row.error || [row.nameOnBib, row.bibNumber ?? 'Unassigned'].filter(Boolean).join(' · ')" />
@@ -128,8 +127,8 @@
       <v-card-actions>
         <v-btn @click="showImport = false">Close</v-btn>
         <v-spacer />
-        <v-btn :disabled="!csvFile" :loading="busy" @click="previewImport">Validate CSV</v-btn>
-        <v-btn color="primary" :disabled="!token" :loading="busy" @click="confirmImport">Confirm import</v-btn>
+        <v-btn :disabled="!csvFile" :loading="busy" @click="previewImport">Validate &amp; Preview</v-btn>
+        <v-btn color="primary" :disabled="!token" :loading="busy" @click="confirmImport">Confirm Import</v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>
@@ -166,9 +165,6 @@ interface Draft {
 interface Row extends Draft { id: string; effectiveBibDisplayName: string; runner: Profile }
 interface Change { action: string; timestampUtc: string }
 interface Preview {
-  headers: string[]
-  fields: string[]
-  mapping: Record<string, number>
   rows: { row: number; error?: string; nameOnBib?: string; bibNumber?: string | null }[]
   validCount: number
   token: string | null
@@ -209,9 +205,9 @@ const showImport = ref(false)
 const csvFile = ref<File | null>(null)
 const preview = ref<Preview | null>(null)
 const token = ref<string | null>(null)
-const submitted = ref<{ mapping?: string; assignment: string } | null>(null)
-const mapping = ref<Record<string, number>>({})
 const importAssignment = ref(assignment())
+const templateHeader = 'First Name,Last Name,Name on Bib,Gender,Birthdate,Email,Mobile Number,Race,Category,Start Wave,Bib Number,Team,Emergency Contact,Registration Status,Payment Status,Runner ID'
+const templateUrl = 'data:text/csv;charset=utf-8,' + encodeURIComponent('\uFEFF' + templateHeader + '\r\n')
 const selectedRace = computed(() => races.value.find(race => race.id === draft.value.raceId))
 const bibNameHint = computed(() => {
   if (draft.value.bibDisplayName?.trim()) return 'Printed bibs and public participant outputs use this name.'
@@ -220,7 +216,6 @@ const bibNameHint = computed(() => {
     ? 'Blank publishes the registered full name: ' + runner.firstName + ' ' + runner.lastName + '.'
     : 'Blank publishes the runner’s registered full name.'
 })
-const headers = computed(() => preview.value?.headers.map((title, value) => ({ title, value })) ?? [])
 const runnerLabel = (value: Profile) => value.firstName + ' ' + value.lastName + (value.email ? ' · ' + value.email : '')
 
 async function run(action: () => Promise<void>) {
@@ -320,41 +315,32 @@ function printBib() {
   document.body.append(bib)
   printWindow.print()
 }
-function invalidate() { token.value = null }
+function invalidate() {
+  token.value = null
+  preview.value = null
+}
 function selectFile(file: File | File[] | null) {
   csvFile.value = Array.isArray(file) ? file[0] ?? null : file
-  preview.value = null
-  mapping.value = {}
   invalidate()
 }
-function mapField(field: string, value: number | null) {
-  if (value === null) delete mapping.value[field]
-  else mapping.value[field] = value
-  invalidate()
-}
-function importForm(options: { mapping?: string; assignment: string }) {
+function importForm() {
   const form = new FormData()
   if (csvFile.value) form.append('file', csvFile.value)
-  if (options.mapping) form.append('mapping', options.mapping)
-  form.append('assignment', options.assignment)
+  form.append('assignment', JSON.stringify(importAssignment.value))
   return form
 }
 function previewImport() {
   return run(async () => {
     invalidate()
-    const options = { mapping: preview.value ? JSON.stringify(mapping.value) : undefined,
-      assignment: JSON.stringify(importAssignment.value) }
-    const { data } = await api.post<Preview>(registrationUrl + '/import/preview', importForm(options), { headers: { 'Content-Type': 'multipart/form-data' } })
+    const { data } = await api.post<Preview>(registrationUrl + '/import/preview', importForm(), { headers: { 'Content-Type': 'multipart/form-data' } })
     preview.value = data
-    mapping.value = { ...data.mapping }
-    submitted.value = options
     token.value = data.token
   })
 }
 function confirmImport() {
   return run(async () => {
-    if (!token.value || !submitted.value) return
-    const form = importForm(submitted.value)
+    if (!token.value) return
+    const form = importForm()
     form.append('token', token.value)
     invalidate()
     const { data } = await api.post<{ importedCount: number }>(registrationUrl + '/import/confirm', form, { headers: { 'Content-Type': 'multipart/form-data' } })
@@ -380,6 +366,5 @@ onMounted(() => run(async () => {
 </script>
 
 <style scoped>
-.mapping { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 0.5rem; }
 .preview-rows { max-height: 16rem; overflow: auto; }
 </style>
