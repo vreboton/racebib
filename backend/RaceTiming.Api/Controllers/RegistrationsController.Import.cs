@@ -25,7 +25,10 @@ public sealed partial class RegistrationsController
     private sealed record ImportRow(int Row, string? Error, string? NameOnBib = null, string? BibNumber = null,
         string? DefaultRaceReason = null, string? CsvRace = null, string? RaceName = null, string? Warning = null);
     private static readonly string[] RequiredColumns = ["First Name", "Last Name", "Email"];
-    private sealed record ImportPlan(List<ImportRow> Rows, List<Registration> Entries, string? Error = null);
+    private sealed record ImportPlan(List<ImportRow> Rows, List<Registration> Entries, string? Error = null)
+    {
+        public HashSet<Guid> RacesWithoutCategories { get; } = [];
+    }
     private sealed record ImportTicket(Guid Id, Guid EventId, string Actor, string Hash);
 
     [HttpPost("import/preview")]
@@ -74,9 +77,12 @@ public sealed partial class RegistrationsController
                 || ticket.Hash != Fingerprint(defaultRaceId, bytes, assignment, plan.Entries))
                 return Conflict("The file, default race, bib assignment, runner profile or event data changed. Preview again.");
 
+            // The preview uses the unresolved assignment. Provision only after validating the preview under the event lock.
+            var newCategories = plan.RacesWithoutCategories.ToDictionary(id => id, id => AddRegistrationCategory(id).Id);
             db.Registrations.AddRange(plan.Entries);
             foreach (var entry in plan.Entries)
             {
+                if (newCategories.TryGetValue(entry.RaceId, out var categoryId)) entry.RaceCategoryId = categoryId;
                 Record(entry, "Registration.Imported");
                 if (entry.BibNumber is not null) Record(entry, "Registration.BibChanged");
             }
@@ -96,7 +102,7 @@ public sealed partial class RegistrationsController
         var races = await RacesWithRegistrationOptions(item.Id).ToListAsync(ct);
         var defaultRace = races.SingleOrDefault(race => race.Id == defaultRaceId && race.Status == RecordStatus.Active);
         if (defaultRace is null)
-            return new([], [], "Select an active default Race Category belonging to this event.");
+            return new([], [], "Select an active default race from this event.");
 
         var racesByName = races.ToLookup(race => race.Name.Trim(), StringComparer.OrdinalIgnoreCase);
         var source = new UTF8Encoding(false, true).GetString(bytes).TrimStart('\uFEFF');
@@ -175,20 +181,23 @@ public sealed partial class RegistrationsController
                     var race = matches.Length == 1 ? matches[0] : defaultRace;
                     defaultRaceReason = matches.Length == 0 ? (csvRace is null ? "blank" : "unrecognized") : null;
                     raceName = matches.Length <= 1 ? race.Name : null;
-                    var category = race.Categories.FirstOrDefault(x => Same(x.Name, Value("Category")));
+                    var categoryName = Value("Category");
+                    var requestedCategory = race.Categories.FirstOrDefault(x => Same(x.Name, categoryName));
+                    var categoryError = ResolveCategory(race, requestedCategory?.Id, null, out var categoryId);
+                    var category = race.Categories.FirstOrDefault(x => x.Id == categoryId);
                     var wave = race.StartWaves.FirstOrDefault(x => Same(x.Name, Value("Start Wave")));
                     var profiles = profilesByEmail[email].Take(2).ToArray();
                     var profile = profiles.Length == 1 ? profiles[0] : null;
                     if (profile is not null && (first != profile.FirstName || last != profile.LastName))
                         warning = $"CSV name {first} {last} differs from the saved profile name. This import uses the saved profile for {profile.FirstName} {profile.LastName}.";
                     if (matches.Length > 1)
-                        error = "The Race column matches multiple Race Categories in this event. Use an unambiguous Race Category name.";
+                        error = "The Race column matches multiple races in this event. Use an unambiguous race name.";
                     else if (race.Status != RecordStatus.Active)
-                        error = "The CSV Race Category is inactive. Choose an active Race Category.";
+                        error = "The CSV race is inactive. Choose an active race.";
                     else if (profiles.Length > 1)
                         error = "This email matches multiple runner profiles in this organizer. Resolve the duplicate profiles before importing.";
-                    else if ((category is null && Value("Category") is not null) || (wave is null && Value("Start Wave") is not null))
-                        error = "Age Group or Start Wave does not belong to this Race Category.";
+                    else if ((requestedCategory is null && categoryName is not null) || (wave is null && Value("Start Wave") is not null))
+                        error = "Registration category or Start Wave does not belong to this race.";
                     else if (profile is not null && !profile.Birthdate.HasValue &&
                         (category?.MinimumAge.HasValue == true || category?.MaximumAge.HasValue == true))
                         error = "This Age Group requires a birthdate on the runner profile. Verify and save it, or choose an Age Group without age limits.";
@@ -197,18 +206,19 @@ public sealed partial class RegistrationsController
                         var runner = profile ?? new Runner { OrganizerId = item.OrganizerId,
                             FirstName = first, LastName = last, Email = email, Birthdate = birth, Gender = gender,
                             MobileNumber = mobile, EmergencyContact = emergency };
-                        var input = new RegistrationInput(race.Id, runner.Id, category?.Id, wave?.Id,
+                        var input = new RegistrationInput(race.Id, runner.Id, categoryId, wave?.Id,
                             Value("Name on Bib") ?? $"{first} {last}", Value("Bib Number"), Value("Team"),
                             RegistrationStatus.Confirmed, PaymentStatus.Paid, options);
                         if (registered.Contains(runner.Id))
                             error = "Duplicate registration. This runner is already registered for this event.";
                         else
-                            error = Validate(item, race, runner, input, null);
+                            error = categoryError ?? Validate(item, race, runner, input, null);
 
                         if (error is null)
                         {
                             entry = new Registration { EventId = item.Id, OrganizerId = item.OrganizerId, Runner = runner, RunnerId = runner.Id };
                             Apply(entry, input, input.BibNumber);
+                            if (race.Categories.Count == 0) plan.RacesWithoutCategories.Add(race.Id);
                         }
                     }
                 }

@@ -16,6 +16,54 @@ public sealed partial class MySqlApiIntegrationTests
 {
     [MySqlIntegrationFact]
     [Trait("Category", "MySqlIntegration")]
+    public async Task RaceOnlyRegistrationUsesTheManagedCategoryAndPreservesLegacyAssignments()
+    {
+        await using var data = new MySqlTestData(Services);
+        var account = await data.CreateAccountAsync();
+        var organizerId = await data.CreateOrganizerAsync(account, OrganizerRole.RaceDirector);
+        var eventId = await data.CreateEventAsync(organizerId);
+        using var client = Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await LoginAsync(client, account));
+        var raceId = await SeedRegistrationRace(client, eventId, ensureRegistrationCategory: true);
+        var events = $"/api/v1/events/{eventId}";
+        var path = events + "/registrations";
+        var profiles = $"/api/v1/organizers/{organizerId}/runners";
+        var runnerId = await CreatedId(await client.PostAsJsonAsync(profiles, new { firstName = "Manual", lastName = "Runner" }));
+        var registrationId = await CreatedId(await client.PostAsJsonAsync(path, new { raceId, runnerId }));
+
+        const string file = "First Name,Last Name,Email\nCSV,Runner,csv-race-only@example.test";
+        var preview = await PreviewRegistrationCsv(client, path, raceId, file);
+        Assert.Equal(1, preview.GetProperty("validCount").GetInt32());
+        using var form = ImportForm(raceId, file, token: preview.GetProperty("token").GetString());
+        using var imported = await client.PostAsync(path + "/import/confirm", form);
+        Assert.Equal(HttpStatusCode.OK, imported.StatusCode);
+
+        Guid categoryId;
+        using (var scope = Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+            categoryId = await db.RaceCategories.Where(x => x.RaceId == raceId).Select(x => x.Id).SingleAsync();
+            var registered = await db.Registrations.Where(x => x.RaceId == raceId).ToListAsync();
+            Assert.Equal(2, registered.Count);
+            Assert.All(registered, row => Assert.Equal(categoryId, row.RaceCategoryId));
+        }
+
+        await CreatedId(await client.PostAsJsonAsync($"{events}/races/{raceId}/categories", new { name = "Legacy" }));
+        var nextRunner = await CreatedId(await client.PostAsJsonAsync(profiles, new { firstName = "Next", lastName = "Runner" }));
+        using var ambiguous = await client.PostAsJsonAsync(path, new { raceId, runnerId = nextRunner });
+        Assert.Equal(HttpStatusCode.BadRequest, ambiguous.StatusCode);
+        Assert.Contains("multiple active registration categories", await ambiguous.Content.ReadAsStringAsync());
+        var ambiguousPreview = await PreviewRegistrationCsv(client, path, raceId,
+            file.Replace("csv-race-only@", "ambiguous@"));
+        Assert.Equal(0, ambiguousPreview.GetProperty("validCount").GetInt32());
+
+        using var edit = await client.PutAsJsonAsync($"{path}/{registrationId}", new { raceId, runnerId, team = "Updated" });
+        Assert.Equal(HttpStatusCode.OK, edit.StatusCode);
+        Assert.Equal(categoryId, (await edit.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("categoryId").GetGuid());
+    }
+
+    [MySqlIntegrationFact]
+    [Trait("Category", "MySqlIntegration")]
     public async Task RegistrationsEnforceScopeAndPreserveBibAndPublicIdentity()
     {
         await using var data = new MySqlTestData(Services);
@@ -411,6 +459,9 @@ public sealed partial class MySqlApiIntegrationTests
         using var scope = Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
         Assert.Equal(1, await db.Registrations.CountAsync(x => x.EventId == eventId && x.RunnerId == runnerId));
+        var categoryId = await db.RaceCategories.Where(x => x.RaceId == raceId).Select(x => x.Id).SingleAsync();
+        Assert.Equal(categoryId, await db.Registrations.Where(x => x.EventId == eventId && x.RunnerId == runnerId)
+            .Select(x => x.RaceCategoryId).SingleAsync());
         db.Registrations.Add(new RaceTiming.Domain.Entities.Registration
         {
             EventId = eventId, OrganizerId = organizerId, RaceId = raceId, RunnerId = runnerId
@@ -505,12 +556,12 @@ public sealed partial class MySqlApiIntegrationTests
         {
             var rejected = await PreviewRegistrationCsv(client, path, invalid, file);
             Assert.False(rejected.GetProperty("valid").GetBoolean());
-            Assert.Contains("active default Race Category", rejected.GetProperty("error").GetString());
+            Assert.Contains("active default race", rejected.GetProperty("error").GetString());
         }
         var invalidRow = await PreviewRegistrationCsv(client, path, raceId,
             header + "F,Runner,f@example.test,Unknown,Open,Early\nG,Runner,g@example.test,Retired,,");
-        Assert.Contains("Age Group or Start Wave does not belong to this Race Category", invalidRow.GetProperty("errorCsv").GetString());
-        Assert.Contains("CSV Race Category is inactive", invalidRow.GetProperty("errorCsv").GetString());
+        Assert.Contains("Registration category or Start Wave does not belong to this race", invalidRow.GetProperty("errorCsv").GetString());
+        Assert.Contains("CSV race is inactive", invalidRow.GetProperty("errorCsv").GetString());
 
         var preview = await PreviewRegistrationCsv(client, path, raceId, file);
         Assert.True(preview.GetProperty("valid").GetBoolean());
@@ -533,18 +584,20 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Equal(named.Id, saved["A"].RaceId);
         Assert.Equal(category.Id, saved["A"].RaceCategoryId);
         Assert.Equal(wave.Id, saved["A"].StartWaveId);
-        Assert.Null(saved["B"].RaceCategoryId);
+        Assert.Equal(category.Id, saved["B"].RaceCategoryId);
         Assert.Null(saved["C"].StartWaveId);
         Assert.Equal(raceId, saved["D"].RaceId);
-        Assert.Null(saved["D"].RaceCategoryId);
+        var defaultCategory = await db.RaceCategories.SingleAsync(x => x.RaceId == raceId);
+        Assert.Equal(defaultCategory.Id, saved["D"].RaceCategoryId);
         Assert.Null(saved["D"].StartWaveId);
         Assert.Equal(raceId, saved["E"].RaceId);
+        Assert.Equal(defaultCategory.Id, saved["E"].RaceCategoryId);
 
         // A leading-space legacy spelling can be distinct in MySQL but ambiguous after trimming.
         db.Races.Add(new Race { Name = " Summit", EventId = eventId, CourseId = race.CourseId, StartAtUtc = race.StartAtUtc, DistanceKm = 10 });
         await db.SaveChangesAsync();
         var ambiguous = await PreviewRegistrationCsv(client, path, raceId, header + "F,Runner,f@example.test,Summit,,");
-        Assert.Contains("matches multiple Race Categories", ambiguous.GetProperty("errorCsv").GetString());
+        Assert.Contains("matches multiple races", ambiguous.GetProperty("errorCsv").GetString());
     }
 
     [MySqlIntegrationFact]
@@ -583,7 +636,7 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Equal(2, await db.Registrations.CountAsync(x => x.RunnerId == runner.Id));
     }
 
-    private async Task<Guid> SeedRegistrationRace(HttpClient client, Guid eventId)
+    private async Task<Guid> SeedRegistrationRace(HttpClient client, Guid eventId, bool ensureRegistrationCategory = false)
     {
         var path = $"/api/v1/events/{eventId}";
         var courseId = await CreatedId(await client.PostAsJsonAsync(path + "/courses", new { name = "Course", distanceKm = 10 }));
@@ -601,7 +654,8 @@ public sealed partial class MySqlApiIntegrationTests
         var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
         var startAt = await db.Events.Where(x => x.Id == eventId).Select(x => x.StartDate).SingleAsync();
         return await CreatedId(await client.PostAsJsonAsync(path + "/races",
-            new { name = "10K", courseId, startAt = DateTime.SpecifyKind(startAt.AddMinutes(10), DateTimeKind.Utc) }));
+            new { name = "10K", courseId, startAt = DateTime.SpecifyKind(startAt.AddMinutes(10), DateTimeKind.Utc),
+                ensureRegistrationCategory }));
     }
 
     private static async Task<JsonElement> PreviewRegistrationCsv(HttpClient client, string path, Guid raceId, string file,

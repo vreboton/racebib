@@ -44,14 +44,22 @@
         </div>
       </v-card-text>
     </v-card>
-    <RegistrationPanel v-if="canEdit" :key="event.id" :event-id="event.id" :organizer-id="event.organizerId" />
-    <RaceConfigurationPanel :event-id="event.id" :zone="event.timeZoneId" />
+    <v-tabs v-model="managementTab" class="mt-5" aria-label="Event management">
+      <v-tab v-if="canEdit" value="registrations" id="registrations-tab" aria-controls="registrations">Runner Registrations</v-tab>
+      <v-tab value="configuration" id="configuration-tab" aria-controls="configuration">Race Configuration</v-tab>
+    </v-tabs>
+    <section v-if="managementTab === 'registrations'" id="registrations" role="tabpanel" aria-labelledby="registrations-tab">
+      <RegistrationPanel :key="event.id" :event-id="event.id" :organizer-id="event.organizerId" />
+    </section>
+    <section v-else id="configuration" role="tabpanel" aria-labelledby="configuration-tab">
+      <RaceConfigurationPanel :key="event.id" :event-id="event.id" :zone="event.timeZoneId" />
+    </section>
   </template>
   <v-snackbar v-model="success" color="success" timeout="2500">Event status updated.</v-snackbar>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { eventStatusTransitions, eventsApi, getApiError } from '../services/events'
 import type { EventDetails, EventStatus } from '../services/events'
@@ -69,8 +77,16 @@ const success = ref(false)
 const changingStatus = ref<EventStatus | null>(null)
 const canEdit = computed(() => Boolean(event.value && auth.canManageOrganizer(event.value.organizerId)))
 const transitions = computed(() => event.value ? eventStatusTransitions[event.value.status] : [])
+const managementTab = computed({
+  get: () => !canEdit.value || route.query.tab === 'configuration' ||
+    (route.query.tab !== 'registrations' && route.hash === '#configuration') ? 'configuration' : 'registrations',
+  set: (tab: string) => {
+    if (tab !== managementTab.value)
+      void router.push({ query: { ...route.query, tab } })
+  },
+})
 
-onMounted(load)
+watch(() => route.params.id, load, { immediate: true })
 async function load() {
   loading.value = true
   errorMessage.value = ''

@@ -114,6 +114,9 @@ public sealed partial class RegistrationsController(
             return Conflict("This runner already has a registration for this event.");
 
         var race = await RacesWithRegistrationOptions(item.Id).SingleOrDefaultAsync(x => x.Id == input.RaceId, ct);
+        var categoryError = ResolveCategory(race, input.CategoryId, entry, out var categoryId);
+        if (categoryError is not null) return BadRequest(categoryError);
+        input = input with { CategoryId = categoryId };
         var error = Validate(item, race, runner, input, entry);
         if (error is not null) return BadRequest(error);
         var previousBib = entry?.BibNumber;
@@ -130,6 +133,8 @@ public sealed partial class RegistrationsController(
         }
         if (entry is not null && input.Status == RegistrationStatus.Cancelled && previousBib != selectedBib)
             return Conflict("Cancellation must keep the existing bib reserved.");
+        if (race is { Categories.Count: 0 } && entry?.RaceId != race.Id)
+            input = input with { CategoryId = AddRegistrationCategory(race.Id).Id };
         entry ??= new Registration { EventId = item.Id, OrganizerId = item.OrganizerId, Runner = runner };
         entry.Runner = runner;
         Apply(entry, input, selectedBib);
@@ -142,6 +147,28 @@ public sealed partial class RegistrationsController(
 
     private IQueryable<Race> RacesWithRegistrationOptions(Guid eventId) => db.Races.AsNoTracking().AsSplitQuery()
         .Include(x => x.Categories).Include(x => x.StartWaves).Where(x => x.EventId == eventId);
+
+    internal static RaceCategory DefaultRegistrationCategory(Guid raceId) => new() { RaceId = raceId, Name = "Open" };
+
+    private RaceCategory AddRegistrationCategory(Guid raceId) =>
+        db.RaceCategories.Add(DefaultRegistrationCategory(raceId)).Entity;
+
+    private static string? ResolveCategory(Race? race, Guid? requested, Registration? existing, out Guid? categoryId)
+    {
+        categoryId = requested;
+        if (requested.HasValue || race is null) return null;
+        if (existing?.RaceId == race.Id)
+        {
+            categoryId = existing.RaceCategoryId;
+            return null;
+        }
+
+        var choices = race.Categories.Where(x => x.Status == RecordStatus.Active).Take(2).ToArray();
+        if (choices.Length > 1)
+            return "This race has multiple active registration categories. Specify the category for this legacy race.";
+        categoryId = choices.SingleOrDefault()?.Id;
+        return null;
+    }
 
     private static string? Validate(Event item, Race? race, Runner runner, RegistrationInput input, Registration? existing)
     {
@@ -158,12 +185,12 @@ public sealed partial class RegistrationsController(
         Guid? startWaveId, Registration? existing)
     {
         if (race is null || (race.Status != RecordStatus.Active && existing?.RaceId != race.Id))
-            return "Select an active Race Category from this event.";
+            return "Select an active race from this event.";
         if (ageGroupId is Guid categoryId)
         {
             var category = race.Categories.FirstOrDefault(x => x.Id == categoryId);
             if (category is null || (category.Status != RecordStatus.Active && existing?.RaceCategoryId != categoryId))
-                return "Select an active Age Group from this Race Category.";
+                return "Select an active registration category from this race.";
             if (category.MinimumAge.HasValue || category.MaximumAge.HasValue)
             {
                 var zone = TimeZoneInfo.FindSystemTimeZoneById(item.TimeZoneId);
@@ -180,7 +207,7 @@ public sealed partial class RegistrationsController(
         var allowedWave = existing?.StartWaveId;
         if (startWaveId is Guid waveId && !race.StartWaves.Any(x => x.Id == waveId
             && (x.Status == RecordStatus.Active || allowedWave == x.Id)))
-            return "Select an active Start Wave from this Race Category.";
+            return "Select an active Start Wave from this race.";
         return null;
     }
 
