@@ -135,6 +135,7 @@ public sealed partial class RaceConfigurationController
                 .MaxAsync(x => x.Version, ct);
             var revision = CopyCourse(source, source.Name, lastVersion + 1);
             db.Courses.Add(revision);
+            await CopyMappings(source, revision, ct);
             await db.SaveChangesAsync(ct);
             return Ok(new { revision.Id, revision.Version });
         });
@@ -162,9 +163,25 @@ public sealed partial class RaceConfigurationController
 
             var duplicate = CopyCourse(source, name, 1);
             db.Courses.Add(duplicate);
+            await CopyMappings(source, duplicate, ct);
             await db.SaveChangesAsync(ct);
             return Ok(new { duplicate.Id, duplicate.Name, duplicate.Version });
         });
+
+    private async Task CopyMappings(Course source, Course copy, CancellationToken ct)
+    {
+        var mappings = await db.Set<CheckpointMapping>().Where(x => x.CourseId == source.Id)
+            .ToDictionaryAsync(x => x.OccurrenceId, x => x.CheckpointId, ct);
+        var originalIds = source.Checkpoints.ToDictionary(x => x.Sequence, x => x.Id);
+        foreach (var point in copy.Checkpoints)
+        {
+            if (mappings.TryGetValue(originalIds[point.Sequence], out var location))
+                db.Add(new CheckpointMapping
+                {
+                    CourseId = copy.Id, OccurrenceId = point.Id, EventId = copy.EventId, CheckpointId = location
+                });
+        }
+    }
 
     private static Course CopyCourse(Course source, string name, int version, bool copyCheckpoints = true)
     {
@@ -293,6 +310,7 @@ public sealed partial class RaceConfigurationController
         var version = await CourseFamily(source).MaxAsync(x => x.Version, ct) + 1;
         var revision = CopyCourse(source, source.Name, version, copyCheckpoints);
         db.Courses.Add(revision);
+        if (copyCheckpoints) await CopyMappings(source, revision, ct);
         foreach (var race in races.Where(IsActiveRace)) race.CourseId = revision.Id;
         return revision;
     }

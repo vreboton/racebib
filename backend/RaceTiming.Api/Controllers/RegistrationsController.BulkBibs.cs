@@ -103,13 +103,17 @@ public sealed partial class RegistrationsController
         if (entries.Count > BulkBibScopeLimit)
             return (null, $"A preview supports at most {BulkBibScopeLimit:N0} registrations in scope. Choose a smaller race.");
 
+        var frozenWithoutBib = await FrozenRoster(item.Id)
+            .Where(x => query.Any(entry => entry.Id == x.RegistrationId && entry.BibNumber == null))
+            .Select(x => x.RegistrationId).ToListAsync(ct);
+        var frozenIds = frozenWithoutBib.ToHashSet();
         var rows = entries.Select(entry => new BulkBibRow(entry.Id,
             entry.Runner.FirstName + " " + entry.Runner.LastName, entry.Race.Name, entry.BibNumber, null,
+            frozenIds.Contains(entry.Id) ? FrozenIdentityError :
             BulkBibEligibility.SkipReason(entry.RegistrationStatus, entry.Race.Status, entry.BibNumber, entry.CheckedInAtUtc.HasValue)))
             .ToArray();
         var eligibleCount = rows.Count(row => row.SkipReason is null);
-        List<string?> occupied = eligibleCount == 0 ? [] : await db.Registrations.Where(x => x.EventId == item.Id && x.BibNumber != null)
-            .Select(x => x.BibNumber).ToListAsync(ct);
+        List<string?> occupied = eligibleCount == 0 ? [] : await OccupiedBibs(item.Id).ToListAsync(ct);
         var error = BibAllocator.Allocate(new(BibAssignmentMode.Automatic, input.Start, input.End, input.Width),
             occupied, new string?[eligibleCount], out var assigned);
         var hasCollationConflict = false;
@@ -117,8 +121,7 @@ public sealed partial class RegistrationsController
         {
             // Legacy values can compare equal only under the unique index's database collation.
             var proposed = assigned.OfType<string>().ToArray();
-            hasCollationConflict = await db.Registrations.AnyAsync(x => x.EventId == item.Id && x.BibNumber != null &&
-                proposed.Contains(x.BibNumber), ct);
+            hasCollationConflict = await OccupiedBibs(item.Id).AnyAsync(bib => proposed.Contains(bib!), ct);
         }
         if (error is null && !hasCollationConflict)
         {

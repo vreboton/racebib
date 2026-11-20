@@ -231,9 +231,12 @@ public sealed partial class RegistrationsController
             if (entry is not null) entries.Add(entry);
         }
         if (rows.Count == 0) return plan with { Error = "Add at least one registration below the template header." };
-        var allocationError = BibAllocator.Allocate(options, existing.Select(x => x.BibNumber),
+        var frozenBibs = await FrozenRoster(item.Id).Select(x => x.BibNumber).ToListAsync(ct);
+        var allocationError = BibAllocator.Allocate(options, existing.Select(x => x.BibNumber).Concat(frozenBibs),
             entries.Select(x => x.BibNumber).ToArray(), out var bibs);
         if (allocationError is not null) return plan with { Error = allocationError };
+        if (await HasFrozenBibConflict(item.Id, null, bibs.OfType<string>().ToArray(), ct))
+            return plan with { Error = FrozenIdentityError };
         int assigned = 0;
         for (var i = 0; i < rows.Count; i++)
         {
