@@ -96,7 +96,7 @@ public sealed partial class RegistrationsController
         var races = await RacesWithRegistrationOptions(item.Id).ToListAsync(ct);
         var defaultRace = races.SingleOrDefault(race => race.Id == defaultRaceId && race.Status == RecordStatus.Active);
         if (defaultRace is null)
-            return new([], [], "Select an active default race belonging to this event.");
+            return new([], [], "Select an active default Race Category belonging to this event.");
 
         var racesByName = races.ToLookup(race => race.Name.Trim(), StringComparer.OrdinalIgnoreCase);
         var source = new UTF8Encoding(false, true).GetString(bytes).TrimStart('\uFEFF');
@@ -182,13 +182,13 @@ public sealed partial class RegistrationsController
                     if (profile is not null && (first != profile.FirstName || last != profile.LastName))
                         warning = $"CSV name {first} {last} differs from the saved profile name. This import uses the saved profile for {profile.FirstName} {profile.LastName}.";
                     if (matches.Length > 1)
-                        error = "The CSV race name matches multiple races in this event. Use an unambiguous race name.";
+                        error = "The Race column matches multiple Race Categories in this event. Use an unambiguous Race Category name.";
                     else if (race.Status != RecordStatus.Active)
-                        error = "The CSV race is inactive. Choose an active race.";
+                        error = "The CSV Race Category is inactive. Choose an active Race Category.";
                     else if (profiles.Length > 1)
                         error = "This email matches multiple runner profiles in this organizer. Resolve the duplicate profiles before importing.";
                     else if ((category is null && Value("Category") is not null) || (wave is null && Value("Start Wave") is not null))
-                        error = "Category or wave does not belong to this race.";
+                        error = "Age Group or Start Wave does not belong to this Race Category.";
                     else if (profile is not null && !profile.Birthdate.HasValue &&
                         (category?.MinimumAge.HasValue == true || category?.MaximumAge.HasValue == true))
                         error = "This Age Group requires a birthdate on the runner profile. Verify and save it, or choose an Age Group without age limits.";

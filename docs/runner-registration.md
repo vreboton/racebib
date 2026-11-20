@@ -18,9 +18,9 @@ The RD or registration provider administers the applicable Registration Guidelin
 
 1. Open the event, select **Import CSV**, and choose **Download CSV Template**. The [fictional sample](./runner-registration-sample.csv) shows two completed rows.
 2. Fill in First Name, Last Name, and Email on every data row. Leave optional fields blank as needed.
-3. Select an active **Default Race**, upload a UTF-8 comma-delimited CSV, choose a bib assignment mode, then select **Validate & Preview**. The limit is 1 MiB and 1,000 data rows.
-4. Review row errors, proposed bibs, and any rows assigned to the default race. Download the error report to correct invalid rows.
-5. Select **Confirm Import** within 20 minutes of a valid preview. Confirmation rechecks the file, default race and proposed assignments. Validate again if any input or relevant event data changes.
+3. Select an active **Default Race Category**, upload a UTF-8 comma-delimited CSV, choose a bib assignment mode, then select **Validate & Preview**. The limit is 1 MiB and 1,000 data rows.
+4. Review row errors, proposed bibs, and any rows assigned to the default Race Category. Download the error report to correct invalid rows.
+5. Select **Confirm Import** within 20 minutes of a valid preview. Confirmation rechecks the file, default Race Category and proposed assignments. Validate again if any input or relevant event data changes.
 
 Keep the exact template header names. Column order can vary, and optional columns can be omitted.
 
@@ -30,7 +30,7 @@ First Name,Last Name,Name on Bib,Gender,Birthdate,Email,Mobile Number,Race,Categ
 
 Email is trimmed and matched case-insensitively within the organizer. A unique email match reuses the saved profile and its data. If the CSV name differs, the preview identifies the saved profile in a row warning and still allows confirmation. An unmatched valid email creates a profile at confirmation. A blank or invalid email, duplicate email row, or email shared by multiple organizer profiles must be corrected before import. Resolve duplicate profiles before importing. Each runner can have only one registration per event.
 
-Race values match event race names exactly after trimming, ignoring case. A blank or unrecognized value uses the selected active default race. The preview identifies the affected rows and the confirmation reports how many registrations used the fallback. Ambiguous or inactive matches are errors. Category and Start Wave may be blank and remain unassigned. Populated values must belong to the resolved race.
+The Race column matches Race Category names exactly after trimming, ignoring case. A blank or unrecognized value uses the selected active default Race Category. The preview identifies the affected rows and the confirmation reports how many registrations used the fallback. Ambiguous or inactive matches are errors. The Category column identifies the Age Group. The Category and Start Wave columns may be blank. Populated values must belong to the resolved Race Category.
 
 Imports set registration status to **Confirmed** and payment status to **Paid**. The old Runner ID and status headers are unsupported. Enter dates as YYYY-MM-DD or M/D/YYYY, and keep bib numbers as text in the spreadsheet to preserve leading zeros.
 

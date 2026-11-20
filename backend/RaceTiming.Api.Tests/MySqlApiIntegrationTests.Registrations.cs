@@ -114,7 +114,7 @@ public sealed partial class MySqlApiIntegrationTests
         var raceId = await SeedRegistrationRace(client, eventId);
         var path = $"/api/v1/events/{eventId}/registrations";
         const string mixed = """{"mode":2,"start":1,"end":9,"width":3}""";
-        const string file = "\uFEFFFirst Name,Last Name,Name on Bib,Email,Race,Bib Number\r\nAna,Reyes,\"Ána, Junior\",ana@example.test,10K,\r\nBen,Cruz,Benny,ben@example.test,10K,001\r\n";
+        const string file = "\uFEFFFirst Name,Last Name,Name on Bib,Email,Race,Bib Number\r\nÁna,Reyes,\"Ána, Junior\",ana@example.test,10K,\r\nBen,Cruz,Benny,ben@example.test,10K,001\r\n";
         using var deniedForm = ImportForm(raceId, file, mixed);
         using var denied = await deniedClient.PostAsync(path + "/import/preview", deniedForm);
         Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
@@ -123,7 +123,7 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
         var missing = await PreviewRegistrationCsv(client, path, raceId, "First Name,Race\nAna,10");
         Assert.False(missing.GetProperty("valid").GetBoolean());
-        var duplicate = await PreviewRegistrationCsv(client, path, raceId, file + "Ana,Reyes,Ana,ana@example.test,10K,003\r\n", mixed);
+        var duplicate = await PreviewRegistrationCsv(client, path, raceId, file + "Ána,Reyes,Ana,ana@example.test,10K,003\r\n", mixed);
         Assert.False(duplicate.GetProperty("valid").GetBoolean());
         Assert.Contains("Duplicate", duplicate.GetProperty("errorCsv").GetString());
         var fixture = await PreviewRegistrationCsv(client, path, raceId, file, mixed);
@@ -505,12 +505,12 @@ public sealed partial class MySqlApiIntegrationTests
         {
             var rejected = await PreviewRegistrationCsv(client, path, invalid, file);
             Assert.False(rejected.GetProperty("valid").GetBoolean());
-            Assert.Contains("active default race", rejected.GetProperty("error").GetString());
+            Assert.Contains("active default Race Category", rejected.GetProperty("error").GetString());
         }
         var invalidRow = await PreviewRegistrationCsv(client, path, raceId,
             header + "F,Runner,f@example.test,Unknown,Open,Early\nG,Runner,g@example.test,Retired,,");
-        Assert.Contains("Category or wave does not belong to this race", invalidRow.GetProperty("errorCsv").GetString());
-        Assert.Contains("CSV race is inactive", invalidRow.GetProperty("errorCsv").GetString());
+        Assert.Contains("Age Group or Start Wave does not belong to this Race Category", invalidRow.GetProperty("errorCsv").GetString());
+        Assert.Contains("CSV Race Category is inactive", invalidRow.GetProperty("errorCsv").GetString());
 
         var preview = await PreviewRegistrationCsv(client, path, raceId, file);
         Assert.True(preview.GetProperty("valid").GetBoolean());
@@ -544,7 +544,7 @@ public sealed partial class MySqlApiIntegrationTests
         db.Races.Add(new Race { Name = " Summit", EventId = eventId, CourseId = race.CourseId, StartAtUtc = race.StartAtUtc, DistanceKm = 10 });
         await db.SaveChangesAsync();
         var ambiguous = await PreviewRegistrationCsv(client, path, raceId, header + "F,Runner,f@example.test,Summit,,");
-        Assert.Contains("matches multiple races", ambiguous.GetProperty("errorCsv").GetString());
+        Assert.Contains("matches multiple Race Categories", ambiguous.GetProperty("errorCsv").GetString());
     }
 
     [MySqlIntegrationFact]

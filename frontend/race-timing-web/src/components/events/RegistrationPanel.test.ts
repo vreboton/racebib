@@ -38,7 +38,7 @@ async function mountImport(races = [activeRace, inactiveRace]) {
     await flushPromises()
     return file
   }
-  const defaultRace = wrapper.findAllComponents({ name: 'FixtureSelect' }).find(item => item.props('label') === 'Default Race')!
+  const defaultRace = wrapper.findAllComponents({ name: 'FixtureSelect' }).find(item => item.props('label') === 'Default Race Category')!
   const selectDefault = async () => {
     defaultRace.vm.$emit('update:modelValue', activeRace.id)
     await flushPromises()
@@ -153,12 +153,12 @@ it('describes optional classifications and default race fallback in preview and 
   await selectDefault()
   await button('Validate & Preview').trigger('click')
   await flushPromises()
-  expect(wrapper.text()).toContain('2 rows use the default race.')
-  expect(wrapper.text()).toContain('default, CSV race blank')
-  expect(wrapper.text()).toContain('default, CSV race “Unknown” not found')
+  expect(wrapper.text()).toContain('2 rows use the default Race Category.')
+  expect(wrapper.text()).toContain('default, Race column blank')
+  expect(wrapper.text()).toContain('default, Race value “Unknown” not found')
   await button('Confirm Import').trigger('click')
   await flushPromises()
-  expect(wrapper.text()).toContain('Assigned 2 to the default race.')
+  expect(wrapper.text()).toContain('Assigned 2 to the default Race Category.')
   wrapper.unmount()
 })
 

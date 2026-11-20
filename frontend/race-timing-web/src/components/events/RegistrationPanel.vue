@@ -105,7 +105,7 @@
           Upload a CSV containing First Name, Last Name, and Email. Category and Start Wave are optional.
           <a :href="templateUrl" download="racebib-registration-template.csv">Download CSV Template</a>
         </p>
-        <v-alert v-if="!eligibleRaces.length" type="warning" class="mb-3">Add an active race to this event before importing.</v-alert>
+        <v-alert v-if="!eligibleRaces.length" type="warning" class="mb-3">Add an active Race Category to this event before importing.</v-alert>
         <v-file-input label="Registration CSV" accept=".csv,text/csv" :model-value="csvFile" :disabled="busy"
           @update:model-value="selectFile" />
         <v-select v-model="importAssignment.mode" :items="modes" label="Bib assignment" :disabled="busy" @update:model-value="invalidate" />
@@ -114,13 +114,13 @@
           <v-text-field v-model.number="importAssignment.end" label="Range end" type="number" :disabled="busy" @update:model-value="invalidate" />
           <v-text-field v-model.number="importAssignment.width" label="Minimum digits" type="number" :disabled="busy" @update:model-value="invalidate" />
         </div>
-        <v-select v-model="defaultRaceId" :items="eligibleRaces" item-title="name" item-value="id" label="Default Race"
+        <v-select v-model="defaultRaceId" :items="eligibleRaces" item-title="name" item-value="id" label="Default Race Category"
           :disabled="busy || !eligibleRaces.length" @update:model-value="invalidate" />
-        <p class="mb-2">Blank or unrecognized CSV race names use the default race.</p>
+        <p class="mb-2">Blank or unrecognized values in the Race column use the default Race Category.</p>
         <template v-if="preview">
           <v-alert v-if="preview.error" type="warning" class="mb-2">{{ preview.error }}</v-alert>
           <p v-if="preview.rows.length">{{ preview.validCount }} valid of {{ preview.rows.length }} rows in the last preview.</p>
-          <p v-if="preview.defaultRaceCount">{{ preview.defaultRaceCount }} rows use the default race.</p>
+          <p v-if="preview.defaultRaceCount">{{ preview.defaultRaceCount }} rows use the default Race Category.</p>
           <v-list class="preview-rows" density="compact">
             <v-list-item v-for="row in preview.rows" :key="row.row" :title="'Row ' + row.row"
               :subtitle="row.error || previewRowSummary(row)">
@@ -365,7 +365,7 @@ function confirmImport() {
     invalidate()
     const { data } = await api.post<{ importedCount: number; defaultRaceCount: number }>(registrationUrl + '/import/confirm', form, { headers: { 'Content-Type': 'multipart/form-data' } })
     notice.value = 'Imported ' + data.importedCount + ' registrations.'
-    if (data.defaultRaceCount) notice.value += ' Assigned ' + data.defaultRaceCount + ' to the default race.'
+    if (data.defaultRaceCount) notice.value += ' Assigned ' + data.defaultRaceCount + ' to the default Race Category.'
     showImport.value = false
     selectFile(null)
     await loadRows()
@@ -373,9 +373,9 @@ function confirmImport() {
 }
 function previewRowSummary(row: Preview['rows'][number]) {
   const race = row.defaultRaceReason === 'blank'
-    ? row.raceName + ' (default, CSV race blank)'
+    ? row.raceName + ' (default, Race column blank)'
     : row.defaultRaceReason === 'unrecognized'
-      ? row.raceName + ' (default, CSV race “' + row.csvRace + '” not found)'
+      ? row.raceName + ' (default, Race value “' + row.csvRace + '” not found)'
       : row.raceName
   return [row.nameOnBib, row.bibNumber ?? 'Unassigned', race].filter(Boolean).join(' · ')
 }
