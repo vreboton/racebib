@@ -39,16 +39,20 @@ public sealed partial class MySqlApiIntegrationTests
             StartAtUtc = active.StartAtUtc, DistanceKm = active.DistanceKm, Status = RecordStatus.Inactive };
         var emptyRace = new Race { EventId = eventId, CourseId = active.CourseId, Name = "Empty",
             StartAtUtc = active.StartAtUtc, DistanceKm = active.DistanceKm };
+        var emptyInactiveRace = new Race { EventId = eventId, CourseId = active.CourseId, Name = "Empty retired race",
+            StartAtUtc = active.StartAtUtc, DistanceKm = active.DistanceKm, Status = RecordStatus.Inactive };
+        var withdrawnOnlyRace = new Race { EventId = eventId, CourseId = active.CourseId, Name = "Retired with withdrawals",
+            StartAtUtc = active.StartAtUtc, DistanceKm = active.DistanceKm, Status = RecordStatus.Inactive };
         var category = new RaceCategory { RaceId = inactive.Id, Name = "Retired category", Status = RecordStatus.Inactive };
         var checkedIn = BulkRunner(eventId, organizerId, raceId, "Checked", 1, RegistrationStatus.Confirmed, "0007");
         checkedIn.CheckedInAtUtc = new DateTime(2026, 1, 1, 6, 0, 0, DateTimeKind.Utc);
         var historicalCategory = BulkRunner(eventId, organizerId, inactive.Id, "Retired", 2, RegistrationStatus.Confirmed, "BAD BIB");
         historicalCategory.RaceCategoryId = category.Id;
-        db.AddRange(inactive, emptyRace, category, checkedIn, historicalCategory,
+        db.AddRange(inactive, emptyRace, emptyInactiveRace, withdrawnOnlyRace, category, checkedIn, historicalCategory,
             BulkRunner(eventId, organizerId, raceId, "Bibless Confirmed", 3, RegistrationStatus.Confirmed),
             BulkRunner(eventId, organizerId, raceId, "Pending", 4),
             BulkRunner(eventId, organizerId, raceId, "Waitlisted", 5, RegistrationStatus.Waitlisted),
-            BulkRunner(eventId, organizerId, inactive.Id, "Withdrawn", 6, RegistrationStatus.Cancelled, "0009"),
+            BulkRunner(eventId, organizerId, withdrawnOnlyRace.Id, "Withdrawn", 6, RegistrationStatus.Cancelled, "0009"),
             BulkRunner(eventId, organizerId, raceId, "DNF", 7, RegistrationStatus.Dnf),
             BulkRunner(eventId, organizerId, raceId, "DNS", 8, RegistrationStatus.Dns),
             BulkRunner(eventId, organizerId, raceId, "DQ", 9, RegistrationStatus.Disqualified));
@@ -69,7 +73,7 @@ public sealed partial class MySqlApiIntegrationTests
         {
             ["total"] = 9, ["confirmed"] = 3, ["pending"] = 1, ["waitlisted"] = 1, ["withdrawn"] = 1,
             ["historical"] = 3, ["confirmedWithoutBib"] = 1, ["bibsAssigned"] = 3,
-            ["confirmedCheckedIn"] = 1, ["confirmedNotCheckedIn"] = 2, ["inactiveRacesWithRegistrations"] = 1,
+            ["confirmedCheckedIn"] = 1, ["confirmedNotCheckedIn"] = 2, ["inactiveRacesWithRegistrations"] = 2,
             ["inactiveRaceConfirmed"] = 1, ["eligibleWithoutBib"] = 3, ["invalidBibs"] = 1, ["duplicateBibs"] = 0,
         };
         foreach (var (field, value) in expected) Assert.Equal(value, summary.GetProperty(field).GetInt32());
@@ -79,10 +83,33 @@ public sealed partial class MySqlApiIntegrationTests
             warning => warning.GetProperty("level").GetString() == "attention");
         Assert.DoesNotContain("\"Checked\"", report.GetRawText(), StringComparison.Ordinal);
         var races = report.GetProperty("races").EnumerateArray().ToArray();
-        Assert.Equal(3, races.Length);
+        Assert.Equal(5, races.Length);
         Assert.Equal(7, RaceCounts(raceId).GetProperty("total").GetInt32());
-        Assert.Equal(1, RaceCounts(inactive.Id).GetProperty("confirmed").GetInt32());
         Assert.Equal(0, RaceCounts(emptyRace.Id).GetProperty("total").GetInt32());
+        Assert.Equal("attention", RaceReport(emptyRace.Id).GetProperty("assessment").GetProperty("level").GetString());
+
+        var emptyInactive = RaceReport(emptyInactiveRace.Id);
+        Assert.False(emptyInactive.GetProperty("active").GetBoolean());
+        Assert.Equal(0, RaceCounts(emptyInactiveRace.Id).GetProperty("total").GetInt32());
+        Assert.Equal(0, RaceCounts(emptyInactiveRace.Id).GetProperty("inactiveRacesWithRegistrations").GetInt32());
+        var emptyInactiveAssessment = emptyInactive.GetProperty("assessment");
+        Assert.Equal("ready", emptyInactiveAssessment.GetProperty("level").GetString());
+        Assert.Empty(emptyInactiveAssessment.GetProperty("warnings").EnumerateArray());
+
+        var withdrawnCounts = RaceCounts(withdrawnOnlyRace.Id);
+        Assert.Equal(1, withdrawnCounts.GetProperty("total").GetInt32());
+        Assert.Equal(1, withdrawnCounts.GetProperty("withdrawn").GetInt32());
+        Assert.Equal(0, withdrawnCounts.GetProperty("confirmed").GetInt32());
+        Assert.Equal(1, withdrawnCounts.GetProperty("inactiveRacesWithRegistrations").GetInt32());
+        Assert.Equal("attention", RaceReport(withdrawnOnlyRace.Id).GetProperty("assessment").GetProperty("level").GetString());
+
+        var confirmedCounts = RaceCounts(inactive.Id);
+        Assert.Equal(1, confirmedCounts.GetProperty("confirmed").GetInt32());
+        Assert.Equal(1, confirmedCounts.GetProperty("inactiveRacesWithRegistrations").GetInt32());
+        Assert.Equal("actionRequired", RaceReport(inactive.Id).GetProperty("assessment").GetProperty("level").GetString());
+        var inactiveWarning = Assert.Single(assessment.GetProperty("warnings").EnumerateArray(),
+            warning => warning.GetProperty("label").GetString() == "Inactive races with registrations");
+        Assert.Equal(2, inactiveWarning.GetProperty("count").GetInt32());
         foreach (var (field, value) in expected)
             Assert.Equal(value, races.Sum(race => race.GetProperty("counts").GetProperty(field).GetInt32()));
 
@@ -93,7 +120,8 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Equal(before, await BulkState(db, eventId));
         Assert.Equal(auditsBefore, await db.AuditRecords.CountAsync(x => x.OrganizerId == organizerId));
 
-        JsonElement RaceCounts(Guid id) => Assert.Single(races, race => race.GetProperty("id").GetGuid() == id).GetProperty("counts");
+        JsonElement RaceReport(Guid id) => Assert.Single(races, race => race.GetProperty("id").GetGuid() == id);
+        JsonElement RaceCounts(Guid id) => RaceReport(id).GetProperty("counts");
     }
 
     [MySqlIntegrationFact]

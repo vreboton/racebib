@@ -18,7 +18,7 @@ public sealed record ReadinessCounts(
         races.Sum(x => x.PendingOrWaitlistedEligibleWithoutBib),
         races.Sum(x => x.InvalidBibs), races.Sum(x => x.DuplicateBibs));
 
-    public ReadinessAssessment Assess()
+    public ReadinessAssessment Assess(bool expectConfirmed = true)
     {
         var warnings = new List<ReadinessWarning>();
         Add("actionRequired", ConfirmedWithoutBib, "Confirmed registrations without bibs");
@@ -28,7 +28,7 @@ public sealed record ReadinessCounts(
         Add("attention", PendingOrWaitlistedEligibleWithoutBib,
             "Pending or waitlisted registrations eligible for a bib");
         Add("attention", InactiveRacesWithRegistrations, "Inactive races with registrations");
-        if (Confirmed == 0) warnings.Add(new("attention", null, "No confirmed registrations"));
+        if (expectConfirmed && Confirmed == 0) warnings.Add(new("attention", null, "No confirmed registrations"));
         var level = warnings.FirstOrDefault()?.Level ?? "ready";
         return new(level, warnings);
 

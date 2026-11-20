@@ -15,7 +15,7 @@ Open **Race readiness** under **Runner Registrations**. The event summary always
 
 **Action required** covers confirmed registrations without bibs, confirmed registrations in inactive races, invalid stored bibs, and registrations sharing a bib under the event's database collation. Invalid bibs use the allocator's ASCII, length, and allowed-character rules. The event-wide unique index normally prevents duplicates.
 
-**Attention** covers unassigned Pending or Waitlisted registrations eligible for a bib, inactive races retaining registrations, and a scope with no confirmed registrations. **Ready** means the registration roster has no listed warnings. Check-in progress is informational. The assessment covers registration readiness only.
+**Attention** covers unassigned Pending or Waitlisted registrations eligible for a bib, inactive races retaining registrations, and a scope with no confirmed registrations. An empty inactive race is still listed with zero counts and no warnings. **Ready** means the registration roster has no listed warnings. Check-in progress is informational. The assessment covers registration readiness only.
 
 ## API and roster
 

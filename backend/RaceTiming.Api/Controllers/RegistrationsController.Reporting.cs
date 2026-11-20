@@ -63,9 +63,9 @@ public sealed partial class RegistrationsController
                 var counts = grouped.TryGetValue(race.Id, out var row) ? new ReadinessCounts(
                     row.Total, row.Confirmed, row.Pending, row.Waitlisted, row.Withdrawn, row.Historical,
                     row.ConfirmedWithoutBib, row.BibsAssigned, row.ConfirmedCheckedIn, row.Confirmed - row.ConfirmedCheckedIn,
-                    active ? 0 : 1, active ? 0 : row.Confirmed, active ? row.EligibleWithoutBib : 0,
+                    !active && row.Total > 0 ? 1 : 0, active ? 0 : row.Confirmed, active ? row.EligibleWithoutBib : 0,
                     active ? row.PendingOrWaitlistedEligibleWithoutBib : 0, row.InvalidBibs, row.DuplicateBibs) : new();
-                return new { race.Id, race.Name, active, counts, assessment = counts.Assess() };
+                return new { race.Id, race.Name, active, counts, assessment = counts.Assess(expectConfirmed: active || counts.Total > 0) };
             }).ToArray();
             var summary = ReadinessCounts.Sum(breakdown.Select(x => x.counts).ToArray());
             return Ok(new { summary, assessment = summary.Assess(), races = breakdown });
