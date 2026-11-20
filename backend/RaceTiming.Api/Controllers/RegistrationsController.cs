@@ -75,6 +75,7 @@ public sealed partial class RegistrationsController(
             if (entry.Version != input.Version) return StaleRegistration();
             var previousStatus = entry.RegistrationStatus;
             if (previousStatus == RegistrationStatus.Cancelled) return NoContent();
+            if (entry.CheckedInAtUtc.HasValue) return ReverseCheckInFirst();
             if (!CanSetStatus(previousStatus, RegistrationStatus.Cancelled))
                 return BadRequest("This registration cannot be withdrawn from its current status.");
             entry.RegistrationStatus = RegistrationStatus.Cancelled;
@@ -100,6 +101,7 @@ public sealed partial class RegistrationsController(
             var error = BibAllocator.Allocate(input.Assignment ?? new(), occupied, [input.BibNumber], out var bibs);
             if (error is not null) return Conflict(error);
             if (entry.BibNumber == bibs[0]) return NoContent();
+            if (entry.CheckedInAtUtc.HasValue) return ReverseCheckInFirst();
             entry.BibNumber = bibs[0];
             entry.Version++;
             Record(entry, "Registration.BibChanged");
@@ -148,6 +150,10 @@ public sealed partial class RegistrationsController(
         if ((previousStatus == RegistrationStatus.Cancelled || status == RegistrationStatus.Cancelled)
             && previousBib != selectedBib)
             return Conflict("Withdrawing or reopening a registration must keep its existing bib reserved.");
+        if (entry?.CheckedInAtUtc is not null &&
+            (entry.RaceId != input.RaceId || entry.RaceCategoryId != input.CategoryId ||
+             entry.StartWaveId != input.WaveId || entry.BibNumber != selectedBib || previousStatus != status))
+            return ReverseCheckInFirst();
         if (needsManagedCategory)
             input = input with { CategoryId = await ApplyManagedCategory(db, input.RaceId,
                 await PlanManagedCategory(db, input.RaceId, ct), ct) };
@@ -288,7 +294,7 @@ public sealed partial class RegistrationsController(
 
     private static object Admin(Registration x) => new
     {
-        x.Id, x.Version, x.RunnerId, x.RaceId, categoryId = x.RaceCategoryId, waveId = x.StartWaveId,
+        x.Id, x.Version, checkedInAtUtc = CheckInTimestamp(x), x.RunnerId, x.RaceId, categoryId = x.RaceCategoryId, waveId = x.StartWaveId,
         x.BibNumber, x.BibDisplayName, x.EffectiveBibDisplayName, x.Team,
         status = (int)x.RegistrationStatus, paymentStatus = (int)x.PaymentStatus,
         runner = new { x.Runner.FirstName, x.Runner.LastName, x.Runner.Email, x.Runner.Gender,
@@ -336,6 +342,9 @@ public sealed partial class RegistrationsController(
     private void Record(Registration entry, string action, Dictionary<string, object?>? metadata = null) =>
         audit.Record(User, action, "Registration", entry.Id.ToString(), entry.OrganizerId, metadata);
 
+    private static bool AllowsRegistrationWrites(EventStatus status) =>
+        status is not (EventStatus.Completed or EventStatus.Cancelled);
+
     private async Task<IActionResult> WithEvent(Guid eventId, bool write, CancellationToken ct, Func<Event, Task<IActionResult>> action)
     {
         var scope = await db.Events.AsNoTracking().Where(x => x.Id == eventId)
@@ -349,7 +358,7 @@ public sealed partial class RegistrationsController(
             var item = write ? await RaceConfigurationController.FindEventForWrite(db, eventId, ct)
                 : await db.Events.AsNoTracking().SingleOrDefaultAsync(x => x.Id == eventId, ct);
             if (item is null) return NotFound();
-            if (write && item.Status is EventStatus.Completed or EventStatus.Cancelled)
+            if (write && !AllowsRegistrationWrites(item.Status))
                 return Conflict("Registration changes are closed for this event.");
             var result = await action(item);
             if (transaction is not null && result is not ObjectResult { StatusCode: >= 400 }

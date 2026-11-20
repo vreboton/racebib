@@ -19,6 +19,12 @@ public sealed class AuditLogger(RaceTiming.Infrastructure.Persistence.RaceTiming
     private static readonly HashSet<string> SafeMetadataValues = new(
         Enum.GetNames<OrganizerRole>().Concat(["Active", "Suspended", "Inactive"]), StringComparer.OrdinalIgnoreCase);
 
+    internal const int MaxReversalReasonLength = 300;
+    internal const string CheckInReversed = "Registration.CheckInReversed";
+    internal static bool IsCheckInReversalReason(string? reason) =>
+        reason is { Length: > 0 and <= MaxReversalReasonLength } &&
+        !string.IsNullOrWhiteSpace(reason) && !reason.Any(char.IsControl);
+
     public void Record(ClaimsPrincipal? actor, string action, string targetType, string targetId,
         Guid? organizerId = null, IReadOnlyDictionary<string, object?>? metadata = null)
     {
@@ -32,8 +38,10 @@ public sealed class AuditLogger(RaceTiming.Infrastructure.Persistence.RaceTiming
             OrganizerId = organizerId,
             TimestampUtc = DateTime.UtcNow,
             MetadataJson = metadata is null ? null : System.Text.Json.JsonSerializer.Serialize(metadata
-                .Where(pair => SafeMetadataKeys.Contains(pair.Key) && !IsSensitiveKey(pair.Key) &&
-                    pair.Value is string value && SafeMetadataValues.Contains(value))
+                .Where(pair => pair.Value is string value && !IsSensitiveKey(pair.Key) &&
+                    ((SafeMetadataKeys.Contains(pair.Key) && SafeMetadataValues.Contains(value)) ||
+                     (action == CheckInReversed && targetType == "Registration" && pair.Key == "reason" &&
+                      IsCheckInReversalReason(value))))
                 .ToDictionary(pair => pair.Key, pair => pair.Value))
         });
     }
