@@ -21,6 +21,10 @@ public sealed partial class TimingController(RaceTimingDbContext db, IAuditLogge
 
     private Task<bool> ActiveAccount(CancellationToken ct) => db.Users.AnyAsync(x => x.Id == Actor && x.IsActive, ct);
 
+    private Task<bool> CanManageTiming(Guid organizerId, CancellationToken ct) =>
+        db.OrganizerMemberships.AnyAsync(x => x.UserId == Actor && x.OrganizerId == organizerId && x.IsActive &&
+            (x.Role == OrganizerRole.EventAdministrator || x.Role == OrganizerRole.RaceDirector), ct);
+
     [HttpGet("/api/v1/me/timing-assignments")]
     public async Task<IActionResult> Assignments(CancellationToken ct)
     {
@@ -44,10 +48,7 @@ public sealed partial class TimingController(RaceTimingDbContext db, IAuditLogge
             var item = await RaceConfigurationController.FindEventForWrite(db, eventId, ct);
             if (item is null) return NotFound();
             if (!await ActiveAccount(ct) || !await EnabledEvents.AnyAsync(x => x.Id == eventId, ct)) return Forbid();
-            if (manager && !await db.OrganizerMemberships.AnyAsync(x => x.UserId == Actor &&
-                x.OrganizerId == item.OrganizerId && x.IsActive &&
-                (x.Role == OrganizerRole.EventAdministrator || x.Role == OrganizerRole.RaceDirector), ct))
-                return Forbid();
+            if (manager && !await CanManageTiming(item.OrganizerId, ct)) return Forbid();
             var result = await action(item);
             if (result is ObjectResult { StatusCode: >= 400 } or StatusCodeResult { StatusCode: >= 400 }) return result;
             await db.SaveChangesAsync(ct);
