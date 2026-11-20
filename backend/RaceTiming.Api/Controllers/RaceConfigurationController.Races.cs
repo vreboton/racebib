@@ -55,8 +55,11 @@ public sealed partial class RaceConfigurationController
             race.CutoffDurationSeconds = input.CutoffDurationSeconds;
             if (!raceId.HasValue) db.Races.Add(race);
             if (input.EnsureRegistrationCategory && (!raceId.HasValue ||
-                !await db.RaceCategories.AnyAsync(x => x.RaceId == race.Id, ct)))
-                db.RaceCategories.Add(RegistrationsController.DefaultRegistrationCategory(race.Id));
+                !await db.RaceCategories.AnyAsync(x => x.RaceId == race.Id && x.Status == RecordStatus.Active, ct)))
+            {
+                var plan = await RegistrationsController.PlanManagedCategory(db, race.Id, ct);
+                await RegistrationsController.ApplyManagedCategory(db, race.Id, plan, ct);
+            }
             await db.SaveChangesAsync(ct);
             return Ok(new { race.Id });
         });

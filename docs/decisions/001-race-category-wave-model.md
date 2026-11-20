@@ -33,3 +33,11 @@ Course versions may be shared intentionally, but a published or operationally re
 - Event API/UI and development acceptance criteria must use races as the primary distance offering.
 - The schema and API are not considered stable until the refactor, migrations and tests are complete.
 - Historical timing observations and computed results will be separate future concepts; this decision does not implement timing functionality.
+
+## Amendment: Managed registration category
+
+Race is the operational selection for registration. The managed workflow uses one active registration category per race and resolves it automatically. If no category is active, a successful configuration save or new assignment provisions an unrestricted category under the event lock. An unreferenced, unrestricted retired Open with no custom description may be reactivated. If the Open name belongs to a historical or customized category, provisioning uses a separate managed Open name and retains the original row and status.
+
+The original category and wave schema remains available for compatibility. Existing same-race assignments, including historical category links or null, are preserved when no replacement is requested. Multiple active legacy categories still require explicit selection for new assignments. Start waves remain independent, and course revisions keep their existing identity and protections.
+
+The managed workflow permits one registration per runner per event. Reassignment changes the existing registration's race, and pre-existing duplicate registrations remain intact.

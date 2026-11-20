@@ -16,6 +16,118 @@ public sealed partial class MySqlApiIntegrationTests
 {
     [MySqlIntegrationFact]
     [Trait("Category", "MySqlIntegration")]
+    public async Task RetiredOnlyRacesProvisionOneManagedCategoryWithoutChangingHistory()
+    {
+        await using var data = new MySqlTestData(Services);
+        var account = await data.CreateAccountAsync();
+        var organizerId = await data.CreateOrganizerAsync(account, OrganizerRole.RaceDirector);
+        var eventId = await data.CreateEventAsync(organizerId);
+        using var client = Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await LoginAsync(client, account));
+        var raceId = await SeedRegistrationRace(client, eventId);
+        var events = $"/api/v1/events/{eventId}";
+        var path = events + "/registrations";
+        var categories = $"{events}/races/{raceId}/categories";
+        var profiles = $"/api/v1/organizers/{organizerId}/runners";
+        var runnerId = await CreatedId(await client.PostAsJsonAsync(profiles, new { firstName = "Manual", lastName = "Runner" }));
+        var nonOpen = await CreatedId(await client.PostAsJsonAsync(categories, new { name = "Legacy" }));
+        await Retire(nonOpen);
+        var original = await CreatedId(await client.PostAsJsonAsync(path, new { raceId, runnerId, bibNumber = "007" }));
+        var open = (await ReadCategories()).Single(x => x.Status == RecordStatus.Active);
+        Assert.Equal("Open", open.Name);
+        await Retire(open.Id);
+
+        using var historicalEdit = await client.PutAsJsonAsync($"{path}/{original}",
+            new { raceId, runnerId, bibNumber = "007", team = "Updated" });
+        Assert.Equal(HttpStatusCode.OK, historicalEdit.StatusCode);
+        Assert.Equal(open.Id, (await historicalEdit.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("categoryId").GetGuid());
+        Assert.All(await ReadCategories(), x => Assert.Equal(RecordStatus.Inactive, x.Status));
+
+        const string badFile = "First Name,Last Name,Email,Bib Number\nCSV,Bad,invalid-bib@example.test,007";
+        Assert.False((await PreviewRegistrationCsv(client, path, raceId, badFile)).GetProperty("valid").GetBoolean());
+        Assert.Equal(2, (await ReadCategories()).Count);
+
+        const string file = "First Name,Last Name,Email,Bib Number\nCSV,One,category-one@example.test,008";
+        var preview = await PreviewRegistrationCsv(client, path, raceId, file);
+        var token = preview.GetProperty("token").GetString();
+        Assert.NotNull(token);
+        Assert.Equal(2, (await ReadCategories()).Count);
+
+        var changed = await CreatedId(await client.PostAsJsonAsync(categories, new { name = "Temporary" }));
+        using (var stale = await Confirm(token!))
+            Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        await Retire(changed);
+
+        preview = await PreviewRegistrationCsv(client, path, raceId, file);
+        token = preview.GetProperty("token").GetString();
+        Assert.NotNull(token);
+        var confirmations = await Task.WhenAll(Confirm(token!), Confirm(token!));
+        using var first = confirmations[0];
+        using var second = confirmations[1];
+        Assert.Single(confirmations, x => x.StatusCode == HttpStatusCode.OK);
+        Assert.Single(confirmations, x => x.StatusCode == HttpStatusCode.Conflict);
+        var managed = (await ReadCategories()).Single(x => x.Status == RecordStatus.Active);
+        Assert.Equal("Open (Managed)", managed.Name);
+        Assert.NotEqual(open.Id, managed.Id);
+
+        using (var scope = Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+            var rows = await db.Registrations.Where(x => x.RaceId == raceId).ToListAsync();
+            Assert.Equal(2, rows.Count);
+            Assert.Equal(open.Id, rows.Single(x => x.BibNumber == "007").RaceCategoryId);
+            Assert.Equal(managed.Id, rows.Single(x => x.BibNumber == "008").RaceCategoryId);
+            Assert.Equal(RecordStatus.Inactive, (await db.RaceCategories.FindAsync(open.Id))!.Status);
+        }
+
+        using (var scope = Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+            var source = await db.Races.SingleAsync(x => x.Id == raceId);
+            var target = new { name = "Reassignment", courseId = source.CourseId,
+                startAt = DateTime.SpecifyKind(source.StartAtUtc, DateTimeKind.Utc), ensureRegistrationCategory = true };
+            var targetRace = await CreatedId(await client.PostAsJsonAsync(events + "/races", target));
+            var targetPath = $"{events}/races/{targetRace}";
+            var retiredOpen = await db.RaceCategories.AsNoTracking().SingleAsync(x => x.RaceId == targetRace);
+            using var retireTarget = await client.DeleteAsync($"{targetPath}/categories/{retiredOpen.Id}");
+            Assert.Equal(HttpStatusCode.NoContent, retireTarget.StatusCode);
+
+            using var invalid = await client.PutAsJsonAsync($"{path}/{original}",
+                new { raceId = targetRace, runnerId, bibNumber = "008" });
+            Assert.Equal(HttpStatusCode.Conflict, invalid.StatusCode);
+            Assert.Equal(RecordStatus.Inactive,
+                (await db.RaceCategories.AsNoTracking().SingleAsync(x => x.Id == retiredOpen.Id)).Status);
+
+            using var move = await client.PutAsJsonAsync($"{path}/{original}",
+                new { raceId = targetRace, runnerId, bibNumber = "007" });
+            Assert.Equal(HttpStatusCode.OK, move.StatusCode);
+            Assert.Equal(retiredOpen.Id, (await move.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("categoryId").GetGuid());
+            Assert.Equal(RecordStatus.Active,
+                (await db.RaceCategories.AsNoTracking().SingleAsync(x => x.RaceId == targetRace)).Status);
+        }
+
+        async Task Retire(Guid id)
+        {
+            using var response = await client.DeleteAsync($"{categories}/{id}");
+            Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        }
+
+        async Task<List<RaceCategory>> ReadCategories()
+        {
+            using var scope = Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+            return await db.RaceCategories.Where(x => x.RaceId == raceId).ToListAsync();
+        }
+
+        async Task<HttpResponseMessage> Confirm(string ticket)
+        {
+            using var form = ImportForm(raceId, file, token: ticket);
+            return await client.PostAsync(path + "/import/confirm", form);
+        }
+    }
+
+    [MySqlIntegrationFact]
+    [Trait("Category", "MySqlIntegration")]
     public async Task RaceOnlyRegistrationUsesTheManagedCategoryAndPreservesLegacyAssignments()
     {
         await using var data = new MySqlTestData(Services);

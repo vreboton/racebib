@@ -58,12 +58,17 @@ it('asks for a registration category only when there are multiple active choices
     description: null, minimumAge: null, maximumAge: null } as const
   const single = { ...activeRace, categories: [category] }
   const legacy = { ...activeRace, id: 'legacy', categories: [category, { ...category, id: 'category-2', name: 'Masters' }] }
-  const { wrapper, button } = await mountImport([single, legacy])
+  const retiredOnly = { ...activeRace, id: 'retired-only', categories: [{ ...category, status: 'Inactive' as const }] }
+  const { wrapper, button, defaultRace } = await mountImport([single, retiredOnly, legacy])
+  expect(defaultRace.props('items')).toContainEqual(retiredOnly)
   await button('Register runner').trigger('click')
   await flushPromises()
   const selects = () => wrapper.findAllComponents({ name: 'FixtureSelect' })
   const race = selects().filter(item => item.props('label') === 'Race').at(-1)!
   race.vm.$emit('update:modelValue', single.id)
+  await flushPromises()
+  expect(selects().some(item => item.props('label') === 'Registration category')).toBe(false)
+  race.vm.$emit('update:modelValue', retiredOnly.id)
   await flushPromises()
   expect(selects().some(item => item.props('label') === 'Registration category')).toBe(false)
   race.vm.$emit('update:modelValue', legacy.id)

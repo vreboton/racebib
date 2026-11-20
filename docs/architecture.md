@@ -28,10 +28,10 @@ The domain hierarchy is:
 - Organizer owns Events.
 - Event contains one or more Races.
 - Each Race represents a distinct competitive offering (for example 7K, 21K, 42K or 100K), with its own distance, primary course version, start/cutoff rules and lifecycle.
-- A Race may have multiple RaceCategories. A category is a competitive division such as Open, Male, Female, or an age group; it is not a distance.
+- A Race uses one managed registration category in the normal workflow. Legacy competitive divisions remain attached to their race for compatibility. The database still permits multiple category records per race.
 - A Race may have multiple StartWaves. A wave represents a scheduled start grouping and is not a category.
 - A Registration belongs to one Event and one Race, and may be assigned a RaceCategory and StartWave. It references a Runner and receives an event-unique bib number.
-- A Runner may register for multiple races and events, subject to organizer-scoped access and privacy rules.
+- A Runner may register for one race per event through the managed workflow and may register in multiple events. Existing duplicate event registrations and their assignments are preserved.
 - Course versions are immutable once published or referenced by operational registrations/timing. A course version may be reused by multiple races only when the version is intentionally shared and remains unchanged.
 
 Race owns the operational distance, start time, cutoff and primary CourseId. Do not duplicate those fields on RaceCategory or Registration. Registration should not independently choose a different course from its Race; the race's selected course version is authoritative for the initial release.
@@ -59,3 +59,5 @@ Milestone 1 establishes event setup and administration only: organizer tenancy, 
 
 
 [Runner registration architecture and CSV workflow](runner-registration.md)
+
+[Managed race category amendment](decisions/001-race-category-wave-model.md#amendment-managed-registration-category)

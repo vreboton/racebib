@@ -4,7 +4,9 @@ Open an event as its Race Director or Event Administrator and use **Runner regis
 
 Runner profiles belong to organizers and can be used across events. Each event registration links to an organizer's runner and a race in that event, with optional category and start wave. A runner can have one managed registration per event. Reopen the existing registration if a cancelled runner returns. The API preserves a cancelled registration and its bib reservation. Reopen, then explicitly change or clear the bib to release it.
 
-Choose a category or wave from the selected race. Age-limited categories use age on the race date in the event time zone and require a birthdate. Event registration writes are closed when the event is completed or cancelled. Registration and payment status have separate values and neither triggers a payment.
+Choose the race first. The editor asks for a registration category only when multiple active legacy choices exist. A start wave can be chosen independently from the selected race. Age-limited legacy categories use age on the race date in the event time zone and require a birthdate. Event registration writes are closed when the event is completed or cancelled. Registration and payment status have separate values and neither triggers a payment.
+
+New registrations and race reassignments use the sole active category when no category is specified. If none is active, RaceBib can reactivate an unreferenced, unrestricted Open category with no custom description or create a new managed Open category. When the Open name is reserved by a historical or customized category, RaceBib creates a separate Open (Managed) category with an available name. Editing a registration on its existing race keeps its saved category association when no replacement is specified, including a retired or empty association.
 
 ## Name on Bib and publication
 
@@ -18,9 +20,11 @@ The RD or registration provider administers the applicable Registration Guidelin
 
 1. Open the event, select **Import CSV**, and choose **Download CSV Template**. The [fictional sample](./runner-registration-sample.csv) shows two completed rows.
 2. Fill in First Name, Last Name, and Email on every data row. Leave optional fields blank as needed.
-3. Select an active **Default Race Category**, upload a UTF-8 comma-delimited CSV, choose a bib assignment mode, then select **Validate & Preview**. The limit is 1 MiB and 1,000 data rows.
-4. Review row errors, proposed bibs, and any rows assigned to the default Race Category. Download the error report to correct invalid rows.
-5. Select **Confirm Import** within 20 minutes of a valid preview. Confirmation rechecks the file, default Race Category and proposed assignments. Validate again if any input or relevant event data changes.
+3. Select an active **Default Race**, upload a UTF-8 comma-delimited CSV, choose a bib assignment mode, then select **Validate & Preview**. The limit is 1 MiB and 1,000 data rows.
+4. Review row errors, proposed bibs, and any rows assigned to the default race. Download the error report to correct invalid rows.
+5. Select **Confirm Import** within 20 minutes of a valid preview. Confirmation rechecks the file, default race and proposed assignments. Preview leaves category records untouched. Confirmation provisions any needed managed category under the event lock and commits it with the registrations. Validate again if any input or relevant event data changes.
+
+Regenerate open previews after upgrading to the version that supports retired-only races.
 
 Keep the exact template header names. Column order can vary, and optional columns can be omitted.
 
@@ -30,7 +34,7 @@ First Name,Last Name,Name on Bib,Gender,Birthdate,Email,Mobile Number,Race,Categ
 
 Email is trimmed and matched case-insensitively within the organizer. A unique email match reuses the saved profile and its data. If the CSV name differs, the preview identifies the saved profile in a row warning and still allows confirmation. An unmatched valid email creates a profile at confirmation. A blank or invalid email, duplicate email row, or email shared by multiple organizer profiles must be corrected before import. Resolve duplicate profiles before importing. Each runner can have only one registration per event.
 
-The Race column matches Race Category names exactly after trimming, ignoring case. A blank or unrecognized value uses the selected active default Race Category. The preview identifies the affected rows and the confirmation reports how many registrations used the fallback. Ambiguous or inactive matches are errors. The Category column identifies the Age Group. The Category and Start Wave columns may be blank. Populated values must belong to the resolved Race Category.
+The Race column matches race names exactly after trimming, ignoring case. A blank or unrecognized value uses the selected active default race. The preview identifies the affected rows and the confirmation reports how many registrations used the fallback. Ambiguous or inactive matches are errors. Leave Category blank for a normal race. A legacy race with multiple active categories requires an explicit active Category. Start Wave is optional. Supplied categories and waves must belong to the resolved race.
 
 Imports set registration status to **Confirmed** and payment status to **Paid**. The old Runner ID and status headers are unsupported. Enter dates as YYYY-MM-DD or M/D/YYYY, and keep bib numbers as text in the spreadsheet to preserve leading zeros.
 

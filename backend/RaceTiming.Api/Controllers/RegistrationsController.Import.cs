@@ -27,7 +27,7 @@ public sealed partial class RegistrationsController
     private static readonly string[] RequiredColumns = ["First Name", "Last Name", "Email"];
     private sealed record ImportPlan(List<ImportRow> Rows, List<Registration> Entries, string? Error = null)
     {
-        public HashSet<Guid> RacesWithoutCategories { get; } = [];
+        public Dictionary<Guid, ManagedCategoryPlan> ManagedCategories { get; } = [];
     }
     private sealed record ImportTicket(Guid Id, Guid EventId, string Actor, string Hash);
 
@@ -44,7 +44,7 @@ public sealed partial class RegistrationsController
                 var valid = plan.Error is null && plan.Entries.Count > 0 && plan.Rows.All(x => x.Error is null);
                 var token = valid ? Protector(protection).Protect(JsonSerializer.Serialize(
                     new ImportTicket(Guid.NewGuid(), eventId, Actor(), Fingerprint(defaultRaceId, bytes, assignment,
-                        plan.Entries))), TimeSpan.FromMinutes(20)) : null;
+                        plan))), TimeSpan.FromMinutes(20)) : null;
                 return Ok(new { plan.Rows, valid, token,
                     plan.Error, validCount = plan.Rows.Count(x => x.Error is null),
                     defaultRaceCount = CountDefaultRaceRows(plan.Rows), errorCsv = ErrorCsv(plan.Rows) });
@@ -74,15 +74,16 @@ public sealed partial class RegistrationsController
             await RunnerProfileWriteLock.Acquire(db, item.OrganizerId, ct);
             var plan = await Prepare(item, defaultRaceId, bytes, assignment, ct);
             if (plan.Error is not null || plan.Entries.Count == 0 || plan.Rows.Any(x => x.Error is not null)
-                || ticket.Hash != Fingerprint(defaultRaceId, bytes, assignment, plan.Entries))
+                || ticket.Hash != Fingerprint(defaultRaceId, bytes, assignment, plan))
                 return Conflict("The file, default race, bib assignment, runner profile or event data changed. Preview again.");
 
-            // The preview uses the unresolved assignment. Provision only after validating the preview under the event lock.
-            var newCategories = plan.RacesWithoutCategories.ToDictionary(id => id, id => AddRegistrationCategory(id).Id);
+            var managedCategories = new Dictionary<Guid, Guid>();
+            foreach (var (raceId, category) in plan.ManagedCategories)
+                managedCategories.Add(raceId, await ApplyManagedCategory(db, raceId, category, ct));
             db.Registrations.AddRange(plan.Entries);
             foreach (var entry in plan.Entries)
             {
-                if (newCategories.TryGetValue(entry.RaceId, out var categoryId)) entry.RaceCategoryId = categoryId;
+                if (managedCategories.TryGetValue(entry.RaceId, out var categoryId)) entry.RaceCategoryId = categoryId;
                 Record(entry, "Registration.Imported");
                 if (entry.BibNumber is not null) Record(entry, "Registration.BibChanged");
             }
@@ -183,7 +184,8 @@ public sealed partial class RegistrationsController
                     raceName = matches.Length <= 1 ? race.Name : null;
                     var categoryName = Value("Category");
                     var requestedCategory = race.Categories.FirstOrDefault(x => Same(x.Name, categoryName));
-                    var categoryError = ResolveCategory(race, requestedCategory?.Id, null, out var categoryId);
+                    var categoryError = ResolveCategory(race, requestedCategory?.Id, null,
+                        out var categoryId, out var needsManagedCategory);
                     var category = race.Categories.FirstOrDefault(x => x.Id == categoryId);
                     var wave = race.StartWaves.FirstOrDefault(x => Same(x.Name, Value("Start Wave")));
                     var profiles = profilesByEmail[email].Take(2).ToArray();
@@ -218,7 +220,8 @@ public sealed partial class RegistrationsController
                         {
                             entry = new Registration { EventId = item.Id, OrganizerId = item.OrganizerId, Runner = runner, RunnerId = runner.Id };
                             Apply(entry, input, input.BibNumber);
-                            if (race.Categories.Count == 0) plan.RacesWithoutCategories.Add(race.Id);
+                            if (needsManagedCategory && !plan.ManagedCategories.ContainsKey(race.Id))
+                                plan.ManagedCategories.Add(race.Id, await PlanManagedCategory(db, race.Id, ct));
                         }
                     }
                 }
@@ -261,11 +264,12 @@ public sealed partial class RegistrationsController
     private static ITimeLimitedDataProtector Protector(IDataProtectionProvider protection) =>
         protection.CreateProtector("RaceBib.Registration.Import.v6").ToTimeLimitedDataProtector();
 
-    private string Fingerprint(Guid defaultRaceId, byte[] bytes, string? assignment, IEnumerable<Registration> entries) =>
+    private string Fingerprint(Guid defaultRaceId, byte[] bytes, string? assignment, ImportPlan plan) =>
         Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
         {
             file = Convert.ToHexString(SHA256.HashData(bytes)), defaultRaceId, assignment,
-            assignments = entries.Select(x => new { x.RaceId, x.RaceCategoryId, x.StartWaveId, x.BibNumber, x.BibDisplayName,
+            managedCategories = plan.ManagedCategories.OrderBy(x => x.Key),
+            assignments = plan.Entries.Select(x => new { x.RaceId, x.RaceCategoryId, x.StartWaveId, x.BibNumber, x.BibDisplayName,
                 existingRunnerId = db.Entry(x.Runner).State == EntityState.Unchanged ? x.Runner.Id : (Guid?)null,
                 normalizedEmail = NormalizeImportEmail(x.Runner.Email), x.Runner.FirstName, x.Runner.LastName, x.Runner.Birthdate })
         })));
