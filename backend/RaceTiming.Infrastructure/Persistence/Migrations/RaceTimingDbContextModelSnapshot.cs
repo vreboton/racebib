@@ -491,6 +491,52 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                     b.ToTable("OfficialGunDeclarations", (string)null);
                 });
 
+            modelBuilder.Entity("RaceTiming.Domain.Entities.OfficialRunnerDecision", b =>
+                {
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<Guid>("RegistrationId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<int>("Revision")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ActorUserId")
+                        .IsRequired()
+                        .HasColumnType("varchar(255)");
+
+                    b.Property<int>("Classification")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("DecidedAtUtc")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("EvidenceFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("RaceId")
+                        .HasColumnType("char(36)");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("varchar(300)");
+
+                    b.HasKey("EventId", "RegistrationId", "Revision");
+
+                    b.HasIndex("ActorUserId");
+
+                    b.HasIndex("EventId", "DecidedAtUtc");
+
+                    b.HasIndex("EventId", "RegistrationId", "RaceId");
+
+                    b.ToTable("OfficialRunnerDecisions", (string)null);
+                });
+
             modelBuilder.Entity("RaceTiming.Domain.Entities.Organizer", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1441,6 +1487,22 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("RaceId", "WaveId")
                         .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("RaceTiming.Domain.Entities.OfficialRunnerDecision", b =>
+                {
+                    b.HasOne("RaceTiming.Infrastructure.Identity.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("ActorUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("RaceTiming.Domain.Entities.TimingRosterEntry", null)
+                        .WithMany()
+                        .HasForeignKey("EventId", "RegistrationId", "RaceId")
+                        .HasPrincipalKey("EventId", "RegistrationId", "RaceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("RaceTiming.Domain.Entities.OrganizerInvitation", b =>

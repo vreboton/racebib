@@ -152,6 +152,14 @@ public sealed partial class MySqlApiIntegrationTests
             var earlier = lateVisit with { ObservationId = Guid.NewGuid(), OccurrenceId = null, ObservedAtUtc = now.AddMinutes(-3) };
             var ambiguous = await Send(station, stationPath, Guid.NewGuid(), earlier);
             Assert.Equal("AmbiguousOccurrence", ambiguous.Body.GetProperty("outcome").GetString());
+            var exceptions = await manager.GetFromJsonAsync<JsonElement>(path + "/control/exceptions?limit=1");
+            Assert.Equal(1, exceptions.GetProperty("total").GetInt32());
+            Assert.Equal(earlier.ObservationId, exceptions.GetProperty("items")[0].GetProperty("observationId").GetGuid());
+            var emptyExceptions = await manager.GetFromJsonAsync<JsonElement>(path + "/control/exceptions?limit=1&offset=1");
+            Assert.Equal(0, emptyExceptions.GetProperty("items").GetArrayLength());
+            var preview = await manager.GetFromJsonAsync<JsonElement>(path + $"/control/observations/{earlier.ObservationId}/resolution");
+            Assert.Equal(2, preview.GetProperty("choices").GetArrayLength());
+            Assert.Equal(1, preview.GetProperty("decisions")[0].GetProperty("revision").GetInt32());
             var competing = earlier with { ObservationId = Guid.NewGuid(), OccurrenceId = points[1].Id,
                 AssignmentGeneration = secondGeneration, DeviceId = Guid.NewGuid() };
             var confirmation = station.PostAsJsonAsync(stationPath + $"/observations/{earlier.ObservationId}/confirm",
@@ -188,6 +196,25 @@ public sealed partial class MySqlApiIntegrationTests
             Assert.Contains(existing, x => x.OccurrenceId == points[0].Id && x.ObservationId == start.ObservationId);
             Assert.Contains(existing, x => x.OccurrenceId == points[1].Id);
             Assert.Equal(5, observations.Count);
+            var unresolved = confirmedBody.GetProperty("outcome").GetString() == "SlotConflict" ? earlier : competing;
+            using var blockedSlot = await manager.PostAsJsonAsync(path + $"/observations/{unresolved.ObservationId}/resolve",
+                new { occurrenceId = points[1].Id, expectedRevision = unresolved == earlier ? 2 : 1, reason = "Check occupied visit" });
+            Assert.Equal(HttpStatusCode.Conflict, blockedSlot.StatusCode);
+
+            var finishCandidate = start with { ObservationId = Guid.NewGuid(), OccurrenceId = null, ObservedAtUtc = now };
+            var pendingFinish = await Send(station, gatePath, Guid.NewGuid(), finishCandidate);
+            Assert.Equal("AmbiguousOccurrence", pendingFinish.Body.GetProperty("outcome").GetString());
+            var finishAction = new { occurrenceId = points[3].Id, expectedRevision = 1, reason = "Confirmed finish visit" };
+            var resolutions = await Task.WhenAll(
+                manager.PostAsJsonAsync(path + $"/observations/{finishCandidate.ObservationId}/resolve", finishAction),
+                manager.PostAsJsonAsync(path + $"/observations/{finishCandidate.ObservationId}/resolve", finishAction));
+            try
+            {
+                Assert.Single(resolutions, x => x.StatusCode == HttpStatusCode.OK);
+                var stale = Assert.Single(resolutions, x => x.StatusCode == HttpStatusCode.Conflict);
+                Assert.Equal("stale_decision", (await stale.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+            }
+            finally { foreach (var response in resolutions) response.Dispose(); }
 
             using var revoke = await manager.PutAsJsonAsync(stationPath + $"/assignments/{operatorAccount.Id}", new { active = false });
             Assert.Equal(HttpStatusCode.OK, revoke.StatusCode);
@@ -375,6 +402,9 @@ public sealed partial class MySqlApiIntegrationTests
                 (await conflictLookup.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
             var conflict = await Send(station, stationPath, key, input);
             Assert.Equal(HttpStatusCode.Conflict, conflict.Status);
+            var bibExceptions = await manager.GetFromJsonAsync<JsonElement>(timing + "/control/exceptions?kind=bib");
+            Assert.Equal(1, bibExceptions.GetProperty("total").GetInt32());
+            Assert.Equal(owner, bibExceptions.GetProperty("items")[0].GetProperty("registrationId").GetGuid());
             Assert.Equal("timing_bib_identity_conflict", conflict.Body.GetProperty("code").GetString());
             Assert.False(await db.Set<TimingObservation>().AnyAsync(x => x.EventId == eventId));
             Assert.False(await db.Set<TimingDecision>().AnyAsync(x => x.ObservationId == input.ObservationId));
@@ -460,6 +490,21 @@ public sealed partial class MySqlApiIntegrationTests
             var generation = await Grant(manager, stationPath, operatorAccount.Id);
             var raceResults = path + $"/races/{raceId}/results";
             var individual = raceResults + $"/{runner.Id}";
+            var control = path + $"/control/races/{raceId}/runners";
+            var classify = control + $"/{runner.Id}/classification";
+            using var invalidFinish = await manager.PostAsJsonAsync(classify,
+                new { classification = OfficialClassification.Finished, expectedRevision = 0, reason = "Finish not recorded" });
+            Assert.Equal(HttpStatusCode.Conflict, invalidFinish.StatusCode);
+            using var noReason = await manager.PostAsJsonAsync(classify,
+                new { classification = OfficialClassification.Dnf, expectedRevision = 0, reason = "" });
+            Assert.Equal(HttpStatusCode.BadRequest, noReason.StatusCode);
+            using var operatorDenied = await station.GetAsync(path + "/control");
+            Assert.Equal(HttpStatusCode.Forbidden, operatorDenied.StatusCode);
+            using var outsideDenied = await outsider.GetAsync(path + "/control/exceptions");
+            Assert.Equal(HttpStatusCode.Forbidden, outsideDenied.StatusCode);
+            using var wrongClassify = await manager.PostAsJsonAsync($"/api/v1/events/{otherEventId}/timing/control/races/{raceId}/runners/{runner.Id}/classification",
+                new { classification = OfficialClassification.Dnf, expectedRevision = 0, reason = "Wrong event" });
+            Assert.Equal(HttpStatusCode.NotFound, wrongClassify.StatusCode);
 
             using var deniedOperator = await station.GetAsync(individual);
             Assert.Equal(HttpStatusCode.Forbidden, deniedOperator.StatusCode);
@@ -502,12 +547,27 @@ public sealed partial class MySqlApiIntegrationTests
             foreach (var read in reads)
                 AssertTimingSnapshot(read, read.GetProperty("individualStartAtUtc").ValueKind == JsonValueKind.String);
             AssertTimingSnapshot(await ReadIndividual(), true);
+            var commands = await Task.WhenAll(
+                manager.PostAsJsonAsync(classify, new { classification = OfficialClassification.Finished, expectedRevision = 0, reason = "Finish reviewed" }),
+                manager.PostAsJsonAsync(classify, new { classification = OfficialClassification.Finished, expectedRevision = 0, reason = "Concurrent review" }));
+            try
+            {
+                Assert.Single(commands, x => x.StatusCode == HttpStatusCode.Created);
+                Assert.Single(commands, x => x.StatusCode == HttpStatusCode.Conflict);
+            }
+            finally { foreach (var command in commands) command.Dispose(); }
+            var classified = (await manager.GetFromJsonAsync<JsonElement>(control)).GetProperty("items")[0];
+            Assert.Equal("Finished", classified.GetProperty("classification").GetString());
+            Assert.False(classified.GetProperty("needsReview").GetBoolean());
 
             await CreatedId(await manager.PostAsJsonAsync(gunPath,
                 new { gunAtUtc = finishAt.AddSeconds(-300).AddTicks(-10), expectedDeclarationId = gun, reason = "Corrected gun" }));
             var corrected = await ReadIndividual();
             Assert.Equal(300_000_001L, corrected.GetProperty("provisionalFinish").GetProperty("gunElapsedMicroseconds").GetInt64());
             Assert.Equal("over_limit", corrected.GetProperty("raceCutoff").GetProperty("status").GetString());
+            var cutoffWarnings = (await manager.GetFromJsonAsync<JsonElement>(control)).GetProperty("items")[0];
+            Assert.Contains(cutoffWarnings.GetProperty("warnings").EnumerateArray(), x => x.GetString() == "calculated_cutoff_exceeded");
+            Assert.Equal("Finished", cutoffWarnings.GetProperty("classification").GetString());
 
             var invalidate = manager.PostAsJsonAsync(path + $"/observations/{start.ObservationId}/resolve",
                 new { expectedRevision = 1, reason = "Invalid individual start" });
@@ -529,9 +589,21 @@ public sealed partial class MySqlApiIntegrationTests
             Assert.Equal(119_000_000L, afterReplacement.GetProperty("provisionalFinish").GetProperty("netElapsedMicroseconds").GetInt64());
             var history = await manager.GetFromJsonAsync<JsonElement>(path + $"/observations/{start.ObservationId}/history");
             Assert.Equal(2, history.GetProperty("decisions").GetArrayLength());
+            var changed = (await manager.GetFromJsonAsync<JsonElement>(control)).GetProperty("items")[0];
+            Assert.Equal("Finished", changed.GetProperty("classification").GetString());
+            Assert.True(changed.GetProperty("needsReview").GetBoolean());
+            using var reversed = await manager.PostAsJsonAsync(classify,
+                new { classification = OfficialClassification.Pending, expectedRevision = 1, reason = "Reopen for review" });
+            Assert.Equal(HttpStatusCode.Created, reversed.StatusCode);
+            var auditPage = await manager.GetFromJsonAsync<JsonElement>(path + "/control/audit?limit=1");
+            Assert.Equal(2, auditPage.GetProperty("total").GetInt32());
+            var reversal = auditPage.GetProperty("items")[0];
+            Assert.Equal("Finished", reversal.GetProperty("previousClassification").GetString());
+            Assert.Equal("Pending", reversal.GetProperty("classification").GetString());
         }
         finally
         {
+            await db.Set<OfficialRunnerDecision>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
             await db.Set<AcceptedTiming>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
             await db.Set<TimingDecision>().Where(x => db.Set<TimingObservation>().Any(o => o.EventId == eventId && o.Id == x.ObservationId)).ExecuteDeleteAsync();
             await db.Set<TimingObservation>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();

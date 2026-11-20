@@ -70,6 +70,17 @@ internal static class TimingModel
             .HasPrincipalKey(x => new { x.RaceId, x.EventId }).OnDelete(DeleteBehavior.Restrict);
         roster.HasOne<TimingWave>().WithMany().HasForeignKey(x => new { x.RaceId, x.WaveId }).OnDelete(DeleteBehavior.Restrict);
 
+
+        var official = model.Entity<OfficialRunnerDecision>().ToTable("OfficialRunnerDecisions");
+        official.HasKey(x => new { x.EventId, x.RegistrationId, x.Revision });
+        official.HasIndex(x => new { x.EventId, x.DecidedAtUtc });
+        official.Property(x => x.Reason).HasMaxLength(300);
+        official.Property(x => x.EvidenceFingerprint).HasMaxLength(64).IsFixedLength();
+        official.HasOne<TimingRosterEntry>().WithMany()
+            .HasForeignKey(x => new { x.EventId, x.RegistrationId, x.RaceId })
+            .HasPrincipalKey(x => new { x.EventId, x.RegistrationId, x.RaceId }).OnDelete(DeleteBehavior.Restrict);
+        official.HasOne<ApplicationUser>().WithMany().HasForeignKey(x => x.ActorUserId).OnDelete(DeleteBehavior.Restrict);
+
         var gun = model.Entity<OfficialGunDeclaration>().ToTable("OfficialGunDeclarations");
         gun.Property(x => x.Reason).HasMaxLength(300);
         gun.HasIndex(x => new { x.RaceId, x.WaveId, x.DeclaredAtUtc });

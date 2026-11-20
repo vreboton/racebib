@@ -39,7 +39,7 @@ public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> op
     {
         if (ChangeTracker.Entries().Any(x => x.State is EntityState.Modified or EntityState.Deleted &&
             x.Entity is TimingObservation or TimingDecision or OfficialGunDeclaration or
-                RaceTimingSetup or TimingVisit or TimingWave or TimingRosterEntry))
+                RaceTimingSetup or TimingVisit or TimingWave or TimingRosterEntry or OfficialRunnerDecision))
             throw new InvalidOperationException("Timing evidence and frozen configuration are append-only.");
     }
 
