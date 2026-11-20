@@ -112,10 +112,9 @@ public sealed partial class MySqlApiIntegrationTests
         deniedClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await LoginAsync(deniedClient, outsider));
         var raceId = await SeedRegistrationRace(client, eventId);
         var path = $"/api/v1/events/{eventId}/registrations";
-        const string mapping = """{"First Name":0,"Last Name":1,"Name on Bib":2,"Race":3,"Bib Number":4}""";
         const string mixed = """{"mode":2,"start":1,"end":9,"width":3}""";
-        const string file = "\uFEFFGiven,Family,Preferred Name,Distance,Bib\r\nAna,Reyes,\"Ána, Junior\",10,\r\nBen,Cruz,Benny,10,001\r\n";
-        using var deniedForm = ImportForm(file, mapping, mixed);
+        const string file = "\uFEFFFirst Name,Last Name,Name on Bib,Race,Bib Number\r\nÁna,Reyes,\"Ána, Junior\",10,\r\nBen,Cruz,Benny,10,001\r\n";
+        using var deniedForm = ImportForm(file, mixed);
         using var denied = await deniedClient.PostAsync(path + "/import/preview", deniedForm);
         Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
         using var malformedForm = ImportForm("First Name,Last Name,Race\nAna,Re\"yes,10");
@@ -123,29 +122,30 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
         var missing = await PreviewRegistrationCsv(client, path, "First Name,Race\nAna,10");
         Assert.False(missing.GetProperty("valid").GetBoolean());
-        var duplicate = await PreviewRegistrationCsv(client, path, file + "Ana,Reyes,Ana,10,003\r\n", mapping, mixed);
+        var duplicate = await PreviewRegistrationCsv(client, path, file + "Ána,Reyes,Ana,10,003\r\n", mixed);
         Assert.False(duplicate.GetProperty("valid").GetBoolean());
         Assert.Contains("Duplicate", duplicate.GetProperty("errorCsv").GetString());
-        var fixture = await PreviewRegistrationCsv(client, path, file, mapping, mixed);
+        var fixture = await PreviewRegistrationCsv(client, path, file, mixed);
         Assert.True(fixture.GetProperty("valid").GetBoolean());
         var token = fixture.GetProperty("token").GetString();
 
-        using var staleForm = ImportForm(file.Replace("Benny", "Ben"), mapping, mixed, token);
+        using var staleForm = ImportForm(file.Replace("Benny", "Ben"), mixed, token);
         using var stale = await client.PostAsync(path + "/import/confirm", staleForm);
         Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
         Assert.Equal(0, (await client.GetFromJsonAsync<JsonElement>(path)).GetProperty("total").GetInt32());
-        using var validForm = ImportForm(file, mapping, mixed, token);
+        using var validForm = ImportForm(file, mixed, token);
         using var imported = await client.PostAsync(path + "/import/confirm", validForm);
         Assert.Equal(HttpStatusCode.OK, imported.StatusCode);
-        using var replayForm = ImportForm(file, mapping, mixed, token);
+        using var replayForm = ImportForm(file, mixed, token);
         using var replay = await client.PostAsync(path + "/import/confirm", replayForm);
         Assert.Equal(HttpStatusCode.Conflict, replay.StatusCode);
-        var reimport = await PreviewRegistrationCsv(client, path, file.Replace("Ána, Junior", "Replacement"), mapping, mixed);
+        var reimport = await PreviewRegistrationCsv(client, path, file.Replace("Ána, Junior", "Replacement"), mixed);
         Assert.False(reimport.GetProperty("valid").GetBoolean());
         var list = (await client.GetFromJsonAsync<JsonElement>(path)).GetProperty("items");
         Assert.Equal("001", list[0].GetProperty("bibNumber").GetString());
         Assert.Equal("002", list[1].GetProperty("bibNumber").GetString());
         Assert.Equal("Ána, Junior", list[1].GetProperty("effectiveBibDisplayName").GetString());
+        Assert.Equal("Ána", list[1].GetProperty("runner").GetProperty("firstName").GetString());
 
         var runnerUrl = $"/api/v1/organizers/{organizerId}/runners";
         // A legacy bib can collide under MySQL's accent-insensitive collation.
@@ -329,6 +329,59 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Contains("UX_Registrations_Event_Runner_Slot", duplicate.Message);
     }
 
+    [MySqlIntegrationFact]
+    [Trait("Category", "MySqlIntegration")]
+    public async Task CsvTemplateUsesExactCanonicalHeadersAndSupportsReordering()
+    {
+        await using var data = new MySqlTestData(Services);
+        var account = await data.CreateAccountAsync();
+        var organizerId = await data.CreateOrganizerAsync(account, OrganizerRole.RaceDirector);
+        var eventId = await data.CreateEventAsync(organizerId);
+        using var client = Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await LoginAsync(client, account));
+        await SeedRegistrationRace(client, eventId);
+        var path = $"/api/v1/events/{eventId}/registrations";
+        const string header = "First Name,Last Name,Name on Bib,Gender,Birthdate,Email,Mobile Number,Race,Category,Start Wave,Bib Number,Team,Emergency Contact,Registration Status,Payment Status,Runner ID";
+        var file = "\uFEFF" + header + "\r\nMara,Ventura,小光,,,,,10,,,0007,,,,,\r\n";
+        var standard = await PreviewRegistrationCsv(client, path, file);
+        Assert.True(standard.GetProperty("valid").GetBoolean());
+        Assert.Equal("0007", standard.GetProperty("rows")[0].GetProperty("bibNumber").GetString());
+        Assert.Equal("小光", standard.GetProperty("rows")[0].GetProperty("nameOnBib").GetString());
+
+        const string reorderedFile = "Bib Number,Race,Last Name,First Name\n0008,10,Ventura,Mara";
+        var reordered = await PreviewRegistrationCsv(client, path, reorderedFile);
+        Assert.True(reordered.GetProperty("valid").GetBoolean());
+        Assert.Equal("Mara Ventura", reordered.GetProperty("rows")[0].GetProperty("nameOnBib").GetString());
+        using var form = ImportForm(reorderedFile, token: reordered.GetProperty("token").GetString());
+        using var confirmed = await client.PostAsync(path + "/import/confirm", form);
+        Assert.Equal(HttpStatusCode.OK, confirmed.StatusCode);
+
+        foreach (var (bad, message) in new[]
+        {
+            ("First Name,Last Name\nA,B", "Missing required headers: Race"),
+            ("First Name,Last Name,Race,Race\nA,B,10,10", "Duplicate header 'Race'"),
+            ("First Name,Last Name,Race,Preferred Name\nA,B,10,Alias", "Unrecognized header in column 4"),
+            ("First Name,Last Name,race\nA,B,10", "Unrecognized header in column 3"),
+            ("First Name,Last Name,Race \nA,B,10", "Unrecognized header in column 3")
+        })
+        {
+            var preview = await PreviewRegistrationCsv(client, path, bad);
+            Assert.False(preview.GetProperty("valid").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, preview.GetProperty("token").ValueKind);
+            Assert.Contains(message, preview.GetProperty("error").GetString());
+            Assert.Contains("RaceBib CSV template", preview.GetProperty("error").GetString());
+        }
+
+        var blanks = await PreviewRegistrationCsv(client, path, "First Name,Last Name,Race\n ,Runner,10\nSecond, ,10\nThird,Runner, ");
+        Assert.False(blanks.GetProperty("valid").GetBoolean());
+        Assert.Contains("First and last names are required", blanks.GetProperty("errorCsv").GetString());
+        Assert.Contains("Race is required", blanks.GetProperty("errorCsv").GetString());
+        using var malformedForm = ImportForm("First Name,Last Name,Race\nAna,Re\"yes,10");
+        using var malformed = await client.PostAsync(path + "/import/preview", malformedForm);
+        Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
+        Assert.Contains("well-formed UTF-8 CSV", await malformed.Content.ReadAsStringAsync());
+    }
+
     private async Task<Guid> SeedRegistrationRace(HttpClient client, Guid eventId)
     {
         var path = $"/api/v1/events/{eventId}";
@@ -351,20 +404,18 @@ public sealed partial class MySqlApiIntegrationTests
     }
 
     private static async Task<JsonElement> PreviewRegistrationCsv(HttpClient client, string path, string file,
-        string? mapping = null, string? assignment = null)
+        string? assignment = null)
     {
-        using var form = ImportForm(file, mapping, assignment);
+        using var form = ImportForm(file, assignment);
         using var response = await client.PostAsync(path + "/import/preview", form);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         return await response.Content.ReadFromJsonAsync<JsonElement>();
     }
 
-    private static MultipartFormDataContent ImportForm(string file, string? mapping = null,
-        string? assignment = null, string? token = null)
+    private static MultipartFormDataContent ImportForm(string file, string? assignment = null, string? token = null)
     {
         var form = new MultipartFormDataContent();
         form.Add(new StringContent(file, Encoding.UTF8, "text/csv"), "file", "fixture.csv");
-        if (mapping is not null) form.Add(new StringContent(mapping), "mapping");
         if (assignment is not null) form.Add(new StringContent(assignment), "assignment");
         if (token is not null) form.Add(new StringContent(token), "token");
         return form;
