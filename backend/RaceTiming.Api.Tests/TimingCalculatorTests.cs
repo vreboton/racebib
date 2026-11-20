@@ -26,6 +26,8 @@ public sealed class TimingCalculatorTests
         Assert.Equal(300_000_000L, result.ProvisionalFinish!.GunElapsedMicroseconds);
         Assert.Equal(360_000_000L, result.ProvisionalFinish.NetElapsedMicroseconds);
         Assert.Contains("before_official_gun", result.Visits[0].Flags);
+        Assert.Equal(-60_000_000L, result.Visits[0].GunElapsedMicroseconds);
+        Assert.Null(result.Visits[0].GunElapsedUnavailableReason);
 
         var noWave = Calculate(visits, evidence, [oldWaveGun, waveGun, raceGun]);
         Assert.Equal(raceGun.Id, noWave.GunDeclarationId);
@@ -35,6 +37,7 @@ public sealed class TimingCalculatorTests
         Assert.True(undeclaredWave.Readiness.MissingOfficialGun);
         Assert.NotNull(undeclaredWave.ScheduledStartUtc);
         Assert.Null(undeclaredWave.ProvisionalFinish!.GunElapsedMicroseconds);
+        Assert.Equal("missing_official_gun", undeclaredWave.ProvisionalFinish.GunElapsedUnavailableReason);
         Assert.Equal(360_000_000L, undeclaredWave.ProvisionalFinish.NetElapsedMicroseconds);
     }
 
@@ -73,6 +76,8 @@ public sealed class TimingCalculatorTests
         var result = Calculate(visits, [finish], [gun]);
         Assert.Equal("within_limit", result.RaceCutoff!.Status);
         Assert.Equal("unknown", result.Visits[1].Cutoff!.Status);
+        Assert.Equal("missing_crossing", result.Visits[1].Cutoff!.UnavailableReason);
+        Assert.Null(result.RaceCutoff.UnavailableReason);
         Assert.True(result.Readiness.MissingIndividualStart);
         Assert.Null(result.ProvisionalFinish!.NetElapsedMicroseconds);
 
@@ -82,12 +87,15 @@ public sealed class TimingCalculatorTests
         var netBasis = Calculate(visits, [finish], [gun], cutoffBasis: TimingBasis.Net, resultsBasis: TimingBasis.Net);
         Assert.True(netBasis.Readiness.UnknownRaceCutoff);
         Assert.Null(netBasis.ProvisionalFinish!.ResultsElapsedMicroseconds);
+        Assert.Equal("missing_individual_start", netBasis.ProvisionalFinish.ResultsElapsedUnavailableReason);
+        Assert.Equal("missing_individual_start", netBasis.RaceCutoff!.UnavailableReason);
         Assert.Equal(60_000_000L, netBasis.ProvisionalFinish.GunElapsedMicroseconds);
 
         var undeclared = Calculate(visits, [finish], []);
         Assert.True(undeclared.Readiness.MissingOfficialGun);
         Assert.True(undeclared.Readiness.UnknownRaceCutoff);
         Assert.Null(undeclared.ProvisionalFinish!.GunElapsedMicroseconds);
+        Assert.Equal("missing_official_gun", undeclared.RaceCutoff!.UnavailableReason);
     }
 
     [Fact]
@@ -107,6 +115,29 @@ public sealed class TimingCalculatorTests
         Assert.Contains("inconsistent_accepted_evidence", result.Visits[3].Flags);
         Assert.Null(result.ProvisionalFinish);
         Assert.True(result.Readiness.MissingFinish);
+    }
+
+    [Fact]
+    public void DurationCutoffMovesWithTheSelectedStartAtTheSameFinishInstant()
+    {
+        var visits = Route();
+        var finish = At(visits[3], RaceStart.AddSeconds(60));
+        var start = At(visits[0], RaceStart);
+        var originalGun = Gun(RaceStart);
+        var correctedGun = Gun(RaceStart.AddTicks(-10), supersedes: originalGun.Id);
+        var original = Calculate(visits, [start, finish], [originalGun]);
+        var corrected = Calculate(visits, [start, finish], [originalGun, correctedGun]);
+        var correctedNet = Calculate(visits, [start, finish], [originalGun, correctedGun], cutoffBasis: TimingBasis.Net);
+
+        Assert.Equal(original.ProvisionalFinish!.CrossingAtUtc, corrected.ProvisionalFinish!.CrossingAtUtc);
+        Assert.Equal("within_limit", original.RaceCutoff!.Status);
+        Assert.Equal("over_limit", corrected.RaceCutoff!.Status);
+        Assert.Equal("within_limit", correctedNet.RaceCutoff!.Status);
+
+        var beforeGun = Calculate(visits, [finish], [Gun(finish.ObservedAtUtc.AddTicks(10))]);
+        Assert.Equal(-1L, beforeGun.ProvisionalFinish!.GunElapsedMicroseconds);
+        Assert.Equal("unknown", beforeGun.RaceCutoff!.Status);
+        Assert.Equal("invalid_chronology", beforeGun.RaceCutoff.UnavailableReason);
     }
 
     private RegistrationTiming Calculate(TimingVisit[] visits, CrossingEvidence[] evidence,

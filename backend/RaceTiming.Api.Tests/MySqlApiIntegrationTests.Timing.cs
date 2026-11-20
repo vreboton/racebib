@@ -482,6 +482,9 @@ public sealed partial class MySqlApiIntegrationTests
             Assert.True(initial.GetProperty("readiness").GetProperty("missingOfficialGun").GetBoolean());
             Assert.True(initial.GetProperty("readiness").GetProperty("missingIndividualStart").GetBoolean());
             Assert.Equal("unknown", initial.GetProperty("raceCutoff").GetProperty("status").GetString());
+            Assert.Equal("missing_official_gun", initial.GetProperty("raceCutoff").GetProperty("unavailableReason").GetString());
+            Assert.Equal("missing_individual_start",
+                initial.GetProperty("provisionalFinish").GetProperty("netElapsedUnavailableReason").GetString());
 
             var gunPath = path + $"/races/{raceId}/gun-starts";
             var gun = await CreatedId(await manager.PostAsJsonAsync(gunPath,
@@ -506,12 +509,24 @@ public sealed partial class MySqlApiIntegrationTests
             Assert.Equal(300_000_001L, corrected.GetProperty("provisionalFinish").GetProperty("gunElapsedMicroseconds").GetInt64());
             Assert.Equal("over_limit", corrected.GetProperty("raceCutoff").GetProperty("status").GetString());
 
-            using var invalidated = await manager.PostAsJsonAsync(path + $"/observations/{start.ObservationId}/resolve",
+            var invalidate = manager.PostAsJsonAsync(path + $"/observations/{start.ObservationId}/resolve",
                 new { expectedRevision = 1, reason = "Invalid individual start" });
+            var duringCorrection = await Task.WhenAll(Enumerable.Range(0, 6).Select(_ => ReadIndividual()));
+            using var invalidated = await invalidate;
             Assert.Equal(HttpStatusCode.OK, invalidated.StatusCode);
+            foreach (var read in duringCorrection)
+                AssertTimingSnapshot(read, read.GetProperty("individualStartAtUtc").ValueKind == JsonValueKind.String);
             var page = await manager.GetFromJsonAsync<JsonElement>(raceResults + "?offset=0&limit=1");
             Assert.Equal(1, page.GetProperty("total").GetInt32());
             AssertTimingSnapshot(page.GetProperty("items")[0], false);
+
+            var replacement = start with { ObservationId = Guid.NewGuid(), ObservedAtUtc = finishAt.AddSeconds(-119) };
+            var replacementReceipt = await Send(station, stationPath, Guid.NewGuid(), replacement);
+            Assert.Equal(HttpStatusCode.Created, replacementReceipt.Status);
+            Assert.Equal("Accepted", replacementReceipt.Body.GetProperty("outcome").GetString());
+            var afterReplacement = await ReadIndividual();
+            Assert.Equal(replacement.ObservationId, afterReplacement.GetProperty("visits")[0].GetProperty("observationId").GetGuid());
+            Assert.Equal(119_000_000L, afterReplacement.GetProperty("provisionalFinish").GetProperty("netElapsedMicroseconds").GetInt64());
             var history = await manager.GetFromJsonAsync<JsonElement>(path + $"/observations/{start.ObservationId}/history");
             Assert.Equal(2, history.GetProperty("decisions").GetArrayLength());
         }
