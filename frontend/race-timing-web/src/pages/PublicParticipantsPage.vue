@@ -5,7 +5,7 @@
     <v-progress-linear v-if="loading" indeterminate />
     <template v-else-if="!error">
       <v-table>
-        <thead><tr><th>Bib</th><th>Name on Bib</th><th>Race</th></tr></thead>
+        <thead><tr><th>Bib</th><th>Name on Bib</th><th>Race Category</th></tr></thead>
         <tbody>
           <tr v-for="(row, index) in rows" :key="index">
             <td>{{ row.bibNumber || 'Unassigned' }}</td><td>{{ row.nameOnBib }}</td><td>{{ row.race }}</td>

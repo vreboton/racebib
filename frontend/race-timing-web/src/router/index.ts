@@ -23,7 +23,7 @@ const router = createRouter({
         { path: 'events/:id', name: 'event-details', component: EventDetailsPage },
         { path: 'events/:id/edit', name: 'event-edit', component: EventFormPage },
         { path: 'participants', name: 'participants', component: () => import('../pages/PlaceholderPage.vue'), meta: { title: 'Participants' } },
-        { path: 'courses', name: 'courses', component: () => import('../pages/PlaceholderPage.vue'), meta: { title: 'Courses' } },
+        { path: 'courses', name: 'courses', component: () => import('../pages/PlaceholderPage.vue'), meta: { title: 'Routes' } },
         { path: 'categories', name: 'categories', component: () => import('../pages/PlaceholderPage.vue'), meta: { title: 'Categories' } },
         { path: 'users', name: 'users', component: () => import('../pages/OrganizerMembersPage.vue'), meta: { title: 'Organizer Members' } },
         { path: 'platform', name: 'platform-admin', component: () => import('../pages/PlatformAdministrationPage.vue'), meta: { title: 'Platform Administration', platformAdmin: true } },
