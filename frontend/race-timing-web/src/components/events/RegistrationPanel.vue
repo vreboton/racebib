@@ -12,6 +12,7 @@
       <div class="d-flex flex-wrap ga-2 mb-4">
         <v-btn :disabled="busy" @click="openRegistration()">Register runner</v-btn>
         <v-btn :disabled="busy" @click="openImport">Import CSV</v-btn>
+        <v-btn :disabled="busy" @click="showBulkBibs = true">Bulk assign bibs</v-btn>
         <v-btn variant="text" :to="{ name: 'public-participants', params: { id: eventId } }">Public participants</v-btn>
       </div>
       <v-form class="d-flex flex-wrap ga-3" @submit.prevent="page = 1; refresh()">
@@ -35,6 +36,7 @@
     </v-card-text>
   </v-card>
 
+  <BulkBibDialog v-if="showBulkBibs" :event-id="eventId" @close="showBulkBibs = false" @assigned="refresh" />
   <v-dialog v-model="showRegistration" max-width="760">
     <v-card :title="editing ? 'Registration details' : 'Register runner'">
       <v-card-text>
@@ -153,6 +155,7 @@
 </template>
 
 <script setup lang="ts">
+import BulkBibDialog from './BulkBibDialog.vue'
 import CheckInPanel from './CheckInPanel.vue'
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../../services/api'
@@ -193,6 +196,7 @@ interface Preview {
   errorCsv: string
 }
 const props = defineProps<{ eventId: string; organizerId: string }>()
+const showBulkBibs = ref(false)
 const workspace = ref('manage')
 const registrationUrl = '/events/' + props.eventId + '/registrations'
 const runnerUrl = '/organizers/' + props.organizerId + '/runners'

@@ -20,6 +20,7 @@ public sealed class AuditLogger(RaceTiming.Infrastructure.Persistence.RaceTiming
         Enum.GetNames<OrganizerRole>().Concat(["Active", "Suspended", "Inactive"]), StringComparer.OrdinalIgnoreCase);
 
     internal const int MaxReversalReasonLength = 300;
+    internal const string BulkBibAssigned = "Registration.BibAssigned";
     internal const string CheckInReversed = "Registration.CheckInReversed";
     internal static bool IsCheckInReversalReason(string? reason) =>
         reason is { Length: > 0 and <= MaxReversalReasonLength } &&
@@ -41,7 +42,9 @@ public sealed class AuditLogger(RaceTiming.Infrastructure.Persistence.RaceTiming
                 .Where(pair => pair.Value is string value && !IsSensitiveKey(pair.Key) &&
                     ((SafeMetadataKeys.Contains(pair.Key) && SafeMetadataValues.Contains(value)) ||
                      (action == CheckInReversed && targetType == "Registration" && pair.Key == "reason" &&
-                      IsCheckInReversalReason(value))))
+                      IsCheckInReversalReason(value)) ||
+                     (action == BulkBibAssigned && targetType == "Registration" && pair.Key == "eventId" &&
+                      Guid.TryParseExact(value, "D", out _))))
                 .ToDictionary(pair => pair.Key, pair => pair.Value))
         });
     }
