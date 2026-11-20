@@ -11,7 +11,7 @@
       </div>
       <v-form class="d-flex flex-wrap ga-3" @submit.prevent="page = 1; refresh()">
         <v-text-field v-model="search" label="Search name or bib" />
-        <v-select v-model="raceFilter" :items="races" item-title="name" item-value="id" label="Race" clearable />
+        <v-select v-model="raceFilter" :items="races" item-title="name" item-value="id" label="Race Category" clearable />
         <v-select v-model="statusFilter" :items="statuses" label="Status" clearable />
         <v-btn type="submit" :disabled="busy">Search</v-btn>
       </v-form>
@@ -43,10 +43,10 @@
             item-value="id" label="Runner profile" clearable />
           <p v-if="draft.runnerId" class="text-caption mb-2">Runner ID for CSV matching <code>{{ draft.runnerId }}</code></p>
           <v-btn class="mb-4" variant="outlined" @click="openProfile">{{ editing ? 'Edit runner profile' : 'Create runner profile' }}</v-btn>
-          <v-select v-model="draft.raceId" :items="races" item-title="name" item-value="id" label="Race"
+          <v-select v-model="draft.raceId" :items="races" item-title="name" item-value="id" label="Race Category"
             @update:model-value="draft.categoryId = null; draft.waveId = null" />
-          <v-select v-model="draft.categoryId" :items="selectedRace?.categories ?? []" item-title="name" item-value="id" label="Category" clearable />
-          <v-select v-model="draft.waveId" :items="selectedRace?.waves ?? []" item-title="name" item-value="id" label="Start wave" clearable />
+          <v-select v-model="draft.categoryId" :items="selectedRace?.categories ?? []" item-title="name" item-value="id" label="Age Group" clearable />
+          <v-select v-model="draft.waveId" :items="selectedRace?.waves ?? []" item-title="name" item-value="id" label="Start Wave" clearable />
           <v-text-field v-model="draft.bibDisplayName" label="Name on Bib" :hint="bibNameHint" persistent-hint />
           <v-text-field v-model="draft.team" label="Team / Club" />
           <v-select v-model="draft.status" :items="statuses" label="Registration status" />
@@ -99,7 +99,7 @@
   </v-dialog>
 
   <v-dialog v-model="showImport" max-width="800">
-    <v-card title="Import runner registrations">
+    <v-card title="Import runner registrations" subtitle="Race Category and Age Group use the Race and Category CSV columns.">
       <v-card-text>
         <v-alert v-if="error" type="error" class="mb-3">{{ error }}</v-alert>
         <v-btn color="primary" class="mb-4" :href="templateUrl" download="racebib-registration-template.csv">
