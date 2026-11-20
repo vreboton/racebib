@@ -902,7 +902,7 @@ public sealed partial class MySqlApiIntegrationTests
 
     [MySqlIntegrationFact]
     [Trait("Category", "MySqlIntegration")]
-    public async Task CourseDeletionAndRaceAssignmentCannotBothSucceed()
+    public async Task CourseConfigurationWritesSerializeWithConcurrentAssignments()
     {
         await using var data = new MySqlTestData(Services);
         var account = await data.CreateAccountAsync();
@@ -948,18 +948,13 @@ public sealed partial class MySqlApiIntegrationTests
             Assert.True(await db.Courses.AnyAsync(x => x.Id == courseId));
             Assert.True(await db.Races.AnyAsync(x => x.CourseId == courseId));
         }
+
+        await CheckConcurrentRegistrationAndDraftEdit(data, client, organizerId);
     }
 
-    [MySqlIntegrationFact]
-    [Trait("Category", "MySqlIntegration")]
-    public async Task DraftCourseConfirmationRejectsChangedAssignmentsAndSerializesRegistrationCreation()
+    private async Task CheckConcurrentRegistrationAndDraftEdit(MySqlTestData data, HttpClient client, Guid organizerId)
     {
-        await using var data = new MySqlTestData(Services);
-        var account = await data.CreateAccountAsync();
-        var organizerId = await data.CreateOrganizerAsync(account, OrganizerRole.RaceDirector);
         var eventId = await data.CreateEventAsync(organizerId);
-        using var client = Factory.CreateClient();
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await LoginAsync(client, account));
         using var scope = Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
         var eventStart = await db.Events.Where(x => x.Id == eventId).Select(x => x.StartDate).SingleAsync();
