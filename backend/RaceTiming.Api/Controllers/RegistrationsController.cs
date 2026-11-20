@@ -114,6 +114,9 @@ public sealed partial class RegistrationsController(
             return Conflict("This runner already has a registration for this event.");
 
         var race = await RacesWithRegistrationOptions(item.Id).SingleOrDefaultAsync(x => x.Id == input.RaceId, ct);
+        var categoryError = ResolveCategory(race, input.CategoryId, entry, out var categoryId, out var needsManagedCategory);
+        if (categoryError is not null) return BadRequest(categoryError);
+        input = input with { CategoryId = categoryId };
         var error = Validate(item, race, runner, input, entry);
         if (error is not null) return BadRequest(error);
         var previousBib = entry?.BibNumber;
@@ -130,6 +133,9 @@ public sealed partial class RegistrationsController(
         }
         if (entry is not null && input.Status == RegistrationStatus.Cancelled && previousBib != selectedBib)
             return Conflict("Cancellation must keep the existing bib reserved.");
+        if (needsManagedCategory)
+            input = input with { CategoryId = await ApplyManagedCategory(db, input.RaceId,
+                await PlanManagedCategory(db, input.RaceId, ct), ct) };
         entry ??= new Registration { EventId = item.Id, OrganizerId = item.OrganizerId, Runner = runner };
         entry.Runner = runner;
         Apply(entry, input, selectedBib);
@@ -142,6 +148,60 @@ public sealed partial class RegistrationsController(
 
     private IQueryable<Race> RacesWithRegistrationOptions(Guid eventId) => db.Races.AsNoTracking().AsSplitQuery()
         .Include(x => x.Categories).Include(x => x.StartWaves).Where(x => x.EventId == eventId);
+
+    internal sealed record ManagedCategoryPlan(string Name, Guid? ReactivateId = null);
+
+    internal static async Task<ManagedCategoryPlan> PlanManagedCategory(
+        RaceTimingDbContext db, Guid raceId, CancellationToken ct)
+    {
+        var categories = db.RaceCategories.AsNoTracking().Where(x => x.RaceId == raceId);
+        var open = await categories.SingleOrDefaultAsync(x => x.Name == "Open", ct);
+        // Keep retired categories with historical references or custom eligibility intact.
+        if (open is { Status: RecordStatus.Inactive, MinimumAge: null, MaximumAge: null }
+            && string.Equals(open.Name, "Open", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(open.Description)
+            && !await db.Registrations.AnyAsync(x => x.RaceCategoryId == open.Id, ct))
+            return new(open.Name, open.Id);
+        if (open is null) return new("Open");
+
+        const string fallback = "Open (Managed)";
+        var name = fallback;
+        for (var suffix = 2; await categories.AnyAsync(x => x.Name == name, ct); suffix++)
+            name = $"{fallback} {suffix}";
+        return new(name);
+    }
+
+    internal static async Task<Guid> ApplyManagedCategory(
+        RaceTimingDbContext db, Guid raceId, ManagedCategoryPlan plan, CancellationToken ct)
+    {
+        if (plan.ReactivateId is Guid id)
+        {
+            var category = await db.RaceCategories.SingleAsync(x => x.RaceId == raceId && x.Id == id, ct);
+            category.Status = RecordStatus.Active;
+            return category.Id;
+        }
+        return db.RaceCategories.Add(new RaceCategory { RaceId = raceId, Name = plan.Name }).Entity.Id;
+    }
+
+    private static string? ResolveCategory(Race? race, Guid? requested, Registration? existing,
+        out Guid? categoryId, out bool needsManagedCategory)
+    {
+        categoryId = requested;
+        needsManagedCategory = false;
+        if (requested.HasValue || race is null) return null;
+        if (existing?.RaceId == race.Id)
+        {
+            categoryId = existing.RaceCategoryId;
+            return null;
+        }
+
+        var choices = race.Categories.Where(x => x.Status == RecordStatus.Active).Take(2).ToArray();
+        if (choices.Length > 1)
+            return "This race has multiple active registration categories. Specify the category for this legacy race.";
+        categoryId = choices.SingleOrDefault()?.Id;
+        needsManagedCategory = choices.Length == 0;
+        return null;
+    }
 
     private static string? Validate(Event item, Race? race, Runner runner, RegistrationInput input, Registration? existing)
     {
@@ -158,12 +218,12 @@ public sealed partial class RegistrationsController(
         Guid? startWaveId, Registration? existing)
     {
         if (race is null || (race.Status != RecordStatus.Active && existing?.RaceId != race.Id))
-            return "Select an active Race Category from this event.";
+            return "Select an active race from this event.";
         if (ageGroupId is Guid categoryId)
         {
             var category = race.Categories.FirstOrDefault(x => x.Id == categoryId);
             if (category is null || (category.Status != RecordStatus.Active && existing?.RaceCategoryId != categoryId))
-                return "Select an active Age Group from this Race Category.";
+                return "Select an active registration category from this race.";
             if (category.MinimumAge.HasValue || category.MaximumAge.HasValue)
             {
                 var zone = TimeZoneInfo.FindSystemTimeZoneById(item.TimeZoneId);
@@ -180,7 +240,7 @@ public sealed partial class RegistrationsController(
         var allowedWave = existing?.StartWaveId;
         if (startWaveId is Guid waveId && !race.StartWaves.Any(x => x.Id == waveId
             && (x.Status == RecordStatus.Active || allowedWave == x.Id)))
-            return "Select an active Start Wave from this Race Category.";
+            return "Select an active Start Wave from this race.";
         return null;
     }
 

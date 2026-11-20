@@ -9,7 +9,8 @@ namespace RaceTiming.Api.Controllers;
 
 public sealed partial class RaceConfigurationController
 {
-    public sealed record RaceInput(Guid CourseId, string Name, string? Description, string StartAt, int? CutoffDurationSeconds);
+    public sealed record RaceInput(Guid CourseId, string Name, string? Description, string StartAt,
+        int? CutoffDurationSeconds, bool EnsureRegistrationCategory = false);
     public sealed record CategoryInput(string Name, string? Description, int? MinimumAge, int? MaximumAge);
     public sealed record WaveInput(string Name, int Sequence, string StartAt, int? Capacity);
 
@@ -25,27 +26,27 @@ public sealed partial class RaceConfigurationController
         {
             if (!ValidText(input.Name, 120) || input.CutoffDurationSeconds <= 0 ||
                 !TryStart(input.StartAt, out var start) || !InWindow(start, item))
-                return Invalid("Provide a Category name, an offset-aware start within the event window, and a positive cutoff if set.");
+                return Invalid("Provide a race name, an offset-aware start within the event window, and a positive cutoff if set.");
             var race = raceId is null ? new Race { EventId = eventId, Name = input.Name.Trim() }
                 : await db.Races.Include(x => x.StartWaves).Include(x => x.Course)
                     .SingleOrDefaultAsync(x => x.Id == raceId && x.EventId == eventId, ct);
             if (race is null) return NotFound();
-            if (race.Status != RecordStatus.Active) return ConflictProblem("This Category has been retired.");
+            if (race.Status != RecordStatus.Active) return ConflictProblem("This race is inactive.");
             var course = await FindCourse(eventId, input.CourseId, ct);
             if (course is null) return NotFound();
-            if (!IsUsable(course)) return Invalid("Select an active Route with valid start and finish checkpoints.");
+            if (!IsUsable(course)) return Invalid("Select an active course with valid start and finish checkpoints.");
             if (raceId.HasValue && race.CourseId != course.Id)
             {
                 if (!CanSwitchCourse(item, race.Status))
-                    return ConflictProblem("A Category can switch Route Revisions only while its event is in Draft.");
+                    return ConflictProblem("A race can switch course revisions only while its event is in Draft.");
                 if (await db.Registrations.AnyAsync(x => x.RaceId == race.Id, ct))
-                    return ConflictProblem("A Category with registrations cannot switch Route Revisions here. Edit its Route from Race Configuration while the event is in Draft.");
+                    return ConflictProblem("A race with registrations cannot switch revisions here. Edit its course while the event is in Draft.");
                 if (course.Version <= race.Course.Version ||
                     !await db.Courses.AnyAsync(x => x.Id == course.Id && x.Name == race.Course.Name, ct))
-                    return Invalid("Switch to a newer revision of this Category's Route.");
+                    return Invalid("Switch to a newer revision of this race's course.");
             }
             if (race.StartWaves.Any(x => x.Status == RecordStatus.Active && x.StartAtUtc < start))
-                return Invalid("The Category start cannot be after an active Start Wave.");
+                return Invalid("The race start cannot be after an active start wave.");
             race.CourseId = course.Id;
             race.DistanceKm = course.DistanceKm;
             race.Name = input.Name.Trim();
@@ -53,6 +54,12 @@ public sealed partial class RaceConfigurationController
             race.StartAtUtc = start;
             race.CutoffDurationSeconds = input.CutoffDurationSeconds;
             if (!raceId.HasValue) db.Races.Add(race);
+            if (input.EnsureRegistrationCategory && (!raceId.HasValue ||
+                !await db.RaceCategories.AnyAsync(x => x.RaceId == race.Id && x.Status == RecordStatus.Active, ct)))
+            {
+                var plan = await RegistrationsController.PlanManagedCategory(db, race.Id, ct);
+                await RegistrationsController.ApplyManagedCategory(db, race.Id, plan, ct);
+            }
             await db.SaveChangesAsync(ct);
             return Ok(new { race.Id });
         });

@@ -11,7 +11,7 @@
       </div>
       <v-form class="d-flex flex-wrap ga-3" @submit.prevent="page = 1; refresh()">
         <v-text-field v-model="search" label="Search name or bib" />
-        <v-select v-model="raceFilter" :items="races" item-title="name" item-value="id" label="Race Category" clearable />
+        <v-select v-model="raceFilter" :items="races" item-title="name" item-value="id" label="Race" clearable />
         <v-select v-model="statusFilter" :items="statuses" label="Status" clearable />
         <v-btn type="submit" :disabled="busy">Search</v-btn>
       </v-form>
@@ -42,10 +42,11 @@
           <v-autocomplete v-if="!editing" v-model="draft.runnerId" :items="runners" :item-title="runnerLabel"
             item-value="id" label="Runner profile" clearable />
           <v-btn class="mb-4" variant="outlined" @click="openProfile">{{ editing ? 'Edit runner profile' : 'Create runner profile' }}</v-btn>
-          <v-select v-model="draft.raceId" :items="races" item-title="name" item-value="id" label="Race Category"
+          <v-select v-model="draft.raceId" :items="races" item-title="name" item-value="id" label="Race"
             @update:model-value="draft.categoryId = null; draft.waveId = null" />
-          <v-select v-model="draft.categoryId" :items="selectedRace?.categories ?? []" item-title="name" item-value="id" label="Age Group" clearable />
-          <v-select v-model="draft.waveId" :items="selectedRace?.waves ?? []" item-title="name" item-value="id" label="Start Wave" clearable />
+          <v-select v-if="activeCategories.length > 1" v-model="draft.categoryId" :items="registrationCategories"
+            item-title="name" item-value="id" label="Registration category" />
+          <v-select v-if="selectedRace?.waves.length" v-model="draft.waveId" :items="selectedRace.waves" item-title="name" item-value="id" label="Start Wave" clearable />
           <v-text-field v-model="draft.bibDisplayName" label="Name on Bib" :hint="bibNameHint" persistent-hint />
           <v-text-field v-model="draft.team" label="Team / Club" />
           <v-select v-model="draft.status" :items="statuses" label="Registration status" />
@@ -98,14 +99,14 @@
   </v-dialog>
 
   <v-dialog v-model="showImport" max-width="800">
-    <v-card title="Import runner registrations" subtitle="Race Category and Age Group use the Race and Category CSV columns.">
+    <v-card title="Import runner registrations">
       <v-card-text>
         <v-alert v-if="error" type="error" class="mb-3">{{ error }}</v-alert>
         <p class="mb-3">
-          Upload a CSV containing First Name, Last Name, and Email. Category and Start Wave are optional.
+          Upload a CSV containing First Name, Last Name, and Email. Start Wave is optional. Use the Category column when a legacy race has multiple active categories.
           <a :href="templateUrl" download="racebib-registration-template.csv">Download CSV Template</a>
         </p>
-        <v-alert v-if="!eligibleRaces.length" type="warning" class="mb-3">Add an active Race Category to this event before importing.</v-alert>
+        <v-alert v-if="!eligibleRaces.length" type="warning" class="mb-3">Add an active Race to this event before importing.</v-alert>
         <v-file-input label="Registration CSV" accept=".csv,text/csv" :model-value="csvFile" :disabled="busy"
           @update:model-value="selectFile" />
         <v-select v-model="importAssignment.mode" :items="modes" label="Bib assignment" :disabled="busy" @update:model-value="invalidate" />
@@ -114,13 +115,13 @@
           <v-text-field v-model.number="importAssignment.end" label="Range end" type="number" :disabled="busy" @update:model-value="invalidate" />
           <v-text-field v-model.number="importAssignment.width" label="Minimum digits" type="number" :disabled="busy" @update:model-value="invalidate" />
         </div>
-        <v-select v-model="defaultRaceId" :items="eligibleRaces" item-title="name" item-value="id" label="Default Race Category"
+        <v-select v-model="defaultRaceId" :items="eligibleRaces" item-title="name" item-value="id" label="Default Race"
           :disabled="busy || !eligibleRaces.length" @update:model-value="invalidate" />
-        <p class="mb-2">Blank or unrecognized values in the Race column use the default Race Category.</p>
+        <p class="mb-2">Blank or unrecognized values in the Race column use the default Race.</p>
         <template v-if="preview">
           <v-alert v-if="preview.error" type="warning" class="mb-2">{{ preview.error }}</v-alert>
           <p v-if="preview.rows.length">{{ preview.validCount }} valid of {{ preview.rows.length }} rows in the last preview.</p>
-          <p v-if="preview.defaultRaceCount">{{ preview.defaultRaceCount }} rows use the default Race Category.</p>
+          <p v-if="preview.defaultRaceCount">{{ preview.defaultRaceCount }} rows use the default Race.</p>
           <v-list class="preview-rows" density="compact">
             <v-list-item v-for="row in preview.rows" :key="row.row" :title="'Row ' + row.row"
               :subtitle="row.error || previewRowSummary(row)">
@@ -219,6 +220,9 @@ const eligibleRaces = computed(() => races.value.filter(race => race.status === 
 const templateHeader = 'First Name,Last Name,Name on Bib,Gender,Birthdate,Email,Mobile Number,Race,Category,Start Wave,Bib Number,Team,Emergency Contact'
 const templateUrl = 'data:text/csv;charset=utf-8,' + encodeURIComponent('\uFEFF' + templateHeader + '\r\n')
 const selectedRace = computed(() => races.value.find(race => race.id === draft.value.raceId))
+const activeCategories = computed(() => selectedRace.value?.categories.filter(category => category.status === 'Active') ?? [])
+const registrationCategories = computed(() => selectedRace.value?.categories.filter(category =>
+  category.status === 'Active' || category.id === draft.value.categoryId) ?? [])
 const bibNameHint = computed(() => {
   if (draft.value.bibDisplayName?.trim()) return 'Printed bibs and public participant outputs use this name.'
   const runner = editing.value?.runner ?? runners.value.find(item => item.id === draft.value.runnerId)
@@ -365,7 +369,7 @@ function confirmImport() {
     invalidate()
     const { data } = await api.post<{ importedCount: number; defaultRaceCount: number }>(registrationUrl + '/import/confirm', form, { headers: { 'Content-Type': 'multipart/form-data' } })
     notice.value = 'Imported ' + data.importedCount + ' registrations.'
-    if (data.defaultRaceCount) notice.value += ' Assigned ' + data.defaultRaceCount + ' to the default Race Category.'
+    if (data.defaultRaceCount) notice.value += ' Assigned ' + data.defaultRaceCount + ' to the default Race.'
     showImport.value = false
     selectFile(null)
     await loadRows()

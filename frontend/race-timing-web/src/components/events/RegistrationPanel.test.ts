@@ -1,14 +1,19 @@
 import { flushPromises, shallowMount } from '@vue/test-utils'
-import { expect, it, vi } from 'vitest'
+import { beforeEach, expect, it, vi } from 'vitest'
 import RegistrationPanel from './RegistrationPanel.vue'
 import { api } from '../../services/api'
 import { loadConfiguration, type Race } from '../../services/raceConfiguration'
 
 vi.mock('../../services/api', () => ({ api: { get: vi.fn(), post: vi.fn() } }))
 vi.mock('../../services/raceConfiguration', () => ({ loadConfiguration: vi.fn() }))
+beforeEach(() => vi.resetAllMocks())
 
-const activeRace = { id: 'race-1', name: 'Summit', status: 'Active' } as Race
-const inactiveRace = { id: 'race-retired', name: 'Retired', status: 'Inactive' } as Race
+const activeRace: Race = {
+  id: 'race-1', name: 'Summit', status: 'Active', courseId: 'course-1', distanceKm: 10,
+  startAt: '2026-11-20T10:00:00Z', description: null, cutoffDurationSeconds: null,
+  categories: [], waves: [], revisionIds: [],
+}
+const inactiveRace: Race = { ...activeRace, id: 'race-retired', name: 'Retired', status: 'Inactive' }
 
 async function mountImport(races = [activeRace, inactiveRace]) {
   vi.mocked(loadConfiguration).mockResolvedValue({ canEdit: true, timeZoneId: 'UTC', courses: [], races })
@@ -38,7 +43,7 @@ async function mountImport(races = [activeRace, inactiveRace]) {
     await flushPromises()
     return file
   }
-  const defaultRace = wrapper.findAllComponents({ name: 'FixtureSelect' }).find(item => item.props('label') === 'Default Race Category')!
+  const defaultRace = wrapper.findAllComponents({ name: 'FixtureSelect' }).find(item => item.props('label') === 'Default Race')!
   const selectDefault = async () => {
     defaultRace.vm.$emit('update:modelValue', activeRace.id)
     await flushPromises()
@@ -47,6 +52,30 @@ async function mountImport(races = [activeRace, inactiveRace]) {
 }
 
 const canonical = 'First Name,Last Name,Name on Bib,Gender,Birthdate,Email,Mobile Number,Race,Category,Start Wave,Bib Number,Team,Emergency Contact'
+
+it('asks for a registration category only when there are multiple active choices', async () => {
+  const category = { id: 'category-1', name: 'Open', status: 'Active', hasRegistrations: false,
+    description: null, minimumAge: null, maximumAge: null } as const
+  const single = { ...activeRace, categories: [category] }
+  const legacy = { ...activeRace, id: 'legacy', categories: [category, { ...category, id: 'category-2', name: 'Masters' }] }
+  const retiredOnly = { ...activeRace, id: 'retired-only', categories: [{ ...category, status: 'Inactive' as const }] }
+  const { wrapper, button, defaultRace } = await mountImport([single, retiredOnly, legacy])
+  expect(defaultRace.props('items')).toContainEqual(retiredOnly)
+  await button('Register runner').trigger('click')
+  await flushPromises()
+  const selects = () => wrapper.findAllComponents({ name: 'FixtureSelect' })
+  const race = selects().filter(item => item.props('label') === 'Race').at(-1)!
+  race.vm.$emit('update:modelValue', single.id)
+  await flushPromises()
+  expect(selects().some(item => item.props('label') === 'Registration category')).toBe(false)
+  race.vm.$emit('update:modelValue', retiredOnly.id)
+  await flushPromises()
+  expect(selects().some(item => item.props('label') === 'Registration category')).toBe(false)
+  race.vm.$emit('update:modelValue', legacy.id)
+  await flushPromises()
+  expect(selects().find(item => item.props('label') === 'Registration category')?.props('items')).toEqual(legacy.categories)
+  wrapper.unmount()
+})
 
 it.each([
   canonical + '\r\nMara,Ventura,小光,,,mara@example.test,,Summit,,,0007,,',
@@ -135,7 +164,7 @@ it('invalidates a preview when the bib assignment or file changes', async () => 
 it('blocks import when there are no active races', async () => {
   const { wrapper, button, upload } = await mountImport([inactiveRace])
   await upload('First Name,Last Name,Email\nA,B,a@example.test')
-  expect(wrapper.text()).toContain('Add an active Race Category to this event before importing.')
+  expect(wrapper.text()).toContain('Add an active Race to this event before importing.')
   expect(button('Validate & Preview').attributes('disabled')).toBeDefined()
   expect(api.post).not.toHaveBeenCalled()
   wrapper.unmount()
@@ -148,17 +177,17 @@ it('describes optional classifications and default race fallback in preview and 
   ], validCount: 2, defaultRaceCount: 2, token: 'current' } })
     .mockResolvedValueOnce({ data: { importedCount: 2, defaultRaceCount: 2 } })
   const { wrapper, button, upload, selectDefault } = await mountImport()
-  expect(wrapper.text()).toContain('Category and Start Wave are optional.')
+  expect(wrapper.text()).toContain('Use the Category column when a legacy race has multiple active categories.')
   await upload('First Name,Last Name,Email,Race\nA,B,a@example.test,\nC,D,c@example.test,Unknown')
   await selectDefault()
   await button('Validate & Preview').trigger('click')
   await flushPromises()
-  expect(wrapper.text()).toContain('2 rows use the default Race Category.')
+  expect(wrapper.text()).toContain('2 rows use the default Race.')
   expect(wrapper.text()).toContain('default, Race column blank')
   expect(wrapper.text()).toContain('default, Race value “Unknown” not found')
   await button('Confirm Import').trigger('click')
   await flushPromises()
-  expect(wrapper.text()).toContain('Assigned 2 to the default Race Category.')
+  expect(wrapper.text()).toContain('Assigned 2 to the default Race.')
   wrapper.unmount()
 })
 
