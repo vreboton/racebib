@@ -6,7 +6,7 @@
       <v-alert v-if="notice" type="success" class="mb-4">{{ notice }}</v-alert>
       <div class="d-flex flex-wrap ga-2 mb-4">
         <v-btn :disabled="busy" @click="openRegistration()">Register runner</v-btn>
-        <v-btn :disabled="busy" @click="showImport = true">Import CSV</v-btn>
+        <v-btn :disabled="busy" @click="openImport">Import CSV</v-btn>
         <v-btn variant="text" :to="{ name: 'public-participants', params: { id: eventId } }">Public participants</v-btn>
       </div>
       <v-form class="d-flex flex-wrap ga-3" @submit.prevent="page = 1; refresh()">
@@ -41,7 +41,6 @@
           </div>
           <v-autocomplete v-if="!editing" v-model="draft.runnerId" :items="runners" :item-title="runnerLabel"
             item-value="id" label="Runner profile" clearable />
-          <p v-if="draft.runnerId" class="text-caption mb-2">Runner ID for CSV matching <code>{{ draft.runnerId }}</code></p>
           <v-btn class="mb-4" variant="outlined" @click="openProfile">{{ editing ? 'Edit runner profile' : 'Create runner profile' }}</v-btn>
           <v-select v-model="draft.raceId" :items="races" item-title="name" item-value="id" label="Race Category"
             @update:model-value="draft.categoryId = null; draft.waveId = null" />
@@ -102,10 +101,11 @@
     <v-card title="Import runner registrations" subtitle="Race Category and Age Group use the Race and Category CSV columns.">
       <v-card-text>
         <v-alert v-if="error" type="error" class="mb-3">{{ error }}</v-alert>
-        <v-btn color="primary" class="mb-4" :href="templateUrl" download="racebib-registration-template.csv">
-          Download CSV Template
-        </v-btn>
-        <p class="mb-2">Keep the template headers and fill in First Name, Last Name, and the Race column for the Race Category. For runners who share a name, use the verified Runner ID.</p>
+        <p class="mb-3">
+          Upload a CSV containing First Name, Last Name, and Email. Category and Start Wave are optional.
+          <a :href="templateUrl" download="racebib-registration-template.csv">Download CSV Template</a>
+        </p>
+        <v-alert v-if="!eligibleRaces.length" type="warning" class="mb-3">Add an active Race Category to this event before importing.</v-alert>
         <v-file-input label="Registration CSV" accept=".csv,text/csv" :model-value="csvFile" :disabled="busy"
           @update:model-value="selectFile" />
         <v-select v-model="importAssignment.mode" :items="modes" label="Bib assignment" :disabled="busy" @update:model-value="invalidate" />
@@ -114,12 +114,18 @@
           <v-text-field v-model.number="importAssignment.end" label="Range end" type="number" :disabled="busy" @update:model-value="invalidate" />
           <v-text-field v-model.number="importAssignment.width" label="Minimum digits" type="number" :disabled="busy" @update:model-value="invalidate" />
         </div>
+        <v-select v-model="defaultRaceId" :items="eligibleRaces" item-title="name" item-value="id" label="Default Race Category"
+          :disabled="busy || !eligibleRaces.length" @update:model-value="invalidate" />
+        <p class="mb-2">Blank or unrecognized values in the Race column use the default Race Category.</p>
         <template v-if="preview">
           <v-alert v-if="preview.error" type="warning" class="mb-2">{{ preview.error }}</v-alert>
           <p v-if="preview.rows.length">{{ preview.validCount }} valid of {{ preview.rows.length }} rows in the last preview.</p>
+          <p v-if="preview.defaultRaceCount">{{ preview.defaultRaceCount }} rows use the default Race Category.</p>
           <v-list class="preview-rows" density="compact">
             <v-list-item v-for="row in preview.rows" :key="row.row" :title="'Row ' + row.row"
-              :subtitle="row.error || [row.nameOnBib, row.bibNumber ?? 'Unassigned'].filter(Boolean).join(' · ')" />
+              :subtitle="row.error || previewRowSummary(row)">
+              <div v-if="row.warning" class="text-warning text-body-2">{{ row.warning }}</div>
+            </v-list-item>
           </v-list>
           <v-btn v-if="preview.rows.some(row => row.error)" variant="text" @click="downloadErrors">Download error report</v-btn>
         </template>
@@ -127,8 +133,8 @@
       <v-card-actions>
         <v-btn @click="showImport = false">Close</v-btn>
         <v-spacer />
-        <v-btn :disabled="!csvFile" :loading="busy" @click="previewImport">Validate &amp; Preview</v-btn>
-        <v-btn color="primary" :disabled="!token" :loading="busy" @click="confirmImport">Confirm Import</v-btn>
+        <v-btn :disabled="busy || !csvFile || !defaultRaceId || !eligibleRaces.length" :loading="busy" @click="previewImport">Validate &amp; Preview</v-btn>
+        <v-btn color="primary" :disabled="busy || !token || !defaultRaceId || !eligibleRaces.length" :loading="busy" @click="confirmImport">Confirm Import</v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>
@@ -165,7 +171,9 @@ interface Draft {
 interface Row extends Draft { id: string; effectiveBibDisplayName: string; runner: Profile }
 interface Change { action: string; timestampUtc: string }
 interface Preview {
-  rows: { row: number; error?: string; nameOnBib?: string; bibNumber?: string | null }[]
+  rows: { row: number; error?: string; nameOnBib?: string; bibNumber?: string | null; raceName?: string;
+    defaultRaceReason?: 'blank' | 'unrecognized'; csvRace?: string; warning?: string | null }[]
+  defaultRaceCount: number
   validCount: number
   token: string | null
   error: string | null
@@ -206,7 +214,9 @@ const csvFile = ref<File | null>(null)
 const preview = ref<Preview | null>(null)
 const token = ref<string | null>(null)
 const importAssignment = ref(assignment())
-const templateHeader = 'First Name,Last Name,Name on Bib,Gender,Birthdate,Email,Mobile Number,Race,Category,Start Wave,Bib Number,Team,Emergency Contact,Registration Status,Payment Status,Runner ID'
+const defaultRaceId = ref<string | null>(null)
+const eligibleRaces = computed(() => races.value.filter(race => race.status === 'Active'))
+const templateHeader = 'First Name,Last Name,Name on Bib,Gender,Birthdate,Email,Mobile Number,Race,Category,Start Wave,Bib Number,Team,Emergency Contact'
 const templateUrl = 'data:text/csv;charset=utf-8,' + encodeURIComponent('\uFEFF' + templateHeader + '\r\n')
 const selectedRace = computed(() => races.value.find(race => race.id === draft.value.raceId))
 const bibNameHint = computed(() => {
@@ -315,6 +325,14 @@ function printBib() {
   document.body.append(bib)
   printWindow.print()
 }
+function openImport() {
+  showImport.value = true
+  return run(async () => {
+    races.value = (await loadConfiguration(props.eventId)).races
+    if (!eligibleRaces.value.some(race => race.id === defaultRaceId.value)) defaultRaceId.value = null
+    invalidate()
+  })
+}
 function invalidate() {
   token.value = null
   preview.value = null
@@ -326,10 +344,12 @@ function selectFile(file: File | File[] | null) {
 function importForm() {
   const form = new FormData()
   if (csvFile.value) form.append('file', csvFile.value)
+  form.append('defaultRaceId', defaultRaceId.value ?? '')
   form.append('assignment', JSON.stringify(importAssignment.value))
   return form
 }
 function previewImport() {
+  if (!csvFile.value || !eligibleRaces.value.some(race => race.id === defaultRaceId.value)) return
   return run(async () => {
     invalidate()
     const { data } = await api.post<Preview>(registrationUrl + '/import/preview', importForm(), { headers: { 'Content-Type': 'multipart/form-data' } })
@@ -339,16 +359,25 @@ function previewImport() {
 }
 function confirmImport() {
   return run(async () => {
-    if (!token.value) return
+    if (!token.value || !eligibleRaces.value.some(race => race.id === defaultRaceId.value)) return
     const form = importForm()
     form.append('token', token.value)
     invalidate()
-    const { data } = await api.post<{ importedCount: number }>(registrationUrl + '/import/confirm', form, { headers: { 'Content-Type': 'multipart/form-data' } })
+    const { data } = await api.post<{ importedCount: number; defaultRaceCount: number }>(registrationUrl + '/import/confirm', form, { headers: { 'Content-Type': 'multipart/form-data' } })
     notice.value = 'Imported ' + data.importedCount + ' registrations.'
+    if (data.defaultRaceCount) notice.value += ' Assigned ' + data.defaultRaceCount + ' to the default Race Category.'
     showImport.value = false
     selectFile(null)
     await loadRows()
   })
+}
+function previewRowSummary(row: Preview['rows'][number]) {
+  const race = row.defaultRaceReason === 'blank'
+    ? row.raceName + ' (default, Race column blank)'
+    : row.defaultRaceReason === 'unrecognized'
+      ? row.raceName + ' (default, Race value “' + row.csvRace + '” not found)'
+      : row.raceName
+  return [row.nameOnBib, row.bibNumber ?? 'Unassigned', race].filter(Boolean).join(' · ')
 }
 function downloadErrors() {
   if (!preview.value) return

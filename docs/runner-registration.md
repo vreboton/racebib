@@ -8,7 +8,7 @@ Choose a category or wave from the selected race. Age-limited categories use age
 
 ## Name on Bib and publication
 
-Name on Bib belongs to the registration and accepts a Unicode preferred name, nickname or pseudonym. The limit is 60 text elements and 120 UTF-16 code units. A blank value publishes the registered full name on printed bibs and public participant outputs. The RD editor shows the exact fallback once a profile is selected. Edit the value from **Registration details**. Print an assigned bib from those details.
+Name on Bib belongs to the registration and accepts a Unicode preferred name, nickname or pseudonym. The limit is 60 text elements and 120 UTF-16 code units. For manual registration, a blank value uses the registered full name on printed bibs and public participant outputs. CSV import saves the trimmed CSV first and last names as Name on Bib when the field is blank. The RD editor shows the exact fallback once a profile is selected. Edit the value from **Registration details**. Print an assigned bib from those details.
 
 The public participants page and its downloadable CSV expose bib number, effective Name on Bib and race for confirmed registrations in a published, active organizer event. Use the same public identity contract when integrating results, leaderboards or live timing. This repository currently has no public results, leaderboard or live timing presentation to update. Registered names and profile contact fields are available in organizer management views. A fallback full name is part of the public identity only when Name on Bib is blank.
 
@@ -17,27 +17,24 @@ The RD or registration provider administers the applicable Registration Guidelin
 ## Import a CSV
 
 1. Open the event, select **Import CSV**, and choose **Download CSV Template**. The [fictional sample](./runner-registration-sample.csv) shows two completed rows.
-2. Fill in First Name, Last Name, and Race on every data row. Leave optional values blank as needed.
-3. Upload a UTF-8, comma-delimited CSV, choose a bib assignment mode, then select **Validate & Preview**. A BOM, quoted fields, and quoted commas are supported. The limit is 1 MiB and 1,000 data rows.
-4. Review row outcomes and proposed bibs. Download the error report for invalid rows, correct the source file, and validate it again.
-5. Select **Confirm Import** within 20 minutes of a valid preview. Confirmation rechecks the file and proposed assignments against current records. If anything changed, validate again.
+2. Fill in First Name, Last Name, and Email on every data row. Leave optional fields blank as needed.
+3. Select an active **Default Race Category**, upload a UTF-8 comma-delimited CSV, choose a bib assignment mode, then select **Validate & Preview**. The limit is 1 MiB and 1,000 data rows.
+4. Review row errors, proposed bibs, and any rows assigned to the default Race Category. Download the error report to correct invalid rows.
+5. Select **Confirm Import** within 20 minutes of a valid preview. Confirmation rechecks the file, default Race Category and proposed assignments. Validate again if any input or relevant event data changes.
 
-Use these exact header names. The download includes all sixteen. Columns may be reordered, and optional columns may be omitted. Missing required headers, duplicate headers, and unknown headers prevent import. Capitalization and spacing must match the template.
+Keep the exact template header names. Column order can vary, and optional columns can be omitted.
 
 ```csv
-First Name,Last Name,Name on Bib,Gender,Birthdate,Email,Mobile Number,Race,Category,Start Wave,Bib Number,Team,Emergency Contact,Registration Status,Payment Status,Runner ID
+First Name,Last Name,Name on Bib,Gender,Birthdate,Email,Mobile Number,Race,Category,Start Wave,Bib Number,Team,Emergency Contact
 ```
 
-The Race column identifies the Race Category by exact name or an unambiguous numeric distance in km. Use the Category and Start Wave columns for the Age Group and Start Wave names from that Race Category. Keep the CSV headers exactly as listed. Enter dates as YYYY-MM-DD or M/D/YYYY. Enter status names as listed in the API below. Keep bib numbers as text in your spreadsheet to preserve leading zeros.
+Email is trimmed and matched case-insensitively within the organizer. A unique email match reuses the saved profile and its data. If the CSV name differs, the preview identifies the saved profile in a row warning and still allows confirmation. An unmatched valid email creates a profile at confirmation. A blank or invalid email, duplicate email row, or email shared by multiple organizer profiles must be corrected before import. Resolve duplicate profiles before importing. Each runner can have only one registration per event.
 
-The importer accepts either of these ways to link an existing organizer profile.
+The Race column matches Race Category names exactly after trimming, ignoring case. A blank or unrecognized value uses the selected active default Race Category. The preview identifies the affected rows and the confirmation reports how many registrations used the fallback. Ambiguous or inactive matches are errors. The Category column identifies the Age Group. The Category and Start Wave columns may be blank. Populated values must belong to the resolved Race Category.
 
-- The RD supplies its **Runner ID** and the registered names and any supplied email agree with the profile. To find the ID, select a verified profile in the registration form. If two people share a name, verify or create the correct profiles first and specify their IDs in the CSV.
-- The supplied email matches exactly one profile in the organizer and its first and last names also agree. Matching is case-insensitive.
+Imports set registration status to **Confirmed** and payment status to **Paid**. The old Runner ID and status headers are unsupported. Enter dates as YYYY-MM-DD or M/D/YYYY, and keep bib numbers as text in the spreadsheet to preserve leading zeros.
 
-If no profile matches the name or supplied email, the importer can create a new profile, including one without email. A name collision, an ambiguous email, or conflicting details produce row errors. New rows with repeated names or email must be resolved before import. Duplicate registrations are rejected by resolved Runner ID, including cancelled registrations. Re-import does not change an existing registration or Name on Bib.
-
-An existing profile's birthdate is authoritative for age limits. If the CSV supplies a different date, verify the discrepancy and correct the CSV or update the profile. If the profile lacks a birthdate and the category has age limits, verify and save the date on the profile, or choose a category without age limits. A valid CSV date may populate a new profile. Imports do not update existing profile fields.
+An existing profile's birthdate is authoritative for age limits. A valid CSV birthdate may differ from the saved date. Import retains the saved date for an existing profile and uses it for age eligibility. CSV birthdates must still be valid when provided. If the profile lacks a birthdate and the category has age limits, verify and save the date on the profile, or choose a category without age limits. A valid CSV date may populate a new profile. Imports do not update existing profile fields.
 
 Confirmation is all-or-nothing. Error reports contain row numbers and predefined messages. Public CSV export escapes spreadsheet formula prefixes.
 
@@ -68,7 +65,7 @@ Authenticated organizer management routes use the existing bearer-token scope ch
 
 Registration list query parameters are search, raceId, status and one-based page. POST and PUT accept runnerId, raceId, categoryId, waveId, bibDisplayName, bibNumber, team, status, paymentStatus and assignment. Create or select the organizer profile first. Registration statuses in order are Pending, Confirmed, Waitlisted, Cancelled, Dnf, Dns and Disqualified. Payment statuses in order are Unspecified, Unpaid, Paid, Waived and Refunded. Admin response status values are zero-based integers. Bib assignment has mode (0 existing, 1 automatic, 2 mixed), start, end and width.
 
-The import routes accept a multipart file and optional assignment JSON with numeric mode. Confirm also accepts the preview token. Preview returns row results, validation feedback, an error CSV, and a token for valid files. It validates headers directly from the file. Request mapping and preview mapping fields have been removed. Preview tokens issued before this change require a new preview. Resubmit the same file and assignment. A protected ticket binds the actor, event, original bytes and resolved assignment to the preview. The confirmation receipt and all registrations commit together. Uploaded records live in request processing only. The app does not store uploaded files or their rows separately.
+The import routes accept a multipart file, required defaultRaceId for an active race in the event, and optional assignment JSON with numeric mode. Confirm also accepts the preview token. Preview returns row results, validation feedback, an error CSV, and a token for valid files. It validates headers directly from the file. Request mapping and preview mapping fields have been removed. Preview tokens issued before this change require a new preview. Resubmit the same file, defaultRaceId, and assignment. A protected ticket binds the actor, event, original bytes, default race, resolved assignment, and resolved profile identity (ID, normalized email, saved names, and birthdate) to the preview. The confirmation receipt and all registrations commit together. Uploaded records live in request processing only. The app does not store uploaded files or their rows separately.
 
 ## Migration and verification
 
@@ -76,7 +73,7 @@ AddRunnerRegistrationManagement makes BibNumber nullable and adds registration d
 
 EnforceEventRunnerRegistration replaces the non-unique event/runner index with a unique MySQL index on the event, runner and a database-owned slot. The migration retains one indexed slot per historical pair and marks additional legacy rows with a null slot. Every registration remains intact. New application and ordinary SQL inserts use the reserved slot by default. The slot is never writable through the API. Direct database maintenance must preserve the slot and keep all historical records for a pair together.
 
-The API checks all registrations for a runner, including legacy duplicates. It continues to take the parent event lock so duplicate validation, bib allocation and confirmation are atomic. Manual registration and import confirmation take the organizer lock after the event lock before reading runner identity and eligibility. Runner profile writes take only the organizer lock. This keeps profile edits and other imports from changing the organizer's identity data between final validation and commit.
+The API checks all registrations for a runner, including legacy duplicates. It continues to take the parent event lock so duplicate validation, bib allocation and confirmation are atomic. Manual registration and import confirmation take the organizer lock after the event lock before reading runner identity and eligibility. Confirmation resolves email profiles again under this lock, including across different events for the same organizer. A competing import that creates a profile can make a preview stale. Validate again to reuse the newly saved profile. Runner profile writes take only the organizer lock. This keeps profile edits and other imports from changing the organizer's identity data between final validation and commit.
 
 Validate the migration on a disposable MySQL 8.4 database and run the backend unit and MySQL integration suites and frontend tests and production build. The MySQL tests cover organizer scope, invalid references, public DTO shape, Unicode, cancellation, audit, stale and repeated imports and concurrent allocation. Use a local or CI database with a racebib_test_ prefix as described in the repository's CI setup.
 
