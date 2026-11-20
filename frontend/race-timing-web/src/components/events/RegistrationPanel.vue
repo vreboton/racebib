@@ -11,7 +11,7 @@
       </div>
       <v-form class="d-flex flex-wrap ga-3" @submit.prevent="page = 1; refresh()">
         <v-text-field v-model="search" label="Search name or bib" />
-        <v-select v-model="raceFilter" :items="races" item-title="name" item-value="id" label="Race" clearable />
+        <v-select v-model="raceFilter" :items="races" item-title="name" item-value="id" label="Race Category" clearable />
         <v-select v-model="statusFilter" :items="statuses" label="Status" clearable />
         <v-btn type="submit" :disabled="busy">Search</v-btn>
       </v-form>
@@ -43,10 +43,10 @@
             item-value="id" label="Runner profile" clearable />
           <p v-if="draft.runnerId" class="text-caption mb-2">Runner ID for CSV matching <code>{{ draft.runnerId }}</code></p>
           <v-btn class="mb-4" variant="outlined" @click="openProfile">{{ editing ? 'Edit runner profile' : 'Create runner profile' }}</v-btn>
-          <v-select v-model="draft.raceId" :items="races" item-title="name" item-value="id" label="Race"
+          <v-select v-model="draft.raceId" :items="races" item-title="name" item-value="id" label="Race Category"
             @update:model-value="draft.categoryId = null; draft.waveId = null" />
-          <v-select v-model="draft.categoryId" :items="selectedRace?.categories ?? []" item-title="name" item-value="id" label="Category" clearable />
-          <v-select v-model="draft.waveId" :items="selectedRace?.waves ?? []" item-title="name" item-value="id" label="Start wave" clearable />
+          <v-select v-model="draft.categoryId" :items="selectedRace?.categories ?? []" item-title="name" item-value="id" label="Age Group" clearable />
+          <v-select v-model="draft.waveId" :items="selectedRace?.waves ?? []" item-title="name" item-value="id" label="Start Wave" clearable />
           <v-text-field v-model="draft.bibDisplayName" label="Name on Bib" :hint="bibNameHint" persistent-hint />
           <v-text-field v-model="draft.team" label="Team / Club" />
           <v-select v-model="draft.status" :items="statuses" label="Registration status" />
@@ -114,13 +114,13 @@
         <template v-if="preview">
           <div class="mapping">
             <v-select v-for="field in preview.fields" :key="field" :model-value="mapping[field] ?? null"
-              :items="headers" :label="field" clearable @update:model-value="mapField(field, $event)" />
+              :items="headers" :label="importFieldLabels[field] ?? field" clearable @update:model-value="mapField(field, $event)" />
           </div>
           <v-alert v-if="preview.error" type="warning" class="mb-2">{{ preview.error }}</v-alert>
           <p>{{ preview.validCount }} valid of {{ preview.rows.length }} rows in the last preview.</p>
           <v-list class="preview-rows" density="compact">
             <v-list-item v-for="row in preview.rows" :key="row.row" :title="'Row ' + row.row"
-              :subtitle="row.error || [row.nameOnBib, row.bibNumber ?? 'Unassigned'].filter(Boolean).join(' · ')" />
+              :subtitle="previewSummary(row)" />
           </v-list>
           <v-btn v-if="preview.rows.some(row => row.error)" variant="text" @click="downloadErrors">Download error report</v-btn>
         </template>
@@ -165,15 +165,34 @@ interface Draft {
 }
 interface Row extends Draft { id: string; effectiveBibDisplayName: string; runner: Profile }
 interface Change { action: string; timestampUtc: string }
+interface PreviewRow {
+  row: number
+  error?: string
+  nameOnBib?: string
+  bibNumber?: string | null
+  raceCategory?: string | null
+  ageGroup?: string | null
+  startWave?: string | null
+}
 interface Preview {
   headers: string[]
   fields: string[]
   mapping: Record<string, number>
-  rows: { row: number; error?: string; nameOnBib?: string; bibNumber?: string | null }[]
+  rows: PreviewRow[]
   validCount: number
   token: string | null
   error: string | null
   errorCsv: string
+}
+const importFieldLabels: Record<string, string> = { Race: 'Race Category', Category: 'Age Group' }
+function previewSummary(row: PreviewRow) {
+  if (row.error) return row.error
+  return [
+    row.nameOnBib, row.bibNumber ?? 'Unassigned',
+    row.raceCategory && `Race Category: ${row.raceCategory}`,
+    row.ageGroup && `Age Group: ${row.ageGroup}`,
+    row.startWave && `Start Wave: ${row.startWave}`,
+  ].filter(Boolean).join(' · ')
 }
 const props = defineProps<{ eventId: string; organizerId: string }>()
 const registrationUrl = '/events/' + props.eventId + '/registrations'

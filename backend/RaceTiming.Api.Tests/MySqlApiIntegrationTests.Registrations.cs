@@ -245,7 +245,7 @@ public sealed partial class MySqlApiIntegrationTests
         await CreatedId(await client.PostAsJsonAsync(profiles,
             new { firstName = "Sam", lastName = "Cruz", email = "sam@example.test", birthdate = "2008-01-03" }));
 
-        const string header = "First Name,Last Name,Email,Birthdate,Gender,Race,Category\n";
+        const string header = "First Name,Last Name,Email,Birthdate,Gender,Race Category,Age Group\n";
         const string withoutBirthdate = header + "Alex,Cruz,alex@example.test,,CSV value,10,Masters";
         var missing = await PreviewRegistrationCsv(client, path, withoutBirthdate);
         Assert.Contains("requires a birthdate on the runner profile", missing.GetProperty("errorCsv").GetString());
@@ -253,7 +253,7 @@ public sealed partial class MySqlApiIntegrationTests
             header + "Alex,Cruz,alex@example.test,1970-01-03,,10,Masters");
         Assert.Contains("save the birthdate on the profile", backfill.GetProperty("errorCsv").GetString());
         var underage = await PreviewRegistrationCsv(client, path, header + "Sam,Cruz,sam@example.test,,,10,Masters");
-        Assert.Contains("outside the category age limits", underage.GetProperty("errorCsv").GetString());
+        Assert.Contains("outside the Age Group limits", underage.GetProperty("errorCsv").GetString());
 
         async Task SetBirthdate(string date)
         {
@@ -269,6 +269,7 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Contains("CSV birthdate differs", conflict.GetProperty("errorCsv").GetString());
         var preview = await PreviewRegistrationCsv(client, path, withoutBirthdate);
         Assert.True(preview.GetProperty("valid").GetBoolean());
+        Assert.Equal("Masters", preview.GetProperty("rows")[0].GetProperty("ageGroup").GetString());
         await SetBirthdate("1971-01-03");
         using var stale = ImportForm(withoutBirthdate, token: preview.GetProperty("token").GetString());
         using var rejected = await client.PostAsync(path + "/import/confirm", stale);

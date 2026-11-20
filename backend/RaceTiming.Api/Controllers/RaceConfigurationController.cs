@@ -7,6 +7,7 @@ using RaceTiming.Domain.Entities;
 using RaceTiming.Domain.Enums;
 using RaceTiming.Infrastructure.Persistence;
 using RaceTiming.Api.Authorization;
+using RaceTiming.Api.Services;
 
 namespace RaceTiming.Api.Controllers;
 
@@ -14,13 +15,13 @@ namespace RaceTiming.Api.Controllers;
 [Authorize]
 [Route("api/v1/events/{eventId:guid}")]
 public sealed partial class RaceConfigurationController(
-    RaceTimingDbContext db, IOrganizerMembershipAuthorization authorization) : ControllerBase
+    RaceTimingDbContext db, IOrganizerMembershipAuthorization authorization, IAuditLogger? audit = null) : ControllerBase
 {
     internal static bool Locked(EventStatus status) => status is
         EventStatus.Ready or EventStatus.Live or EventStatus.Completed or EventStatus.Cancelled;
 
     private async Task<IActionResult> WithEvent(Guid eventId, bool write, CancellationToken ct,
-        Func<Event, Task<IActionResult>> action)
+        Func<Event, Task<IActionResult>> action, bool allowLocked = false)
     {
         await using var transaction = write && db.Database.IsRelational()
             ? await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct) : null;
@@ -30,7 +31,8 @@ public sealed partial class RaceConfigurationController(
                 await db.Events.AsNoTracking().FirstOrDefaultAsync(x => x.Id == eventId, ct);
             if (item is null) return NotFound();
             if (!await authorization.CanAccessAsync(User, item.OrganizerId, write, ct)) return Forbid();
-            if (write && Locked(item.Status)) return ConflictProblem("Race configuration is locked in this event status.");
+            if (write && !allowLocked && Locked(item.Status))
+                return ConflictProblem("Race Configuration is locked in this event status.");
             var result = await action(item);
             if (transaction is not null && result is not ObjectResult { StatusCode: >= 400 }
                 && result is not StatusCodeResult { StatusCode: >= 400 })
@@ -74,13 +76,14 @@ public sealed partial class RaceConfigurationController(
         var races = await db.Races.AsNoTracking().Where(x => x.EventId == eventId)
             .Include(x => x.Categories).Include(x => x.StartWaves).AsSplitQuery().OrderBy(x => x.Name).ToListAsync(ct);
         var activeCourseIds = races.Where(x => x.Status == RecordStatus.Active).Select(x => x.CourseId).ToHashSet();
-        var referencedCourseIds = races.Select(x => x.CourseId).ToHashSet();
-        var versionedCourseIds = (await CoursesWithRevisionHistory(eventId).ToListAsync(ct)).ToHashSet();
+        var protectedCourseIds = (await ProtectedCourseFamilies(eventId).ToListAsync(ct)).ToHashSet();
         var historicalCourseIds = (await HistoricalCourses(eventId).ToListAsync(ct)).ToHashSet();
         var history = await db.Registrations.Where(x => x.EventId == eventId)
-            .Select(x => new { x.RaceId, x.RaceCategoryId, x.StartWaveId }).Distinct().ToListAsync(ct);
+            .Select(x => new { x.Id, x.RaceId, x.RaceCategoryId, x.StartWaveId }).ToListAsync(ct);
         var registeredRaceIds = history.Select(x => x.RaceId).ToHashSet();
-        var registeredCourseIds = races.Where(x => registeredRaceIds.Contains(x.Id)).Select(x => x.CourseId).ToHashSet();
+        var racesById = races.ToDictionary(x => x.Id);
+        var affected = history.Where(x => racesById.TryGetValue(x.RaceId, out var race) && race.Status == RecordStatus.Active)
+            .ToLookup(x => racesById[x.RaceId].CourseId, x => x.Id);
         var categoryIds = history.Select(x => x.RaceCategoryId).ToHashSet();
         var waveIds = history.Select(x => x.StartWaveId).ToHashSet();
         var newerRevisions = (await (
@@ -89,18 +92,21 @@ public sealed partial class RaceConfigurationController(
             where race.EventId == eventId && course.Status == RecordStatus.Active && course.Version > race.Course.Version
             select new { RaceId = race.Id, CourseId = course.Id }).ToListAsync(ct))
             .ToLookup(x => x.RaceId, x => x.CourseId);
+        var canManage = await authorization.CanAccessAsync(User, item.OrganizerId, true, ct);
         return Ok(new
         {
             timeZoneId = TimeZoneInfo.TryConvertWindowsIdToIanaId(item.TimeZoneId, out var zone) ? zone : item.TimeZoneId,
-            canEdit = !Locked(item.Status) && await authorization.CanAccessAsync(User, item.OrganizerId, true, ct),
+            canEdit = !Locked(item.Status) && canManage,
             courses = courses.Select(x => new
             {
                 x.Id, x.Name, x.Version, x.Description, x.DistanceKm, x.ElevationGainMeters, x.Status,
-                immutable = x.Status != RecordStatus.Active || historicalCourseIds.Contains(x.Id) || registeredCourseIds.Contains(x.Id),
-                editBlock = historicalCourseIds.Contains(x.Id) ? "historical" :
-                    x.Status != RecordStatus.Active ? "inactive" : registeredCourseIds.Contains(x.Id) ? "registrations" : null,
+                immutable = EditBlock(x, historicalCourseIds.Contains(x.Id), activeCourseIds.Contains(x.Id), item.Status) is not null,
+                editBlock = EditBlock(x, historicalCourseIds.Contains(x.Id), activeCourseIds.Contains(x.Id), item.Status),
                 hasActiveRaces = activeCourseIds.Contains(x.Id),
-                canDelete = !referencedCourseIds.Contains(x.Id) && !versionedCourseIds.Contains(x.Id),
+                canDelete = canManage && x.Status == RecordStatus.Inactive &&
+                    !historicalCourseIds.Contains(x.Id) && !protectedCourseIds.Contains(x.Id),
+                affectedRegistrationCount = item.Status == EventStatus.Draft ? affected[x.Id].Count() : 0,
+                registrationConfirmation = item.Status == EventStatus.Draft ? RegistrationConfirmation(affected[x.Id]) : null,
                 usable = IsUsable(x),
                 checkpoints = x.Checkpoints.OrderBy(c => c.Sequence).Select(c => new
                 {

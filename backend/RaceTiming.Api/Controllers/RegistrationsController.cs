@@ -151,30 +151,36 @@ public sealed partial class RegistrationsController(
             (input.BibDisplayName is string name && (new StringInfo(name.Trim()).LengthInTextElements > 60 || name.Any(char.IsControl))))
             return "Name on Bib must be at most 60 printed characters without control characters.";
         if (input.Team?.Trim().Length > 100) return "Team must be at most 100 characters.";
+        return ValidateAssignments(item, race, runner, input.CategoryId, input.WaveId, existing);
+    }
+
+    internal static string? ValidateAssignments(Event item, Race? race, Runner runner, Guid? ageGroupId,
+        Guid? startWaveId, Registration? existing)
+    {
         if (race is null || (race.Status != RecordStatus.Active && existing?.RaceId != race.Id))
-            return "Select an active race from this event.";
-        if (input.CategoryId is Guid categoryId)
+            return "Select an active Race Category from this event.";
+        if (ageGroupId is Guid categoryId)
         {
             var category = race.Categories.FirstOrDefault(x => x.Id == categoryId);
             if (category is null || (category.Status != RecordStatus.Active && existing?.RaceCategoryId != categoryId))
-                return "Select an active category from this race.";
+                return "Select an active Age Group from this Race Category.";
             if (category.MinimumAge.HasValue || category.MaximumAge.HasValue)
             {
                 var zone = TimeZoneInfo.FindSystemTimeZoneById(item.TimeZoneId);
                 var date = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(
                     DateTime.SpecifyKind(race.StartAtUtc, DateTimeKind.Utc), zone));
                 if (runner.Birthdate is not DateOnly birth || birth > date || birth > DateOnly.FromDateTime(DateTime.UtcNow))
-                    return "This category requires a valid birthdate.";
+                    return "This Age Group requires a valid birthdate.";
                 var age = date.Year - birth.Year;
                 if (birth.AddYears(age) > date) age--;
                 if (age < category.MinimumAge || age > category.MaximumAge)
-                    return "The runner is outside the category age limits.";
+                    return "The runner is outside the Age Group limits.";
             }
         }
         var allowedWave = existing?.StartWaveId;
-        if (input.WaveId is Guid waveId && !race.StartWaves.Any(x => x.Id == waveId
+        if (startWaveId is Guid waveId && !race.StartWaves.Any(x => x.Id == waveId
             && (x.Status == RecordStatus.Active || allowedWave == x.Id)))
-            return "Select an active start wave from this race.";
+            return "Select an active Start Wave from this Race Category.";
         return null;
     }
 

@@ -107,7 +107,7 @@ public sealed class EventsController(
             (x.StartAtUtc < request.StartDateUtc || x.StartAtUtc > request.EndDateUtc ||
              x.StartWaves.Any(w => w.Status == RecordStatus.Active &&
                  (w.StartAtUtc < request.StartDateUtc || w.StartAtUtc > request.EndDateUtc))), ct))
-            return Conflict(new ProblemDetails { Status = 409, Title = "The event window must contain every active race and wave start." });
+            return Conflict(new ProblemDetails { Status = 409, Title = "The event window must contain every active Category and Start Wave start." });
 
         item.Name = request.Name.Trim(); item.Slug = slug; item.Description = request.Description?.Trim();
         item.OrganizerName = request.OrganizerName.Trim(); item.Venue = request.Venue?.Trim();
@@ -140,7 +140,7 @@ public sealed class EventsController(
             if ((configured && races.Count == 0) || races.Any(x => !RaceConfigurationController.IsUsable(x.Course) ||
                 x.DistanceKm != x.Course.DistanceKm || x.StartAtUtc < item.StartDate || x.StartAtUtc > item.EndDate ||
                 x.CutoffDurationSeconds <= 0 || !HasValidWaveSchedule(x, item.EndDate)))
-                return Conflict(new ProblemDetails { Status = 409, Title = "Configure an active race with a usable course and valid schedule before moving to Ready." });
+                return Conflict(new ProblemDetails { Status = 409, Title = "Configure an active Category with a usable Route and valid schedule before moving to Ready." });
         }
         item.Status = request.Status;
         item.UpdatedAt = DateTime.UtcNow;

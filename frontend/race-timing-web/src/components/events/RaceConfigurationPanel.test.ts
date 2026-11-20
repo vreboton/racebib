@@ -12,9 +12,10 @@ vi.mock('../../services/raceConfiguration', async importOriginal => ({
 
 const slot = { template: '<div><slot /></div>' }
 const stubs = {
-  ...Object.fromEntries(['v-card', 'v-card-title', 'v-card-text', 'v-expansion-panel', 'v-expansion-panels',
+  ...Object.fromEntries(['v-card', 'v-card-title', 'v-card-text', 'v-expansion-panels', 'v-row', 'v-col',
     'v-expansion-panel-text', 'v-alert', 'v-dialog', 'v-card-actions', 'v-spacer', 'v-textarea', 'v-select', 'v-checkbox']
     .map(name => [name, slot])),
+  'v-expansion-panel': { props: ['title'], template: '<div><span>{{ title }}</span><slot /></div>' },
   'v-btn': { template: '<button v-bind="$attrs"><slot /></button>' },
   'v-form': { template: '<form><slot /></form>' },
   'v-text-field': {
@@ -33,12 +34,12 @@ const category = {
 const course: Course = {
   id: 'course-1', name: 'Summit', status: 'Active', version: 1, description: 'Trail route',
   distanceKm: 10, elevationGainMeters: 800, usable: true, immutable: false, editBlock: null, hasActiveRaces: true, canDelete: false,
-  checkpoints: [],
+  affectedRegistrationCount: 0, registrationConfirmation: null, checkpoints: [],
 }
 
 function configuration(categories: Configuration['races'][number]['categories'] = []): Configuration {
   return {
-    canEdit: true, timeZoneId: 'UTC', courses: [],
+    canEdit: true, timeZoneId: 'UTC', courses: [course],
     races: [{
       id: raceId, name: 'Trail Race', status: 'Active', courseId: 'course-1', distanceKm: 10,
       startAt: '2026-11-20T10:00:00Z', description: null, cutoffDurationSeconds: null,
@@ -58,22 +59,22 @@ describe('race configuration actions', () => {
   beforeEach(() => vi.resetAllMocks())
 
   it('requires confirmation before permanently deleting an unused course and refreshes the list', async () => {
-    const unused = { ...course, canDelete: true, hasActiveRaces: false }
+    const unused = { ...course, status: 'Inactive' as const, canDelete: true, hasActiveRaces: false }
     vi.mocked(loadConfiguration)
       .mockResolvedValueOnce({ ...configuration(), races: [], courses: [unused] })
-      .mockResolvedValueOnce({ ...configuration(), races: [] })
+      .mockResolvedValueOnce({ ...configuration(), races: [], courses: [] })
     const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
     const { wrapper, button } = await mountPanel()
     try {
-      await button('Delete course')!.trigger('click')
+      await button('Delete Route')!.trigger('click')
       expect(saveConfiguration).not.toHaveBeenCalled()
-      await button('Delete course')!.trigger('click')
+      await button('Delete Route')!.trigger('click')
       await flushPromises()
 
-      expect(confirm).toHaveBeenCalledWith('Permanently delete Summit and its checkpoints? This cannot be undone.')
+      expect(confirm).toHaveBeenCalledWith('Permanently delete Summit and all its Route Revisions and Route Checkpoints? This cannot be undone.')
       expect(saveConfiguration).toHaveBeenCalledWith('event-1', 'courses/course-1', 'delete', undefined)
-      expect(wrapper.text()).toContain('No courses yet.')
-      expect(button('Delete course')).toBeUndefined()
+      expect(wrapper.text()).toContain('No Routes yet.')
+      expect(button('Delete Route')).toBeUndefined()
     } finally {
       confirm.mockRestore()
       wrapper.unmount()
@@ -89,15 +90,15 @@ describe('race configuration actions', () => {
       ],
     })
     const editable = await mountPanel()
-    expect(editable.button('Delete course')).toBeUndefined()
-    expect(editable.button('Retire course')).toBeDefined()
+    expect(editable.button('Delete Route')).toBeUndefined()
+    expect(editable.button('Retire Route')).toBeDefined()
     editable.wrapper.unmount()
 
     vi.mocked(loadConfiguration).mockResolvedValueOnce({
       ...configuration(), canEdit: false, courses: [{ ...course, canDelete: true, hasActiveRaces: false }],
     })
     const readOnly = await mountPanel()
-    expect(readOnly.button('Delete course')).toBeUndefined()
+    expect(readOnly.button('Delete Route')).toBeUndefined()
     readOnly.wrapper.unmount()
   })
 
@@ -113,17 +114,17 @@ describe('race configuration actions', () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const { wrapper, button } = await mountPanel()
     try {
-      await button('Retire course')!.trigger('click')
+      await button('Retire Route')!.trigger('click')
       await flushPromises()
       expect(saveConfiguration).toHaveBeenCalledWith('event-1', 'courses/course-1/status', 'patch', { status: 'Inactive' })
-      expect(wrapper.text()).toContain('Course · Summit · Revision 1 · 10 km · Retired')
-      expect(button('Add race')!.attributes('disabled')).toBeDefined()
-      expect(button('Edit course')).toBeUndefined()
-      await button('Reactivate course')!.trigger('click')
+      expect(wrapper.text()).toContain('Retired')
+      expect(button('Add Category')!.attributes('disabled')).toBeDefined()
+      expect(button('Edit Route')).toBeUndefined()
+      await button('Reactivate Route')!.trigger('click')
       await flushPromises()
       expect(saveConfiguration).toHaveBeenLastCalledWith('event-1', 'courses/course-1/status', 'patch', { status: 'Active' })
-      expect(button('Edit checkpoints')).toBeUndefined()
-      expect(button('Add race')!.attributes('disabled')).toBeUndefined()
+      expect(button('Edit Route Checkpoints')).toBeUndefined()
+      expect(button('Add Category')!.attributes('disabled')).toBeUndefined()
     } finally {
       confirm.mockRestore()
       wrapper.unmount()
@@ -137,23 +138,23 @@ describe('race configuration actions', () => {
       .mockResolvedValueOnce({ ...configuration(), races: [], courses: [active] })
     const { wrapper, button } = await mountPanel()
 
-    expect(wrapper.text()).toContain('Reactivate this course before editing it.')
-    expect(button('Edit course')).toBeUndefined()
-    expect(button('Edit checkpoints')).toBeUndefined()
-    await button('Reactivate course')!.trigger('click')
+    expect(wrapper.text()).toContain('Reactivate this Route before editing it.')
+    expect(button('Edit Route')).toBeUndefined()
+    expect(button('Edit Route Checkpoints')).toBeUndefined()
+    await button('Reactivate Route')!.trigger('click')
     await flushPromises()
     expect(saveConfiguration).toHaveBeenCalledWith('event-1', 'courses/course-1/status', 'patch', { status: 'Active' })
-    expect(button('Edit course')).toBeDefined()
-    expect(button('Edit checkpoints')).toBeDefined()
+    expect(button('Edit Route')).toBeDefined()
+    expect(button('Edit Route Checkpoints')).toBeDefined()
     wrapper.unmount()
   })
 
   it('disables retirement for a course used by an active race', async () => {
     vi.mocked(loadConfiguration).mockResolvedValue({ ...configuration(), courses: [course] })
     const { wrapper, button } = await mountPanel()
-    expect(button('Retire course')!.attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).toContain('An active race uses this course.')
-    expect(button('Edit course')).toBeDefined()
+    expect(button('Retire Route')!.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('An active Category uses this Route.')
+    expect(button('Edit Route')).toBeDefined()
     wrapper.unmount()
   })
 
@@ -165,10 +166,10 @@ describe('race configuration actions', () => {
     vi.mocked(saveConfiguration).mockResolvedValueOnce({ id: copy.id })
     const { wrapper, button } = await mountPanel()
 
-    expect(button('Edit course')).toBeDefined()
-    expect(button('Edit checkpoints')).toBeDefined()
+    expect(button('Edit Route')).toBeDefined()
+    expect(button('Edit Route Checkpoints')).toBeDefined()
     expect(button('Clone revision')).toBeUndefined()
-    await button('Duplicate course')!.trigger('click')
+    await button('Duplicate Route')!.trigger('click')
     await flushPromises()
     expect(saveConfiguration).toHaveBeenCalledWith('event-1', 'courses/course-1/duplicate', 'post', undefined)
     expect(loadConfiguration).toHaveBeenCalledTimes(2)
@@ -194,7 +195,7 @@ describe('race configuration actions', () => {
       races: attached.races.map(race => ({ ...race, distanceKm: distance })),
     })
     const { wrapper, button } = await mountPanel()
-    await button('Edit course')!.trigger('click')
+    await button('Edit Route')!.trigger('click')
     const field = wrapper.get('input[aria-label="Distance (km)"]')
     expect(field.attributes('readonly')).toBeUndefined()
     await field.setValue(String(distance))
@@ -213,7 +214,7 @@ describe('race configuration actions', () => {
       response: { status: 400, data: { title: "The course distance cannot be shorter than an intermediate checkpoint's distance from start." } },
     })
     const { wrapper, button } = await mountPanel()
-    await button('Edit course')!.trigger('click')
+    await button('Edit Route')!.trigger('click')
     const field = wrapper.get('input[aria-label="Distance (km)"]')
     await field.setValue('4')
     await wrapper.get('form').trigger('submit')
@@ -223,6 +224,28 @@ describe('race configuration actions', () => {
     expect((field.element as HTMLInputElement).value).toBe('4')
     expect(loadConfiguration).toHaveBeenCalledTimes(1)
     wrapper.unmount()
+  })
+
+  it('shows the registration impact and sends confirmation only after approval', async () => {
+    vi.mocked(loadConfiguration).mockResolvedValue({
+      ...configuration(), courses: [{ ...course, affectedRegistrationCount: 2, registrationConfirmation: 'snapshot' }],
+    })
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
+    const { wrapper, button } = await mountPanel()
+    try {
+      await button('Edit Route')!.trigger('click')
+      await wrapper.get('input[aria-label="Distance (km)"]').setValue('12')
+      await wrapper.get('form').trigger('submit')
+      expect(confirm).toHaveBeenCalledWith(expect.stringContaining('This affects 2 existing registrations.'))
+      expect(saveConfiguration).not.toHaveBeenCalled()
+      await wrapper.get('form').trigger('submit')
+      await flushPromises()
+      expect(saveConfiguration).toHaveBeenCalledWith('event-1', 'courses/course-1?registrationConfirmation=snapshot', 'put',
+        { name: 'Summit', description: 'Trail route', distanceKm: 12, elevationGainMeters: 800 })
+    } finally {
+      confirm.mockRestore()
+      wrapper.unmount()
+    }
   })
 
   it('saves an attached course distance together with the updated Finish checkpoint', async () => {
@@ -237,8 +260,8 @@ describe('race configuration actions', () => {
     vi.mocked(loadConfiguration).mockResolvedValue(attached)
     const { wrapper, button } = await mountPanel()
 
-    await button('Edit checkpoints')!.trigger('click')
-    await wrapper.get('input[aria-label="Course distance (km)"]').setValue('12')
+    await button('Edit Route Checkpoints')!.trigger('click')
+    await wrapper.get('input[aria-label="Route distance (km)"]').setValue('12')
     await wrapper.findAll('input[aria-label="Distance from start (km)"]')[1].setValue('12')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
@@ -251,23 +274,23 @@ describe('race configuration actions', () => {
   it('explains registration and history locks while keeping duplication available', async () => {
     vi.mocked(loadConfiguration).mockResolvedValueOnce({
       ...configuration(), courses: [
-        { ...course, immutable: true, editBlock: 'registrations' },
+        { ...course, immutable: true, editBlock: 'lifecycle' },
         { ...course, id: 'historical', immutable: true, editBlock: 'historical' },
       ],
     })
     const { wrapper, button } = await mountPanel()
-    expect(button('Edit course')).toBeUndefined()
-    expect(button('Edit checkpoints')).toBeUndefined()
-    expect(wrapper.text()).toContain('A race using this course has registrations.')
-    expect(wrapper.text()).toContain('This historical revision is read-only.')
-    expect(wrapper.findAll('button').filter(item => item.text() === 'Duplicate course')).toHaveLength(2)
+    expect(button('Edit Route')).toBeUndefined()
+    expect(button('Edit Route Checkpoints')).toBeUndefined()
+    expect(wrapper.text()).toContain('This Route is assigned to a Category outside Draft.')
+    expect(wrapper.text()).toContain('This historical Route Revision is read-only.')
+    expect(wrapper.findAll('button').filter(item => item.text() === 'Duplicate Route')).toHaveLength(2)
     wrapper.unmount()
   })
 
   it('creates a category and refreshes the persisted list', async () => {
     vi.mocked(loadConfiguration).mockResolvedValueOnce(configuration()).mockResolvedValueOnce(configuration([category]))
     const { wrapper, button } = await mountPanel()
-    await button('Add category')!.trigger('click')
+    await button('Add Age Group')!.trigger('click')
     await wrapper.get('input[aria-label="Name"]').setValue('Masters')
     await wrapper.get('input[aria-label="Minimum age (inclusive)"]').setValue('40')
     await wrapper.get('form').trigger('submit')

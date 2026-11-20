@@ -11,7 +11,7 @@
         <v-list-item prepend-icon="mdi-view-dashboard-outline" title="Dashboard" to="/" />
         <v-list-item prepend-icon="mdi-flag-outline" title="Events" to="/events" />
         <v-list-item prepend-icon="mdi-account-group-outline" title="Participants" to="/participants" />
-        <v-list-item prepend-icon="mdi-map-marker-path" title="Courses" to="/courses" />
+        <v-list-item prepend-icon="mdi-map-marker-path" title="Routes" to="/courses" />
         <v-list-item prepend-icon="mdi-format-list-bulleted" title="Categories" to="/categories" />
         <v-list-subheader class="text-grey mt-4">ADMINISTRATION</v-list-subheader>
         <v-list-item v-if="auth.canManageAnyMembers" prepend-icon="mdi-shield-account-outline" title="Organizer Members" to="/users" />

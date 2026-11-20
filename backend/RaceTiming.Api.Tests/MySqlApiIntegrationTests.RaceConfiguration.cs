@@ -14,7 +14,7 @@ namespace RaceTiming.Api.Tests;
 public sealed partial class MySqlApiIntegrationTests
 {
     private sealed record RoutePoint(Guid? Id, string Name, string Code, int Sequence, decimal DistanceFromStartKm,
-        bool IsStart = false, bool IsFinish = false);
+        bool IsStart = false, bool IsFinish = false, bool HasCutoff = false, int? CutoffDurationSeconds = null);
 
     [MySqlIntegrationFact]
     [Trait("Category", "MySqlIntegration")]
@@ -409,19 +409,70 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Equal(HttpStatusCode.Conflict, rollback.StatusCode);
         Assert.Equal(saved.GetRawText(), (await Configuration()).GetRawText());
 
-        db.Registrations.Add(new Registration
+        var ageGroupId = await CreatedId(await client.PostAsJsonAsync($"{path}/races/{second}/categories", new { name = "Open" }));
+        var waveId = await CreatedId(await client.PostAsJsonAsync($"{path}/races/{second}/waves",
+            new { name = "First wave", sequence = 1, startAt }));
+        var registration = new Registration
         {
             EventId = eventId, OrganizerId = organizerId, RaceId = second, BibNumber = "123",
+            RaceCategoryId = ageGroupId, StartWaveId = waveId,
             Runner = new Runner { OrganizerId = organizerId, FirstName = "Synthetic", LastName = "Runner" }
-        });
+        };
+        db.Registrations.Add(registration);
         await db.SaveChangesAsync();
-        Assert.Equal("registrations", Course(await Configuration(), courseId).GetProperty("editBlock").GetString());
-        using var lockedMetadata = await client.PutAsJsonAsync(coursePath, metadata with { name = "Locked" });
-        using var lockedRoute = await client.PutAsJsonAsync(coursePath + "/checkpoints", new { distanceKm = 13, checkpoints = updates });
+        using var retired = await client.DeleteAsync($"{path}/races/{first}");
+        Assert.Equal(HttpStatusCode.NoContent, retired.StatusCode);
+        var draft = Course(await Configuration(), courseId);
+        Assert.False(draft.GetProperty("immutable").GetBoolean());
+        Assert.Equal(1, draft.GetProperty("affectedRegistrationCount").GetInt32());
+        var confirmation = draft.GetProperty("registrationConfirmation").GetString();
+        var materialEdit = metadata with { name = "Summit trail", distanceKm = 13 };
+        using var lockedMetadata = await client.PutAsJsonAsync(coursePath, materialEdit);
+        using var lockedRoute = await client.PutAsJsonAsync(coursePath + "/checkpoints?registrationConfirmation=stale",
+            new { distanceKm = 13, checkpoints = points.Select((p, index) => p with
+                { id = ids[index], distanceFromStartKm = p.isFinish ? 13 : p.distanceFromStartKm }) });
         Assert.Equal(HttpStatusCode.Conflict, lockedMetadata.StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, lockedRoute.StatusCode);
+        using var revised = await client.PutAsJsonAsync($"{coursePath}?registrationConfirmation={confirmation}", materialEdit);
+        Assert.Equal(HttpStatusCode.OK, revised.StatusCode);
+        var revisionId = (await revised.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        Assert.NotEqual(courseId, revisionId);
+        Assert.Equal(12m, (await db.Courses.AsNoTracking().SingleAsync(x => x.Id == courseId)).DistanceKm);
+        Assert.Equal(13m, (await db.Courses.AsNoTracking().SingleAsync(x => x.Id == revisionId)).DistanceKm);
+        Assert.Equal(courseId, await db.Races.Where(x => x.Id == first).Select(x => x.CourseId).SingleAsync());
+        Assert.Equal(revisionId, await db.Races.Where(x => x.Id == second).Select(x => x.CourseId).SingleAsync());
+        var next = Course(await Configuration(), revisionId);
+        var finish = next.GetProperty("checkpoints").EnumerateArray().Single(x => x.GetProperty("isFinish").GetBoolean());
+        Assert.Equal(13m, finish.GetProperty("distanceFromStartKm").GetDecimal());
+        var savedRegistration = await db.Registrations.AsNoTracking().SingleAsync(x => x.Id == registration.Id);
+        Assert.Equal(second, savedRegistration.RaceId);
+        Assert.Equal(registration.RunnerId, savedRegistration.RunnerId);
+        Assert.Equal("123", savedRegistration.BibNumber);
+        Assert.Equal(ageGroupId, savedRegistration.RaceCategoryId);
+        Assert.Equal(waveId, savedRegistration.StartWaveId);
+        var checkpointEdit = next.GetProperty("checkpoints").EnumerateArray().Select(point =>
+            new RoutePoint(point.GetProperty("id").GetGuid(), point.GetProperty("name").GetString()!,
+                point.GetProperty("code").GetString()!, point.GetProperty("sequence").GetInt32(),
+                point.GetProperty("distanceFromStartKm").GetDecimal(),
+                IsStart: point.GetProperty("isStart").GetBoolean(), IsFinish: point.GetProperty("isFinish").GetBoolean(),
+                HasCutoff: point.GetProperty("code").GetString() == "A",
+                CutoffDurationSeconds: point.GetProperty("code").GetString() == "A" ? 4800 : null)).ToArray();
+        using var revisedCheckpoints = await client.PutAsJsonAsync(
+            $"{path}/courses/{revisionId}/checkpoints?registrationConfirmation={next.GetProperty("registrationConfirmation").GetString()}",
+            new { distanceKm = 13, checkpoints = checkpointEdit });
+        Assert.Equal(HttpStatusCode.NoContent, revisedCheckpoints.StatusCode);
+        var latest = await db.Races.Where(x => x.Id == second).Select(x => x.CourseId).SingleAsync();
+        Assert.NotEqual(revisionId, latest);
+        Assert.Equal(3600, await db.CourseCheckpoints.Where(x => x.CourseId == revisionId && x.Code == "A")
+            .Select(x => x.CutoffDurationSeconds).SingleAsync());
+        Assert.Equal(4800, await db.CourseCheckpoints.Where(x => x.CourseId == latest && x.Code == "A")
+            .Select(x => x.CutoffDurationSeconds).SingleAsync());
         await CreatedId(await client.PostAsync(duplicatePath, null));
 
+        evt.Status = EventStatus.Published;
+        await db.SaveChangesAsync();
+        using var publishedEdit = await client.PutAsJsonAsync($"{path}/courses/{latest}", materialEdit with { distanceKm = 14 });
+        Assert.Equal(HttpStatusCode.Conflict, publishedEdit.StatusCode);
         evt.Status = EventStatus.RegistrationClosed;
         await db.SaveChangesAsync();
         using var ready = await client.PatchAsJsonAsync(path + "/status", new { status = "Ready" });
@@ -582,14 +633,14 @@ public sealed partial class MySqlApiIntegrationTests
             var ids = before.GetProperty("checkpoints").EnumerateArray().Select(x => x.GetProperty("id").GetGuid()).ToArray();
             var edits = points.Select((p, index) => p with { Id = ids[index] }).ToArray();
             edits[1] = edits[1] with { Name = "Finish gate" };
-            var metadata = new { name = scenario.Name + " updated", distanceKm = 10 };
+            var metadata = new { name = scenario.HasRace ? scenario.Name : scenario.Name + " updated", distanceKm = 10 };
             var changedRoute = new { distanceKm = 10, checkpoints = edits };
             using var blockedMetadata = await client.PutAsJsonAsync(coursePath, metadata);
             using var blockedRoute = await client.PutAsJsonAsync(routePath, changedRoute);
             foreach (var response in new[] { blockedMetadata, blockedRoute })
             {
                 Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
-                Assert.Equal("Reactivate this course before editing it.",
+                Assert.Equal("Reactivate this Route before editing it.",
                     (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("title").GetString());
             }
             Assert.Equal(before.GetRawText(), (await ReadCourse()).GetRawText());
@@ -603,14 +654,21 @@ public sealed partial class MySqlApiIntegrationTests
             Assert.Equal(HttpStatusCode.NoContent, editedRoute.StatusCode);
             var after = await ReadCourse();
             Assert.Equal(metadata.name, after.GetProperty("name").GetString());
-            Assert.Equal("Finish gate", after.GetProperty("checkpoints")[1].GetProperty("name").GetString());
+            Assert.Equal(scenario.HasRace ? "Finish" : "Finish gate", after.GetProperty("checkpoints")[1].GetProperty("name").GetString());
             Assert.Equal(ids[1], after.GetProperty("checkpoints")[1].GetProperty("id").GetGuid());
+            if (scenario.HasRace)
+            {
+                var revision = (await client.GetFromJsonAsync<JsonElement>(path + "/configuration")).GetProperty("courses")
+                    .EnumerateArray().Single(x => x.GetProperty("name").GetString() == scenario.Name &&
+                        x.GetProperty("version").GetInt32() == 2);
+                Assert.Equal("Finish gate", revision.GetProperty("checkpoints")[1].GetProperty("name").GetString());
+            }
         }
     }
 
     [MySqlIntegrationFact]
     [Trait("Category", "MySqlIntegration")]
-    public async Task DirectDistanceEditUpdatesOnlyFinishAndAllReferencingRaces()
+    public async Task DirectDistanceEditUpdatesOnlyFinishAndActiveDraftRaces()
     {
         await using var data = new MySqlTestData(Services);
         var account = await data.CreateAccountAsync();
@@ -645,26 +703,32 @@ public sealed partial class MySqlApiIntegrationTests
 
         async Task<JsonElement> ReadConfiguration() => await client.GetFromJsonAsync<JsonElement>(path + "/configuration");
         var initial = (await ReadConfiguration()).GetProperty("courses")[0].GetProperty("checkpoints");
+        var originalCourseId = courseId;
         foreach (var distance in new[] { 12, 8 })
         {
             using var updated = await client.PutAsJsonAsync(coursePath, courseInput with { distanceKm = distance });
             Assert.Equal(HttpStatusCode.OK, updated.StatusCode);
+            courseId = (await updated.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+            coursePath = $"{path}/courses/{courseId}";
             var config = await ReadConfiguration();
-            var course = config.GetProperty("courses")[0];
+            var course = config.GetProperty("courses").EnumerateArray().Single(x => x.GetProperty("id").GetGuid() == courseId);
+            var original = config.GetProperty("courses").EnumerateArray().Single(x => x.GetProperty("id").GetGuid() == originalCourseId);
             var savedPoints = course.GetProperty("checkpoints");
+            Assert.Equal(initial.GetRawText(), original.GetProperty("checkpoints").GetRawText());
             Assert.Equal((decimal)distance, course.GetProperty("distanceKm").GetDecimal());
             Assert.Equal((decimal)distance, savedPoints[2].GetProperty("distanceFromStartKm").GetDecimal());
             for (var i = 0; i < initial.GetArrayLength(); i++)
             {
                 foreach (var field in initial[i].EnumerateObject())
                 {
-                    if (i == 2 && field.Name == "distanceFromStartKm") continue;
+                    if (field.Name == "id" || (i == 2 && field.Name == "distanceFromStartKm")) continue;
                     Assert.Equal(field.Value.GetRawText(), savedPoints[i].GetProperty(field.Name).GetRawText());
                 }
             }
             var races = config.GetProperty("races");
             Assert.Equal(2, races.GetArrayLength());
-            Assert.All(races.EnumerateArray(), race => Assert.Equal((decimal)distance, race.GetProperty("distanceKm").GetDecimal()));
+            Assert.All(races.EnumerateArray(), race =>
+                Assert.Equal(race.GetProperty("id").GetGuid() == first ? distance : 10m, race.GetProperty("distanceKm").GetDecimal()));
         }
 
         var before = await ReadConfiguration();
@@ -681,7 +745,7 @@ public sealed partial class MySqlApiIntegrationTests
         });
         await db.SaveChangesAsync();
         var locked = await ReadConfiguration();
-        using var withCancelledRegistration = await client.PutAsJsonAsync(coursePath, courseInput with { distanceKm = 11 });
+        using var withCancelledRegistration = await client.PutAsJsonAsync($"{path}/courses/{originalCourseId}", courseInput with { distanceKm = 11 });
         Assert.Equal(HttpStatusCode.Conflict, withCancelledRegistration.StatusCode);
         Assert.Equal(locked.GetRawText(), (await ReadConfiguration()).GetRawText());
 
@@ -743,6 +807,11 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, otherEvent.StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, otherOrganizer.StatusCode);
+        Assert.False((await ReadCourse(unused)).GetProperty("canDelete").GetBoolean());
+        using var activeDelete = await client.DeleteAsync(unusedPath);
+        Assert.Equal(HttpStatusCode.Conflict, activeDelete.StatusCode);
+        using var retireUnused = await client.PatchAsJsonAsync(unusedPath + "/status", new { status = "Inactive" });
+        Assert.Equal(HttpStatusCode.NoContent, retireUnused.StatusCode);
         Assert.True((await ReadCourse(unused)).GetProperty("canDelete").GetBoolean());
         Assert.Equal(2, await db.CourseCheckpoints.CountAsync(x => x.CourseId == unused));
         using var deleted = await client.DeleteAsync(unusedPath);
@@ -764,6 +833,8 @@ public sealed partial class MySqlApiIntegrationTests
         };
         db.Registrations.Add(registration);
         await db.SaveChangesAsync();
+        using var retireReferenced = await client.PatchAsJsonAsync($"{courses}/{referenced}/status", new { status = "Inactive" });
+        Assert.Equal(HttpStatusCode.NoContent, retireReferenced.StatusCode);
         using var inactiveConflict = await client.DeleteAsync($"{courses}/{referenced}");
         Assert.Equal(HttpStatusCode.Conflict, inactiveConflict.StatusCode);
         Assert.False((await ReadCourse(referenced)).GetProperty("canDelete").GetBoolean());
@@ -773,6 +844,13 @@ public sealed partial class MySqlApiIntegrationTests
         Assert.Equal(referenced, await db.Races.Where(x => x.Id == raceId).Select(x => x.CourseId).SingleAsync());
         Assert.True(await db.Registrations.AnyAsync(x => x.Id == registration.Id && x.RaceId == raceId));
         Assert.Equal(2, await db.CourseCheckpoints.CountAsync(x => x.CourseId == referenced));
+        var referencedLatest = await CreatedId(await client.PostAsync($"{courses}/{referenced}/revisions", null));
+        using var retireReferencedLatest = await client.PatchAsJsonAsync($"{courses}/{referencedLatest}/status", new { status = "Inactive" });
+        Assert.Equal(HttpStatusCode.NoContent, retireReferencedLatest.StatusCode);
+        Assert.False((await ReadCourse(referencedLatest)).GetProperty("canDelete").GetBoolean());
+        using var protectedFamily = await client.DeleteAsync($"{courses}/{referencedLatest}");
+        Assert.Equal(HttpStatusCode.Conflict, protectedFamily.StatusCode);
+        Assert.True(await db.Courses.AnyAsync(x => x.Id == referencedLatest));
 
         var firstRevision = await AddCourse("Historical");
         var latestRevision = await CreatedId(await client.PostAsync($"{courses}/{firstRevision}/revisions", null));
@@ -783,12 +861,29 @@ public sealed partial class MySqlApiIntegrationTests
             Assert.Equal(HttpStatusCode.Conflict, protectedRevision.StatusCode);
             Assert.Equal(2, await db.CourseCheckpoints.CountAsync(x => x.CourseId == courseId));
         }
+        using var retireLatest = await client.PatchAsJsonAsync($"{courses}/{latestRevision}/status", new { status = "Inactive" });
+        Assert.Equal(HttpStatusCode.NoContent, retireLatest.StatusCode);
+        Assert.True((await ReadCourse(latestRevision)).GetProperty("canDelete").GetBoolean());
+        using var deleteFamily = await client.DeleteAsync($"{courses}/{latestRevision}");
+        Assert.Equal(HttpStatusCode.NoContent, deleteFamily.StatusCode);
+        Assert.False(await db.Courses.AnyAsync(x => x.Id == firstRevision || x.Id == latestRevision));
+        Assert.False(await db.CourseCheckpoints.AnyAsync(x => x.CourseId == firstRevision || x.CourseId == latestRevision));
+        Assert.True(await db.AuditRecords.AnyAsync(x => x.OrganizerId == organizerId &&
+            x.Action == "Course.Deleted" && x.TargetEntityId == latestRevision.ToString()));
 
         var locked = await AddCourse("Locked");
-        item.Status = EventStatus.Ready;
+        var retiredBeforeCompletion = await AddCourse("Retired before completion");
+        using var retireBeforeCompletion = await client.PatchAsJsonAsync(
+            $"{courses}/{retiredBeforeCompletion}/status", new { status = "Inactive" });
+        Assert.Equal(HttpStatusCode.NoContent, retireBeforeCompletion.StatusCode);
+        item.Status = EventStatus.Completed;
         await db.SaveChangesAsync();
         using var lockedConflict = await client.DeleteAsync($"{courses}/{locked}");
+        using var completedConflict = await client.DeleteAsync($"{courses}/{referencedLatest}");
+        using var unusedAfterCompletion = await client.DeleteAsync($"{courses}/{retiredBeforeCompletion}");
         Assert.Equal(HttpStatusCode.Conflict, lockedConflict.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, completedConflict.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, unusedAfterCompletion.StatusCode);
         Assert.True(await db.Courses.AnyAsync(x => x.Id == locked));
     }
 
@@ -819,7 +914,11 @@ public sealed partial class MySqlApiIntegrationTests
         });
         Assert.Equal(HttpStatusCode.NoContent, route.StatusCode);
 
-        var deleteTask = client.DeleteAsync(coursePath);
+        var latestId = await CreatedId(await client.PostAsync(coursePath + "/revisions", null));
+        var latestPath = $"{path}/courses/{latestId}";
+        using var retireLatest = await client.PatchAsJsonAsync(latestPath + "/status", new { status = "Inactive" });
+        Assert.Equal(HttpStatusCode.NoContent, retireLatest.StatusCode);
+        var deleteTask = client.DeleteAsync(latestPath);
         var assignTask = client.PostAsJsonAsync(path + "/races", new { name = "Concurrent race", courseId, startAt });
         using var deleted = await deleteTask;
         using var assigned = await assignTask;
