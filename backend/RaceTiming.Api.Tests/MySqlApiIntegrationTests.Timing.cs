@@ -66,10 +66,21 @@ public sealed partial class MySqlApiIntegrationTests
                 Assert.Equal(HttpStatusCode.NoContent, mapped.StatusCode);
             }
 
+            var registrationsPath = $"/api/v1/events/{eventId}/registrations";
+            var bibPath = registrationsPath + $"/{registration.Id}/bib";
+            using var beforeArm = await manager.PutAsJsonAsync(bibPath, new { bibNumber = "0043", version = 1 });
+            Assert.Equal(HttpStatusCode.NoContent, beforeArm.StatusCode);
+            using var restoreBib = await manager.PutAsJsonAsync(bibPath, new { bibNumber = "0042", version = 2 });
+            Assert.Equal(HttpStatusCode.NoContent, restoreBib.StatusCode);
             item.Status = EventStatus.Live;
             await db.SaveChangesAsync();
             using var arm = await manager.PostAsJsonAsync(path + $"/races/{race.Id}/arm", new { });
             Assert.Equal(HttpStatusCode.Created, arm.StatusCode);
+            using var frozenChange = await manager.PutAsJsonAsync(bibPath, new { bibNumber = "0043", version = 3 });
+            Assert.Equal(HttpStatusCode.Conflict, frozenChange.StatusCode);
+            using var frozenWave = await manager.PutAsJsonAsync(registrationsPath + $"/{registration.Id}",
+                new { raceId = race.Id, runnerId = runner.Id, bibNumber = "0042", version = 3 });
+            Assert.Equal(HttpStatusCode.Conflict, frozenWave.StatusCode);
             using var remap = await manager.PutAsJsonAsync(path + $"/courses/{course.Id}/occurrences/{points[1].Id}/checkpoint", new { checkpointId = gate });
             Assert.Equal(HttpStatusCode.Conflict, remap.StatusCode);
             using var gun = await manager.PostAsJsonAsync(path + $"/races/{race.Id}/gun-starts",
@@ -197,6 +208,95 @@ public sealed partial class MySqlApiIntegrationTests
             await db.Set<CheckpointAssignment>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
             await db.Set<CheckpointMapping>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
             await db.Set<PhysicalCheckpoint>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
+        }
+    }
+
+    [MySqlIntegrationFact]
+    [Trait("Category", "MySqlIntegration")]
+    public async Task FrozenBibOverridesLegacyRosterDriftAndStaleAllocationPreviews()
+    {
+        await using var data = new MySqlTestData(Services);
+        var account = await data.CreateAccountAsync();
+        var organizerId = await data.CreateOrganizerAsync(account, OrganizerRole.RaceDirector);
+        var eventId = await data.CreateEventAsync(organizerId);
+        using var manager = await CheckInClient(account);
+        using var second = await CheckInClient(account);
+        var raceId = await SeedRegistrationRace(manager, eventId);
+        var path = $"/api/v1/events/{eventId}/registrations";
+        var bulk = path + "/bibs";
+        var timing = $"/api/v1/events/{eventId}/timing";
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+        var race = await db.Races.SingleAsync(x => x.Id == raceId);
+        var item = await db.Events.SingleAsync(x => x.Id == eventId);
+        var original = BulkRunner(eventId, organizerId, raceId, "Original", 1, RegistrationStatus.Confirmed, "0043");
+        var candidate = BulkRunner(eventId, organizerId, raceId, "Candidate", 2, RegistrationStatus.Confirmed);
+        var unregistered = new Runner { OrganizerId = organizerId, FirstName = "Unregistered", LastName = "Candidate" };
+        item.Status = EventStatus.Live;
+        db.AddRange(original, candidate, unregistered);
+        await db.SaveChangesAsync();
+
+        const string csv = "First Name,Last Name,Name on Bib,Email,Race,Bib Number\nCsv,Candidate,,frozen-csv@example.test,,0042\n";
+        var preview = await PreviewRegistrationCsv(manager, path, raceId, csv);
+        Assert.True(preview.GetProperty("valid").GetBoolean());
+        var allocation = new { start = 42, end = 42, width = 4, raceId };
+        var bulkPreview = await BulkPreview(manager, bulk, allocation);
+        Assert.Equal("0042", bulkPreview.GetProperty("rows").EnumerateArray()
+            .Single(x => x.GetProperty("registrationId").GetGuid() == candidate.Id).GetProperty("proposedBib").GetString());
+
+        // Reproduce data possible before this guard: the registration desk and timing roster disagree.
+        db.Add(new RaceTimingSetup
+        {
+            RaceId = raceId, EventId = eventId, CourseId = race.CourseId, TimeZoneId = item.TimeZoneId,
+            WindowStartUtc = item.StartDate, WindowEndUtc = item.EndDate,
+            ScheduledGunUtc = race.StartAtUtc, ArmedAtUtc = DateTime.UtcNow
+        });
+        db.Add(new TimingRosterEntry
+        {
+            EventId = eventId, RaceId = raceId, RegistrationId = original.Id, BibNumber = "0042"
+        });
+        await db.SaveChangesAsync();
+        try
+        {
+            var before = await BulkState(db, eventId);
+            using var form = ImportForm(raceId, csv, token: preview.GetProperty("token").GetString());
+            var attempts = await Task.WhenAll(
+                manager.PostAsync(path + "/import/confirm", form),
+                ConfirmBulk(second, bulk, bulkPreview),
+                manager.PutAsJsonAsync(path + $"/{candidate.Id}/bib", new { bibNumber = "0042", version = 1 }),
+                second.PostAsJsonAsync(path, new { raceId, runnerId = unregistered.Id, bibNumber = "0042" }));
+            foreach (var attempt in attempts)
+            {
+                using (attempt) Assert.Equal(HttpStatusCode.Conflict, attempt.StatusCode);
+            }
+            Assert.Equal(before, await BulkState(db, eventId));
+            Assert.Empty(await db.Set<TimingObservation>().Where(x => x.EventId == eventId).ToListAsync());
+            Assert.False((await PreviewRegistrationCsv(manager, path, raceId, csv)).GetProperty("valid").GetBoolean());
+
+            // Simulate an already-issued duplicate on the old code to exercise amendment independently.
+            candidate.BibNumber = "0042";
+            await db.SaveChangesAsync();
+            var amendmentPath = timing + $"/races/{raceId}/roster/{candidate.Id}";
+            using var denied = await manager.PostAsJsonAsync(amendmentPath, new { reason = "Late entry" });
+            Assert.Equal(HttpStatusCode.Conflict, denied.StatusCode);
+            Assert.Equal(original.Id, (await db.Set<TimingRosterEntry>().SingleAsync(x => x.EventId == eventId)).RegistrationId);
+
+            candidate.BibNumber = "0050";
+            await db.SaveChangesAsync();
+            var amendmentTask = manager.PostAsJsonAsync(amendmentPath, new { reason = "Late entry" });
+            var bibTask = second.PutAsJsonAsync(path + $"/{candidate.Id}/bib", new { bibNumber = "0051", version = 1 });
+            using var amendment = await amendmentTask;
+            using var bibChange = await bibTask;
+            Assert.Equal(HttpStatusCode.NoContent, amendment.StatusCode);
+            Assert.Contains(bibChange.StatusCode, new[] { HttpStatusCode.NoContent, HttpStatusCode.Conflict });
+            var reserved = await db.Set<TimingRosterEntry>().SingleAsync(x => x.EventId == eventId && x.RegistrationId == candidate.Id);
+            var current = await db.Registrations.AsNoTracking().SingleAsync(x => x.Id == candidate.Id);
+            Assert.Equal(current.BibNumber, reserved.BibNumber);
+        }
+        finally
+        {
+            await db.Set<TimingRosterEntry>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
+            await db.Set<RaceTimingSetup>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
         }
     }
 

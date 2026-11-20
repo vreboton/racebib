@@ -96,11 +96,14 @@ public sealed partial class RegistrationsController(
             if (entry.Version != input.Version) return StaleRegistration();
             if (entry.RegistrationStatus == RegistrationStatus.Cancelled)
                 return Conflict("Reopen the registration before changing its reserved bib.");
-            var occupied = await db.Registrations.Where(x => x.EventId == eventId && x.Id != id)
-                .Select(x => x.BibNumber).ToListAsync(ct);
+            var occupied = await OccupiedBibs(eventId, id).ToListAsync(ct);
             var error = BibAllocator.Allocate(input.Assignment ?? new(), occupied, [input.BibNumber], out var bibs);
             if (error is not null) return Conflict(error);
             if (entry.BibNumber == bibs[0]) return NoContent();
+            if (await FrozenRoster(eventId).AnyAsync(x => x.RegistrationId == id, ct))
+                return Conflict(FrozenIdentityError);
+            if (bibs[0] is string bib && await HasFrozenBibConflict(eventId, id, [bib], ct))
+                return Conflict(FrozenIdentityError);
             if (entry.CheckedInAtUtc.HasValue) return ReverseCheckInFirst();
             entry.BibNumber = bibs[0];
             entry.Version++;
@@ -141,12 +144,17 @@ public sealed partial class RegistrationsController(
         if (entry is null || assignment.Mode != BibAssignmentMode.Existing ||
             !string.Equals(input.BibNumber, previousBib, StringComparison.Ordinal))
         {
-            var occupied = await db.Registrations.Where(x => x.EventId == item.Id && x.Id != id)
-                .Select(x => x.BibNumber).ToListAsync(ct);
+            var occupied = await OccupiedBibs(item.Id, id).ToListAsync(ct);
             error = BibAllocator.Allocate(assignment, occupied, [input.BibNumber], out var bibs);
             if (error is not null) return Conflict(error);
             selectedBib = bibs[0];
         }
+        if (entry is not null && (entry.RaceId != input.RaceId || entry.StartWaveId != input.WaveId || previousBib != selectedBib) &&
+            await FrozenRoster(item.Id).AnyAsync(x => x.RegistrationId == entry.Id, ct))
+            return Conflict(FrozenIdentityError);
+        if ((entry is null || previousBib != selectedBib) && selectedBib is string bib &&
+            await HasFrozenBibConflict(item.Id, id, [bib], ct))
+            return Conflict(FrozenIdentityError);
         if ((previousStatus == RegistrationStatus.Cancelled || status == RegistrationStatus.Cancelled)
             && previousBib != selectedBib)
             return Conflict("Withdrawing or reopening a registration must keep its existing bib reserved.");
@@ -174,6 +182,22 @@ public sealed partial class RegistrationsController(
         await db.SaveChangesAsync(ct);
         return id.HasValue ? Ok(Admin(entry)) : CreatedAtAction(nameof(Get), new { eventId = item.Id, id = entry.Id }, Admin(entry));
     }
+
+    private const string FrozenIdentityError = "Timing has reserved this registration identity or bib.";
+
+    // Registration writes and timing arming/amendments take the same event lock before reading these reservations.
+    private IQueryable<TimingRosterEntry> FrozenRoster(Guid eventId) =>
+        db.Set<TimingRosterEntry>().Where(x => x.EventId == eventId);
+
+    private IQueryable<string?> OccupiedBibs(Guid eventId, Guid? exceptRegistrationId = null) =>
+        db.Registrations.Where(x => x.EventId == eventId && x.Id != exceptRegistrationId && x.BibNumber != null)
+            .Select(x => x.BibNumber)
+            .Concat(FrozenRoster(eventId).Where(x => x.RegistrationId != exceptRegistrationId).Select(x => (string?)x.BibNumber));
+
+    // Compare against MySQL's bib collation as well as the allocator's in-memory comparison.
+    private Task<bool> HasFrozenBibConflict(Guid eventId, Guid? exceptRegistrationId, string[] proposed, CancellationToken ct) =>
+        proposed.Length == 0 ? Task.FromResult(false) : FrozenRoster(eventId)
+            .AnyAsync(x => x.RegistrationId != exceptRegistrationId && proposed.Contains(x.BibNumber), ct);
 
     private IQueryable<Race> RacesWithRegistrationOptions(Guid eventId) => db.Races.AsNoTracking().AsSplitQuery()
         .Include(x => x.Categories).Include(x => x.StartWaves).Where(x => x.EventId == eventId);
