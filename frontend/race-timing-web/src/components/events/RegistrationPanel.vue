@@ -33,7 +33,13 @@
   <v-dialog v-model="showRegistration" max-width="760">
     <v-card :title="editing ? 'Registration details' : 'Register runner'">
       <v-card-text>
-        <v-alert v-if="error" type="error" class="mb-3">{{ error }}</v-alert>
+        <v-alert v-if="error" type="error" class="mb-3">
+          {{ error }}
+        </v-alert>
+        <v-alert v-if="registrationConflict && editing" type="warning" class="mb-3">
+          Refresh to load the latest registration. Refreshing replaces your unsaved edits.
+          <v-btn class="mt-2" :disabled="busy" @click="refreshRegistration">Refresh registration</v-btn>
+        </v-alert>
         <v-form id="registration-form" @submit.prevent="saveRegistration">
           <div v-if="!editing" class="d-flex ga-2">
             <v-text-field v-model="runnerSearch" label="Find runner profile" @keydown.enter.prevent="loadRunners" />
@@ -49,7 +55,7 @@
           <v-select v-if="selectedRace?.waves.length" v-model="draft.waveId" :items="selectedRace.waves" item-title="name" item-value="id" label="Start Wave" clearable />
           <v-text-field v-model="draft.bibDisplayName" label="Name on Bib" :hint="bibNameHint" persistent-hint />
           <v-text-field v-model="draft.team" label="Team / Club" />
-          <v-select v-model="draft.status" :items="statuses" label="Registration status" />
+          <v-select v-model="draft.status" :items="editableStatuses" label="Registration status" />
           <v-select v-model="draft.paymentStatus" :items="payments" label="Payment status" />
           <v-select v-model="manualAssignment.mode" :items="modes" label="Bib assignment" />
           <v-text-field v-if="manualAssignment.mode !== 1" v-model="draft.bibNumber" label="Bib number" maxlength="32" />
@@ -64,14 +70,14 @@
           <p v-if="!history.length">No changes recorded.</p>
           <p v-for="(change, index) in history" :key="index">{{ change.action }} · {{ new Date(change.timestampUtc).toLocaleString() }}</p>
         </div>
-        <v-checkbox v-if="editing && draft.status !== 3" v-model="confirmCancel" label="Confirm cancellation and keep the bib reserved" />
+        <v-checkbox v-if="editing && [0, 1, 2].includes(editing.status)" v-model="confirmCancel" label="Confirm withdrawal and keep the bib reserved" />
       </v-card-text>
       <v-card-actions>
-        <v-btn v-if="confirmCancel" color="error" :disabled="busy" @click="cancelRegistration">Cancel registration</v-btn>
+        <v-btn v-if="confirmCancel" color="error" :disabled="busy || registrationConflict" @click="cancelRegistration">Withdraw registration</v-btn>
         <v-spacer />
         <v-btn v-if="editing?.bibNumber" @click="printBib">Print bib</v-btn>
         <v-btn @click="showRegistration = false">Close</v-btn>
-        <v-btn type="submit" form="registration-form" color="primary" :loading="busy">Save registration</v-btn>
+        <v-btn type="submit" form="registration-form" color="primary" :disabled="busy || registrationConflict" :loading="busy">{{ saveLabel }}</v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>
@@ -169,7 +175,7 @@ interface Draft {
   status: number
   paymentStatus: number
 }
-interface Row extends Draft { id: string; effectiveBibDisplayName: string; runner: Profile }
+interface Row extends Draft { id: string; version: number; effectiveBibDisplayName: string; runner: Profile }
 interface Change { action: string; timestampUtc: string }
 interface Preview {
   rows: { row: number; error?: string; nameOnBib?: string; bibNumber?: string | null; raceName?: string;
@@ -184,7 +190,7 @@ const props = defineProps<{ eventId: string; organizerId: string }>()
 const registrationUrl = '/events/' + props.eventId + '/registrations'
 const runnerUrl = '/organizers/' + props.organizerId + '/runners'
 const choices = (items: string[]) => items.map((title, value) => ({ title, value }))
-const statuses = choices(['Pending', 'Confirmed', 'Waitlisted', 'Cancelled', 'DNF', 'DNS', 'Disqualified'])
+const statuses = choices(['Pending', 'Confirmed', 'Waitlisted', 'Withdrawn', 'DNF', 'DNS', 'Disqualified'])
 const payments = choices(['Unspecified', 'Unpaid', 'Paid', 'Waived', 'Refunded'])
 const modes = choices(['Existing bibs', 'Automatic bibs', 'Mixed assignment'])
 const defaultDraft = (): Draft => ({ raceId: null, runnerId: null, categoryId: null, waveId: null,
@@ -192,6 +198,7 @@ const defaultDraft = (): Draft => ({ raceId: null, runnerId: null, categoryId: n
 const assignment = () => ({ mode: 0, start: 1, end: 1000, width: 0 })
 const busy = ref(false)
 const error = ref('')
+const registrationConflict = ref(false)
 const notice = ref('')
 const search = ref('')
 const raceFilter = ref<string | null>(null)
@@ -203,6 +210,19 @@ const rows = ref<Row[]>([])
 const runners = ref<Profile[]>([])
 const runnerSearch = ref('')
 const editing = ref<Row | null>(null)
+const editableStatuses = computed(() => {
+  const current = editing.value?.status
+  const allowed = current === undefined ? [0, 1, 2] : ({
+    0: [0, 1, 3], 1: [0, 1, 3], 2: [1, 2, 3], 3: [0, 3],
+  } as Record<number, number[]>)[current] ?? [current]
+  return statuses.filter(status => allowed.includes(status.value))
+})
+const saveLabel = computed(() => {
+  if (editing.value?.status === 3 && draft.value.status === 0) return 'Reopen registration'
+  if (editing.value?.status === 1 && draft.value.status === 0) return 'Correct status to Pending'
+  if (editing.value && editing.value.status !== 3 && draft.value.status === 3) return 'Withdraw registration'
+  return 'Save registration'
+})
 const draft = ref(defaultDraft())
 const history = ref<Change[]>([])
 const manualAssignment = ref(assignment())
@@ -233,11 +253,14 @@ const bibNameHint = computed(() => {
 const runnerLabel = (value: Profile) => value.firstName + ' ' + value.lastName + (value.email ? ' · ' + value.email : '')
 
 async function run(action: () => Promise<void>) {
+  if (busy.value) return
   busy.value = true
   error.value = ''
   try { await action() }
   catch (failure) {
     const body = (failure as { response?: { data?: unknown } })?.response?.data
+    if ((body as { code?: string } | null)?.code === 'registration_version_conflict')
+      registrationConflict.value = true
     error.value = typeof body === 'string' ? body : getApiError(failure, 'Registration request failed.')
   } finally { busy.value = false }
 }
@@ -256,20 +279,25 @@ async function fetchRunners() {
 const loadRunners = () => run(fetchRunners)
 function openRegistration(row?: Row) {
   return run(async () => {
-    races.value = (await loadConfiguration(props.eventId)).races
-    editing.value = row ?? null
+    const configuration = await loadConfiguration(props.eventId)
+    const details = row
+      ? (await api.get<{ registration: Row; history: Change[] }>(registrationUrl + '/' + row.id)).data
+      : null
+    if (!details) await fetchRunners()
+    races.value = configuration.races
+    editing.value = details?.registration ?? null
     manualAssignment.value = assignment()
     confirmCancel.value = false
-    history.value = []
-    draft.value = defaultDraft()
-    if (row) {
-      const { data } = await api.get<{ registration: Row; history: Change[] }>(registrationUrl + '/' + row.id)
-      editing.value = data.registration
-      draft.value = { ...data.registration }
-      history.value = data.history
-    } else await fetchRunners()
+    history.value = details?.history ?? []
+    draft.value = details ? { ...details.registration } : defaultDraft()
+    registrationConflict.value = false
     showRegistration.value = true
   })
+}
+async function refreshRegistration() {
+  if (!editing.value) return
+  await openRegistration(editing.value)
+  if (!registrationConflict.value) await refresh()
 }
 function openProfile() {
   const row = editing.value
@@ -290,7 +318,8 @@ function saveProfile() {
 }
 function saveRegistration() {
   return run(async () => {
-    const body = { ...draft.value, bibNumber: manualAssignment.value.mode === 1 ? null : draft.value.bibNumber,
+    if (registrationConflict.value) return
+    const body = { ...draft.value, version: editing.value?.version, bibNumber: manualAssignment.value.mode === 1 ? null : draft.value.bibNumber,
       assignment: manualAssignment.value }
     if (editing.value) await api.put(registrationUrl + '/' + editing.value.id, body)
     else await api.post(registrationUrl, body)
@@ -301,10 +330,10 @@ function saveRegistration() {
 }
 function cancelRegistration() {
   return run(async () => {
-    if (!editing.value || !confirmCancel.value) return
-    await api.post(registrationUrl + '/' + editing.value.id + '/cancel')
+    if (!editing.value || !confirmCancel.value || registrationConflict.value) return
+    await api.post(registrationUrl + '/' + editing.value.id + '/cancel', { version: editing.value.version })
     showRegistration.value = false
-    notice.value = 'Registration cancelled.'
+    notice.value = 'Registration withdrawn.'
     await loadRows()
   })
 }

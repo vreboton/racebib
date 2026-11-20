@@ -4,7 +4,7 @@ import RegistrationPanel from './RegistrationPanel.vue'
 import { api } from '../../services/api'
 import { loadConfiguration, type Race } from '../../services/raceConfiguration'
 
-vi.mock('../../services/api', () => ({ api: { get: vi.fn(), post: vi.fn() } }))
+vi.mock('../../services/api', () => ({ api: { get: vi.fn(), post: vi.fn(), put: vi.fn() } }))
 vi.mock('../../services/raceConfiguration', () => ({ loadConfiguration: vi.fn() }))
 beforeEach(() => vi.resetAllMocks())
 
@@ -15,9 +15,9 @@ const activeRace: Race = {
 }
 const inactiveRace: Race = { ...activeRace, id: 'race-retired', name: 'Retired', status: 'Inactive' }
 
-async function mountImport(races = [activeRace, inactiveRace]) {
+async function mountImport(races = [activeRace, inactiveRace], items: unknown[] = []) {
   vi.mocked(loadConfiguration).mockResolvedValue({ canEdit: true, timeZoneId: 'UTC', courses: [], races })
-  vi.mocked(api.get).mockResolvedValue({ data: { items: [], total: 0 } })
+  vi.mocked(api.get).mockResolvedValue({ data: { items, total: items.length } })
   const slot = { template: '<div><slot /></div>' }
   const fileInput = { name: 'FixtureFileInput', emits: ['update:modelValue'], template: '<div />' }
   const select = { name: 'FixtureSelect', props: ['label', 'items'], emits: ['update:modelValue'], template: '<div />' }
@@ -237,5 +237,39 @@ it('explains the public registered-name fallback and switches the hint for a pse
   field.vm.$emit('update:modelValue', 'Pseudonym')
   await flushPromises()
   expect(field.props('hint')).toBe('Printed bibs and public participant outputs use this name.')
+  wrapper.unmount()
+})
+
+
+it('blocks duplicate saves and loads the current version after a stale edit', async () => {
+  const row = { id: 'registration-1', version: 1, raceId: activeRace.id, runnerId: 'runner-1',
+    status: 1, paymentStatus: 0, bibNumber: '0007', runner: { firstName: 'Mara', lastName: 'Ventura' } }
+  const { wrapper, button } = await mountImport([activeRace], [row])
+  vi.mocked(api.get).mockResolvedValueOnce({ data: { registration: row, history: [] } })
+  await button('Details').trigger('click')
+  await flushPromises()
+
+  let rejectSave!: (failure: unknown) => void
+  vi.mocked(api.put).mockImplementationOnce(() => new Promise((_, reject) => { rejectSave = reject }))
+  const form = wrapper.get('#registration-form')
+  await form.trigger('submit')
+  await form.trigger('submit')
+  expect(api.put).toHaveBeenCalledTimes(1)
+  expect(api.put).toHaveBeenCalledWith(expect.stringContaining(row.id), expect.objectContaining({ version: 1 }))
+  rejectSave({ response: { status: 409, data: {
+    title: 'This registration has changed.', code: 'registration_version_conflict',
+  } } })
+  await flushPromises()
+  expect(wrapper.text()).toContain('This registration has changed.')
+  expect(button('Save registration').attributes('disabled')).toBeDefined()
+
+  vi.mocked(api.get).mockResolvedValueOnce({ data: { registration: { ...row, version: 2 }, history: [] } })
+  await button('Refresh registration').trigger('click')
+  await flushPromises()
+  expect(button('Save registration').attributes('disabled')).toBeUndefined()
+  vi.mocked(api.put).mockResolvedValueOnce({ data: {} })
+  await form.trigger('submit')
+  await flushPromises()
+  expect(api.put).toHaveBeenLastCalledWith(expect.stringContaining(row.id), expect.objectContaining({ version: 2 }))
   wrapper.unmount()
 })

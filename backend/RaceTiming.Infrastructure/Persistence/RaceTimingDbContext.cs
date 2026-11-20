@@ -162,6 +162,7 @@ public sealed class RaceTimingDbContext(DbContextOptions<RaceTimingDbContext> op
             e.Property(x => x.BibDisplayName).HasMaxLength(120);
             e.Property(x => x.Team).HasMaxLength(100);
             e.Property(x => x.PaymentStatus).HasConversion<string>().HasMaxLength(24);
+            e.Property(x => x.Version).HasDefaultValue(1L).IsConcurrencyToken();
             e.Property(x => x.RegistrationStatus).HasConversion<string>().HasMaxLength(24);
             e.HasOne(x => x.Race).WithMany(x => x.Registrations)
                 .HasForeignKey(x => new { x.RaceId, x.EventId })
