@@ -27,6 +27,8 @@ public sealed partial class TimingController
                 select new { roster.RegistrationId, roster.RaceId, roster.BibNumber, registration.BibDisplayName, registration.Runner.FirstName, registration.Runner.LastName })
                 .SingleOrDefaultAsync(ct);
             if (runner is null) return NotFound();
+            if (await HasConflictingLiveBibOwner(eventId, runner.RegistrationId, runner.BibNumber, ct))
+                return BibIdentityConflict();
             var visits = await Visits(runner.RaceId, checkpointId).ToListAsync(ct);
             return Ok(new { runner.RegistrationId, runner.RaceId, runner.BibNumber, displayName = Registration.DisplayName(runner.BibDisplayName, runner.FirstName, runner.LastName),
                 occurrences = visits.Select(VisitResponse) });
@@ -61,8 +63,11 @@ public sealed partial class TimingController
             if (await db.Set<TimingObservation>().AnyAsync(x => x.Id == input.ObservationId, ct))
                 return ConflictProblem("observation_id_used", "This observation identifier is already in use.");
             var roster = await db.Set<TimingRosterEntry>().SingleOrDefaultAsync(x =>
-                x.EventId == eventId && x.RegistrationId == input.RegistrationId && x.RaceId == input.RaceId, ct);
-            if (roster is null || !string.Equals(roster.BibNumber, bib, StringComparison.OrdinalIgnoreCase))
+                x.EventId == eventId && x.BibNumber == bib, ct);
+            if (roster is not null && await HasConflictingLiveBibOwner(eventId, roster.RegistrationId, roster.BibNumber, ct))
+                return BibIdentityConflict();
+            if (roster is null || roster.RegistrationId != input.RegistrationId || roster.RaceId != input.RaceId ||
+                !string.Equals(roster.BibNumber, bib, StringComparison.OrdinalIgnoreCase))
                 return ConflictProblem("roster_mismatch", "Resolve the bib against the armed timing roster again.");
             var visits = await Visits(input.RaceId, checkpointId).ToListAsync(ct);
             if (visits.Count == 0 || input.OccurrenceId.HasValue && visits.All(x => x.OccurrenceId != input.OccurrenceId))
@@ -159,6 +164,13 @@ public sealed partial class TimingController
                 })
             });
         });
+
+    private ObjectResult BibIdentityConflict() => ConflictProblem("timing_bib_identity_conflict",
+        "This bib has different owners in the timing roster and current registrations. Ask race control to reconcile the assignment.");
+
+    // Use the same event scope and database collation as the current bib uniqueness constraint.
+    private Task<bool> HasConflictingLiveBibOwner(Guid eventId, Guid registrationId, string bib, CancellationToken ct) =>
+        db.Registrations.AnyAsync(x => x.EventId == eventId && x.Id != registrationId && x.BibNumber == bib, ct);
 
     private Task<bool> HasGrant(Guid eventId, Guid checkpointId, Guid generation, CancellationToken ct) =>
         Grants.AnyAsync(x => x.EventId == eventId && x.CheckpointId == checkpointId && x.Generation == generation, ct);

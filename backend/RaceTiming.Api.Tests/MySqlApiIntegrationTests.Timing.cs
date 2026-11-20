@@ -300,6 +300,120 @@ public sealed partial class MySqlApiIntegrationTests
         }
     }
 
+    [MySqlIntegrationFact]
+    [Trait("Category", "MySqlIntegration")]
+    public async Task TimingLookupAndCaptureRejectConflictingLiveBibOwnership()
+    {
+        await using var data = new MySqlTestData(Services);
+        var director = await data.CreateAccountAsync();
+        var operatorAccount = await data.CreateAccountAsync();
+        var organizerId = await data.CreateOrganizerAsync(director, OrganizerRole.RaceDirector);
+        var eventId = await data.CreateEventAsync(organizerId);
+        var otherEventId = await data.CreateEventAsync(organizerId);
+        using var manager = await CheckInClient(director);
+        using var station = await CheckInClient(operatorAccount);
+        var raceId = await SeedRegistrationRace(manager, eventId);
+        var otherRaceId = await SeedRegistrationRace(manager, otherEventId);
+        var path = $"/api/v1/events/{eventId}";
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<RaceTimingDbContext>();
+        var item = await db.Events.SingleAsync(x => x.Id == eventId);
+        var race = await db.Races.Include(x => x.Course).ThenInclude(x => x.Checkpoints).SingleAsync(x => x.Id == raceId);
+        var frozenRunner = new Runner { OrganizerId = organizerId, FirstName = "Frozen", LastName = "Owner" };
+        var liveRunner = new Runner { OrganizerId = organizerId, FirstName = "Different", LastName = "Owner" };
+        db.AddRange(frozenRunner, liveRunner);
+        await db.SaveChangesAsync();
+
+        var owner = await CreatedId(await manager.PostAsJsonAsync(path + "/registrations",
+            new { raceId, runnerId = frozenRunner.Id, bibNumber = "0042", status = RegistrationStatus.Confirmed }));
+        var otherRegistration = await CreatedId(await manager.PostAsJsonAsync(path + "/registrations",
+            new { raceId, runnerId = liveRunner.Id, bibNumber = "0050", status = RegistrationStatus.Confirmed }));
+        await CreatedId(await manager.PostAsJsonAsync($"/api/v1/events/{otherEventId}/registrations",
+            new { raceId = otherRaceId, runnerId = liveRunner.Id, bibNumber = "0042", status = RegistrationStatus.Confirmed }));
+
+        var timing = path + "/timing";
+        try
+        {
+            var location = await CreatedId(await manager.PostAsJsonAsync(timing + "/checkpoints", new { name = "Gate", code = "G" }));
+            foreach (var point in race.Course.Checkpoints)
+            {
+                using var mapping = await manager.PutAsJsonAsync(timing + $"/courses/{race.CourseId}/occurrences/{point.Id}/checkpoint",
+                    new { checkpointId = location });
+                Assert.Equal(HttpStatusCode.NoContent, mapping.StatusCode);
+            }
+
+            var now = DateTimeOffset.FromUnixTimeSeconds(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            item.StartDate = now.UtcDateTime.AddHours(-1);
+            item.EndDate = now.UtcDateTime.AddHours(1);
+            item.Status = EventStatus.Live;
+            await db.SaveChangesAsync();
+            using var arm = await manager.PostAsJsonAsync(timing + $"/races/{raceId}/arm", new { });
+            Assert.Equal(HttpStatusCode.Created, arm.StatusCode);
+
+            var stationPath = timing + $"/checkpoints/{location}";
+            var generation = await Grant(manager, stationPath, operatorAccount.Id);
+            var lookupPath = stationPath + "/registrations?bib=0042";
+            using var firstLookup = await station.GetAsync(lookupPath);
+            Assert.Equal(HttpStatusCode.OK, firstLookup.StatusCode);
+            Assert.Equal(owner, (await firstLookup.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("registrationId").GetGuid());
+
+            var input = new TimingController.ObservationInput(Guid.NewGuid(), owner, raceId, "0042",
+                race.Course.Checkpoints.Single(x => x.IsStart).Id, now, Guid.NewGuid(), generation, TimingSource.Manual);
+            var key = Guid.NewGuid();
+
+            // Reproduce legacy drift after the successful lookup. The public writes now prevent this state.
+            var liveOwner = await db.Registrations.SingleAsync(x => x.Id == owner);
+            var conflictingOwner = await db.Registrations.SingleAsync(x => x.Id == otherRegistration);
+            liveOwner.BibNumber = null;
+            await db.SaveChangesAsync();
+            conflictingOwner.BibNumber = "0042";
+            await db.SaveChangesAsync();
+
+            using var conflictLookup = await station.GetAsync(lookupPath);
+            Assert.Equal(HttpStatusCode.Conflict, conflictLookup.StatusCode);
+            Assert.Equal("timing_bib_identity_conflict",
+                (await conflictLookup.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+            var conflict = await Send(station, stationPath, key, input);
+            Assert.Equal(HttpStatusCode.Conflict, conflict.Status);
+            Assert.Equal("timing_bib_identity_conflict", conflict.Body.GetProperty("code").GetString());
+            Assert.False(await db.Set<TimingObservation>().AnyAsync(x => x.EventId == eventId));
+            Assert.False(await db.Set<TimingDecision>().AnyAsync(x => x.ObservationId == input.ObservationId));
+            Assert.False(await db.Set<AcceptedTiming>().AnyAsync(x => x.EventId == eventId));
+
+            conflictingOwner.BibNumber = "0050";
+            await db.SaveChangesAsync();
+            using var historicalLookup = await station.GetAsync(lookupPath);
+            Assert.Equal(HttpStatusCode.OK, historicalLookup.StatusCode);
+            Assert.Equal(owner, (await historicalLookup.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("registrationId").GetGuid());
+            var accepted = await Send(station, stationPath, key, input);
+            Assert.Equal(HttpStatusCode.Created, accepted.Status);
+            Assert.Equal("Accepted", accepted.Body.GetProperty("outcome").GetString());
+            Assert.Equal(owner, accepted.Body.GetProperty("registrationId").GetGuid());
+
+            // A replay still returns the immutable receipt while new evidence fails closed.
+            conflictingOwner.BibNumber = "0042";
+            await db.SaveChangesAsync();
+            var replay = await Send(station, stationPath, key, input);
+            Assert.Equal(HttpStatusCode.OK, replay.Status);
+            Assert.Equal(accepted.Body.GetProperty("receivedAtUtc").GetString(), replay.Body.GetProperty("receivedAtUtc").GetString());
+            using var revoke = await manager.PutAsJsonAsync(stationPath + $"/assignments/{operatorAccount.Id}", new { active = false });
+            Assert.Equal(HttpStatusCode.OK, revoke.StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await Send(station, stationPath, key, input)).Status);
+        }
+        finally
+        {
+            await db.Set<AcceptedTiming>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
+            await db.Set<TimingDecision>().Where(x => db.Set<TimingObservation>().Any(o => o.EventId == eventId && o.Id == x.ObservationId)).ExecuteDeleteAsync();
+            await db.Set<TimingObservation>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
+            await db.Set<TimingRosterEntry>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
+            await db.Set<TimingVisit>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
+            await db.Set<RaceTimingSetup>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
+            await db.Set<CheckpointAssignment>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
+            await db.Set<CheckpointMapping>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
+            await db.Set<PhysicalCheckpoint>().Where(x => x.EventId == eventId).ExecuteDeleteAsync();
+        }
+    }
+
     private static async Task<Guid> Grant(HttpClient client, string path, string userId)
     {
         using var response = await client.PutAsJsonAsync(path + $"/assignments/{userId}", new { active = true });

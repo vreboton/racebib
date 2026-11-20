@@ -49,6 +49,8 @@ A receipt contains the observation ID, registration ID, race ID, observed and re
 
 ## Evidence, ordering and recovery
 
+- Bib lookup and new capture return HTTP 409 with code `timing_bib_identity_conflict` if a different current registration in the same event owns a frozen bib. Both operations check under the event lock. If the live registrations have no owner for that bib, the frozen registration remains authoritative. Existing observations and authorized replays retain their original identity and receipt.
+
 - UTC instants are stored separately at MySQL microsecond precision. Sub-microsecond crossing input is rejected. Values outside the armed window or more than two minutes ahead of server receipt are retained for manager review. Receipt time never replaces the observed time.
 - A location with one occurrence can auto-accept after chronology and occupancy checks. A repeated location requires the occurrence in the submission or explicit operator confirmation. Operators cannot change accepted slots. Earlier evidence can be accepted after a later visit if its timestamp fits the frozen sequence. Receipt order does not drive traversal.
 - Ordinary entry and revocation share the existing MySQL parent-event lock in a serializable transaction. Event lifecycle and role, account and organizer checks run inside that transaction. A replay rechecks the grant, including its generation. The database additionally guards observation ID, scoped operation key, and the single accepted registration/occurrence slot. A concurrent database conflict returns 409 and is retryable using the original operation identifiers.
