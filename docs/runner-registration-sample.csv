@@ -1,3 +1,3 @@
-First Name,Last Name,Name on Bib,Gender,Birthdate,Email,Mobile Number,Race,Category,Start Wave,Bib Number,Team,Emergency Contact,Registration Status,Payment Status,Runner ID
-Mara,Ventura,"Mara, Moonlight",,1994-03-22,mara@example.test,,10K,,,0007,Example Trail Club,,Confirmed,Paid,
-Tomas,Rivera,小光,,1989-11-03,tomas@example.test,,10K,,,,,,Pending,Unpaid,
+First Name,Last Name,Name on Bib,Gender,Birthdate,Email,Mobile Number,Race,Category,Start Wave,Bib Number,Team,Emergency Contact
+Mara,Ventura,"Mara, Moonlight",,1994-03-22,mara@example.test,,10K,,,0007,Example Trail Club,
+Tomas,Rivera,小光,,1989-11-03,tomas@example.test,,,,,,,
