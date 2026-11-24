@@ -40,7 +40,7 @@
     </template>
 
     <v-dialog v-model="addDialog" max-width="520"><v-card title="Add an existing RaceBib user"><v-card-text><v-text-field v-model="userQuery" label="Search by name or email" hint="Enter at least three characters" persistent-hint @update:model-value="searchUsers"/><v-autocomplete v-model="selectedUserId" :items="userMatches" item-title="label" item-value="id" label="User" class="mt-3"/><v-select v-model="selectedRole" :items="roleOptions" label="Organizer role"/></v-card-text><v-card-actions><v-spacer/><v-btn @click="addDialog = false">Cancel</v-btn><v-btn color="primary" :disabled="!selectedUserId" :loading="saving" @click="addExisting">Add member</v-btn></v-card-actions></v-card></v-dialog>
-    <v-dialog v-model="inviteDialog" max-width="520"><v-card title="Invite a member"><v-card-text><v-text-field v-model="inviteEmail" label="Email address" type="email"/><v-select v-model="inviteRole" :items="roleOptions" label="Organizer role"/><v-alert v-if="deliveryUrl" type="success" variant="tonal" class="mt-2">Development invitation link: <a :href="deliveryUrl">Open invitation</a></v-alert></v-card-text><v-card-actions><v-spacer/><v-btn @click="inviteDialog = false">Close</v-btn><v-btn color="primary" :loading="saving" @click="sendInvite">Send invitation</v-btn></v-card-actions></v-card></v-dialog>
+    <v-dialog v-model="inviteDialog" max-width="520"><v-card title="Invite a member"><v-card-text><v-text-field v-model="inviteEmail" label="Email address" type="email"/><v-select v-model="inviteRole" :items="inviteRoleOptions" label="Organizer role"/><v-alert v-if="deliveryUrl" type="success" variant="tonal" class="mt-2">Development invitation link: <a :href="deliveryUrl">Open invitation</a></v-alert></v-card-text><v-card-actions><v-spacer/><v-btn @click="inviteDialog = false">Close</v-btn><v-btn color="primary" :loading="saving" @click="sendInvite">Send invitation</v-btn></v-card-actions></v-card></v-dialog>
     <v-dialog v-model="confirmDialog" max-width="440"><v-card :title="confirmTitle"><v-card-text>{{ confirmMessage }}</v-card-text><v-card-actions><v-spacer/><v-btn @click="confirmDialog = false">Cancel</v-btn><v-btn color="primary" :loading="saving" @click="confirmAction">Confirm</v-btn></v-card-actions></v-card></v-dialog>
     <v-snackbar v-model="snackbar" :color="snackbarColor" timeout="4000">{{ snackbarText }}</v-snackbar>
   </section>
@@ -59,7 +59,8 @@ const search = ref(''), page = ref(1), pageSize = 20
 const members = ref<Page<Member>>({ items: [], page: 1, pageSize, total: 0 }), invitations = ref<Invitation[]>([])
 const roleOptions = [{ title: 'Event Administrator', value: 'EventAdministrator' }, { title: 'Race Director', value: 'RaceDirector' }]
 const addDialog = ref(false), inviteDialog = ref(false), userQuery = ref(''), userMatches = ref<Array<{ id: string; label: string; email: string }>>([]), selectedUserId = ref(''), selectedRole = ref<OrganizerRole>('RaceDirector')
-const inviteEmail = ref(''), inviteRole = ref<OrganizerRole>('RaceDirector'), deliveryUrl = ref('')
+const inviteRoleOptions = [...roleOptions, { title: 'Checkpoint account only', value: 'CheckpointMarshal' }]
+const inviteEmail = ref(''), inviteRole = ref<OrganizerRole | 'CheckpointMarshal'>('RaceDirector'), deliveryUrl = ref('')
 const confirmDialog = ref(false), confirmTitle = ref(''), confirmMessage = ref(''), pendingAction = ref<(() => Promise<void>) | null>(null)
 const snackbar = ref(false), snackbarText = ref(''), snackbarColor = ref('success')
 const allowedOrganizers = computed(() => organizers.value.filter(o => auth.canManageMembers(o.id)))
@@ -105,7 +106,7 @@ async function confirmAction() { saving.value = true; try { await pendingAction.
 async function resend(id: string) { try { const { data } = await organizerMembersApi.resend(organizerId.value, id); if (data.developmentAcceptanceUrl) { deliveryUrl.value = data.developmentAcceptanceUrl; inviteDialog.value = true }; notify('Invitation resent.') } catch (error) { notify(errorMessage(error), 'error') } }
 function revoke(id: string) { confirmTitle.value = 'Revoke invitation'; confirmMessage.value = 'The invitation link will no longer work.'; pendingAction.value = async () => { await organizerMembersApi.revoke(organizerId.value, id); await loadInvitations() }; confirmDialog.value = true }
 async function changePage(amount: number) { page.value += amount; await loadMembers() }
-function roleLabel(role: string) { return role === 'EventAdministrator' ? 'Event Administrator' : 'Race Director' }
+function roleLabel(role: string) { return role === 'CheckpointMarshal' ? 'Checkpoint account only' : role === 'EventAdministrator' ? 'Event Administrator' : 'Race Director' }
 function formatDate(value: string) { return new Date(value).toLocaleString() }
 function notify(message: string, color = 'success') { snackbarText.value = message; snackbarColor.value = color; snackbar.value = true }
 function errorMessage(error: unknown) { return isAxiosError(error) ? error.response?.data?.title || error.response?.data?.message || error.message : 'Something went wrong.' }
