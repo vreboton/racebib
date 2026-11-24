@@ -120,6 +120,8 @@ public sealed partial class TimingController
             var prior = await Latest(observationId, ct);
             if (prior.Revision != input.ExpectedRevision)
                 return ConflictProblem("stale_decision", "Reload the observation history before resolving it.");
+            if (input.OccurrenceId.HasValue && await HasConflictingLiveBibOwner(eventId, observation.RegistrationId, observation.BibNumber, ct))
+                return BibIdentityConflict();
             if (input.OccurrenceId is Guid occurrence)
             {
                 if (prior.Outcome == TimingOutcome.Accepted)

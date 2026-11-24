@@ -33,8 +33,16 @@ public sealed partial class TimingController
     private IQueryable<TimingRosterEntry> ResultsRoster(RaceTimingSetup setup) =>
         db.Set<TimingRosterEntry>().AsNoTracking().Where(x => x.EventId == setup.EventId && x.RaceId == setup.RaceId);
 
-    private async Task<IActionResult> ReadResults(Guid eventId, Guid raceId, CancellationToken ct,
-        Func<RaceTimingSetup, Task<IActionResult>> read)
+    private Task<IActionResult> ReadResults(Guid eventId, Guid raceId, CancellationToken ct,
+        Func<RaceTimingSetup, Task<IActionResult>> read) =>
+        ReadRaceControl(eventId, ct, async () =>
+        {
+            var setup = await db.Set<RaceTimingSetup>().AsNoTracking()
+                .SingleOrDefaultAsync(x => x.EventId == eventId && x.RaceId == raceId, ct);
+            return setup is null ? NotFound() : await read(setup);
+        });
+
+    private async Task<IActionResult> ReadRaceControl(Guid eventId, CancellationToken ct, Func<Task<IActionResult>> read)
     {
         // MySQL serves every nonlocking SELECT in this transaction from one consistent snapshot.
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
@@ -44,10 +52,7 @@ public sealed partial class TimingController
             !await CanManageTiming(item.OrganizerId, ct))
             return Forbid();
 
-        var setup = await db.Set<RaceTimingSetup>().AsNoTracking()
-            .SingleOrDefaultAsync(x => x.EventId == eventId && x.RaceId == raceId, ct);
-        if (setup is null) return NotFound();
-        var result = await read(setup);
+        var result = await read();
         await transaction.CommitAsync(ct);
         return result;
     }

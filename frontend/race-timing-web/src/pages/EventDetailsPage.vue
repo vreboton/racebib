@@ -47,9 +47,13 @@
     <v-tabs v-model="managementTab" class="mt-5" aria-label="Event management">
       <v-tab v-if="canEdit" value="registrations" id="registrations-tab" aria-controls="registrations">Runner Registrations</v-tab>
       <v-tab value="configuration" id="configuration-tab" aria-controls="configuration">Race Configuration</v-tab>
+      <v-tab v-if="canEdit" value="race-control" id="race-control-tab" aria-controls="race-control">Race Control</v-tab>
     </v-tabs>
     <section v-if="managementTab === 'registrations'" id="registrations" role="tabpanel" aria-labelledby="registrations-tab">
       <RegistrationPanel :key="event.id" :event-id="event.id" :organizer-id="event.organizerId" />
+    </section>
+    <section v-else-if="managementTab === 'race-control'" id="race-control" role="tabpanel" aria-labelledby="race-control-tab">
+      <RaceControlPanel :key="event.id" :event-id="event.id" />
     </section>
     <section v-else id="configuration" role="tabpanel" aria-labelledby="configuration-tab">
       <RaceConfigurationPanel :key="event.id" :event-id="event.id" :zone="event.timeZoneId" />
@@ -65,6 +69,7 @@ import { eventStatusTransitions, eventsApi, getApiError } from '../services/even
 import type { EventDetails, EventStatus } from '../services/events'
 import RegistrationPanel from '../components/events/RegistrationPanel.vue'
 import RaceConfigurationPanel from '../components/events/RaceConfigurationPanel.vue'
+import RaceControlPanel from '../components/events/RaceControlPanel.vue'
 import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
@@ -79,7 +84,8 @@ const canEdit = computed(() => Boolean(event.value && auth.canManageOrganizer(ev
 const transitions = computed(() => event.value ? eventStatusTransitions[event.value.status] : [])
 const managementTab = computed({
   get: () => !canEdit.value || route.query.tab === 'configuration' ||
-    (route.query.tab !== 'registrations' && route.hash === '#configuration') ? 'configuration' : 'registrations',
+    (!route.query.tab && route.hash === '#configuration') ? 'configuration' :
+      route.query.tab === 'race-control' ? 'race-control' : 'registrations',
   set: (tab: string) => {
     if (tab !== managementTab.value)
       void router.push({ query: { ...route.query, tab } })

@@ -39,7 +39,7 @@ it('opens a configuration deep link and keeps the event context when switching t
   const { wrapper, router } = await mountDetails('/events/event-1?tab=configuration', true)
   expect(wrapper.get('h1').text()).toBe('Summit Weekend')
   expect(wrapper.get('[role="tabpanel"]').attributes('id')).toBe('configuration')
-  expect(wrapper.findAll('button').map(button => button.text())).toEqual(['Runner Registrations', 'Race Configuration'])
+  expect(wrapper.findAll('button').map(button => button.text())).toEqual(['Runner Registrations', 'Race Configuration', 'Race Control'])
 
   wrapper.findComponent({ name: 'FixtureTabs' }).vm.$emit('update:modelValue', 'registrations')
   await flushPromises()
@@ -54,5 +54,11 @@ it('keeps registration tools hidden for a read-only organizer member', async () 
   const { wrapper } = await mountDetails('/events/event-1?tab=registrations', false)
   expect(wrapper.find('#registrations-tab').exists()).toBe(false)
   expect(wrapper.get('[role="tabpanel"]').attributes('id')).toBe('configuration')
+  wrapper.unmount()
+})
+
+it('opens the manager Race Control deep link', async () => {
+  const { wrapper } = await mountDetails('/events/event-1?tab=race-control', true)
+  expect(wrapper.get('[role="tabpanel"]').attributes('id')).toBe('race-control')
   wrapper.unmount()
 })
