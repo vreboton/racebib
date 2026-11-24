@@ -6,6 +6,7 @@
     </div>
     <v-tabs v-model="tab" aria-label="Race Control">
       <v-tab value="overview">Overview</v-tab>
+      <v-tab value="setup">Timing Setup</v-tab>
       <v-tab value="exceptions">Timing Exceptions</v-tab>
       <v-tab value="runners">Runner Results</v-tab>
       <v-tab value="audit">Audit History</v-tab>
@@ -13,7 +14,8 @@
     <v-alert v-if="error" type="error" variant="tonal" class="mt-4" role="alert">{{ error }}</v-alert>
     <v-progress-linear v-if="loading" indeterminate class="mt-4" aria-label="Loading Race Control" />
     <template v-else-if="overview && !error">
-      <div v-if="tab === 'overview'" class="mt-4">
+      <TimingSetupPanel v-if="tab === 'setup'" :key="eventId" :event-id="eventId" />
+      <div v-else-if="tab === 'overview'" class="mt-4">
         <p>{{ overview.actionable }} evidence exceptions · {{ overview.bibConflicts }} bib ownership conflicts</p>
         <p v-if="!overview.races.length">No races are armed for timing.</p>
         <v-list v-else density="compact">
@@ -123,6 +125,7 @@ import { computed, ref, watch } from 'vue'
 import { isAxiosError } from 'axios'
 import { getApiError } from '../../services/events'
 import { raceControlApi } from '../../services/raceControl'
+import TimingSetupPanel from './TimingSetupPanel.vue'
 import type { EvidenceRow, Overview, Resolution, RunnerRow } from '../../services/raceControl'
 
 const props = defineProps<{ eventId: string }>()

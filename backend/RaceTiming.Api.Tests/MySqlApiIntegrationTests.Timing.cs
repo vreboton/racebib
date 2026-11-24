@@ -76,6 +76,16 @@ public sealed partial class MySqlApiIntegrationTests
             await db.SaveChangesAsync();
             using var arm = await manager.PostAsJsonAsync(path + $"/races/{race.Id}/arm", new { });
             Assert.Equal(HttpStatusCode.Created, arm.StatusCode);
+            var setup = await manager.GetFromJsonAsync<JsonElement>(path + "/setup");
+            Assert.Equal(2, setup.GetProperty("locations").GetArrayLength());
+            Assert.Equal(4, setup.GetProperty("mappings").GetArrayLength());
+            Assert.Single(setup.GetProperty("setups").EnumerateArray());
+            var operatorDetails = await manager.GetFromJsonAsync<JsonElement>(path + "/setup/operator?email=" + Uri.EscapeDataString(operatorAccount.Email));
+            Assert.Equal(operatorAccount.Id, operatorDetails.GetProperty("id").GetString());
+            using var deniedSetup = await station.GetAsync(path + "/setup");
+            Assert.Equal(HttpStatusCode.Forbidden, deniedSetup.StatusCode);
+            var clockProbe = await station.GetFromJsonAsync<JsonElement>("/api/v1/me/timing-clock");
+            Assert.InRange(clockProbe.GetProperty("serverUtc").GetDateTimeOffset(), now.AddSeconds(-10), DateTimeOffset.UtcNow.AddSeconds(1));
             using var frozenChange = await manager.PutAsJsonAsync(bibPath, new { bibNumber = "0043", version = 3 });
             Assert.Equal(HttpStatusCode.Conflict, frozenChange.StatusCode);
             using var frozenWave = await manager.PutAsJsonAsync(registrationsPath + $"/{registration.Id}",
@@ -100,6 +110,8 @@ public sealed partial class MySqlApiIntegrationTests
             db.AddRange(lateRunner, lateRegistration);
             await db.SaveChangesAsync();
             var amendmentPath = path + $"/races/{race.Id}/roster/{lateRegistration.Id}";
+            var eligible = await manager.GetFromJsonAsync<JsonElement>(path + $"/setup/races/{race.Id}/late-registrations?bib=0100");
+            Assert.Equal(lateRegistration.Id, eligible.GetProperty("id").GetGuid());
             using var amendment = await manager.PostAsJsonAsync(amendmentPath, new { reason = "Late entry approved" });
             Assert.Equal(HttpStatusCode.NoContent, amendment.StatusCode);
             using var repeatedAmendment = await manager.PostAsJsonAsync(amendmentPath, new { reason = "Repeat approval" });

@@ -170,6 +170,18 @@ public sealed class OrganizerMemberManagementTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CheckpointAccountInvitationDoesNotGrantOrganizerMembership()
+    {
+        var controller = InvitationController(admin);
+        Assert.Equal(202, Assert.IsType<ObjectResult>(await controller.Create(organizerA.Id,
+            new OrganizerInvitationsController.CreateInvitationRequest(target.Email!, OrganizerRole.CheckpointMarshal), default)).StatusCode);
+        var token = ExtractToken(sender.LastUrl!);
+        Assert.IsType<NoContentResult>(await InvitationController(target).Accept(new OrganizerInvitationsController.TokenRequest(token), default));
+        Assert.False(await db.OrganizerMemberships.AnyAsync(x => x.OrganizerId == organizerA.Id && x.UserId == target.Id));
+        Assert.Equal(OrganizerInvitationStatus.Accepted, (await db.OrganizerInvitations.SingleAsync()).Status);
+    }
+
+    [Fact]
     public async Task ResendingRotatesTokenAndRejectingConsumesInvitation()
     {
         var c = InvitationController(admin);

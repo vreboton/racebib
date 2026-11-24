@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#102923">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <title>RaceBib Checkpoint</title>
+</head>
+<body>
+  <main>
+    <header><small>RACEBIB</small><h1>Checkpoint Timing</h1></header>
+    <p id="notice" role="status" hidden></p>
+    <form id="login">
+      <label for="email">Account email</label><input id="email" type="email" autocomplete="username" required>
+      <label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required>
+      <button>Sign in</button>
+    </form>
+    <section id="station" hidden>
+      <div class="actions"><button type="button" id="refresh">Check connection and assignments</button><button type="button" id="logout">Sign out</button></div>
+      <p id="clock" role="status"></p>
+      <label for="assignment">Assigned checkpoint</label><select id="assignment"></select>
+      <form id="capture">
+        <label for="bib">Runner bib</label><input id="bib" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="32">
+        <button id="capture-button">Capture crossing</button>
+      </form>
+      <h2>Session captures</h2>
+      <ul id="captures"></ul>
+    </section>
+  </main>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

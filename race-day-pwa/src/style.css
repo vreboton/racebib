@@ -1,0 +1,20 @@
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; font: 1rem/1.5 system-ui, sans-serif; background: #edf3ef; color: #102923; }
+main { max-width: 48rem; padding: 1.25rem; margin: auto; }
+header { border-bottom: 2px solid #1b5c45; margin-bottom: 1rem; }
+small { letter-spacing: .16em; font-weight: 700; }
+h1 { font-size: clamp(1.6rem, 6vw, 2.5rem); margin: 0 0 .75rem; }
+h2 { font-size: 1.2rem; }
+form, li { background: white; border: 1px solid #bccdc3; padding: 1rem; border-radius: .6rem; margin: 1rem 0; }
+label { display: block; font-weight: 650; }
+input, select, button { min-height: 48px; font: inherit; border-radius: .4rem; padding: .55rem .75rem; }
+input, select { width: 100%; border: 1px solid #587267; background: white; margin: .25rem 0 .75rem; color: inherit; }
+#bib { font-size: 1.5rem; font-variant-numeric: tabular-nums; }
+button { border: 1px solid #124c38; background: #124c38; color: white; cursor: pointer; margin: .25rem .4rem .25rem 0; }
+button:disabled { opacity: .55; cursor: default; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #00826c; outline-offset: 2px; }
+p { margin: .4rem 0; overflow-wrap: anywhere; }
+#notice, .warning { background: #fff0c4; color: #4a3200; padding: .7rem; border-radius: .4rem; }
+ul { padding: 0; list-style: none; }
+.actions { display: flex; flex-wrap: wrap; }

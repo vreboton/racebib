@@ -42,7 +42,7 @@ public sealed class OrganizerInvitationsController(
     public async Task<IActionResult> Create(Guid organizerId, CreateInvitationRequest request, CancellationToken ct)
     {
         if (!await CanAdminister(organizerId, ct)) return Forbid();
-        if (!IsAssignableRole(request.Role)) return BadRequest(new ProblemDetails { Status = 400, Title = "Only EventAdministrator and RaceDirector roles can be assigned." });
+        if (!IsAssignableRole(request.Role)) return BadRequest(new ProblemDetails { Status = 400, Title = "Choose EventAdministrator, RaceDirector, or a checkpoint account invitation." });
         var email = request.Email.Trim();
         var normalizedEmail = users.NormalizeEmail(email)!;
         var expired = await db.OrganizerInvitations.Where(x => x.OrganizerId == organizerId && x.Status == OrganizerInvitationStatus.Pending && x.ExpiresAtUtc <= DateTime.UtcNow).ToListAsync(ct);
@@ -220,6 +220,12 @@ public sealed class OrganizerInvitationsController(
         invitation.ActiveInvitationKey = null;
         invitation.AcceptedAtUtc = DateTime.UtcNow;
         audit?.Record(User, "Organizer.InvitationAccepted", "OrganizerInvitation", invitation.Id.ToString(), invitation.OrganizerId, new Dictionary<string, object?> { ["role"] = invitation.Role.ToString() });
+        if (invitation.Role == OrganizerRole.CheckpointMarshal)
+        {
+            // This invitation provisions an account only. A separate station grant authorizes timing entry.
+            try { await db.SaveChangesAsync(ct); return true; }
+            catch (DbUpdateConcurrencyException) { return false; }
+        }
         var membership = await db.OrganizerMemberships.SingleOrDefaultAsync(x => x.OrganizerId == invitation.OrganizerId && x.UserId == user.Id, ct);
         if (membership is null) db.OrganizerMemberships.Add(new OrganizerMembership { OrganizerId = invitation.OrganizerId, UserId = user.Id, Role = invitation.Role });
         else { membership.Role = invitation.Role; membership.IsActive = true; membership.JoinedAt = DateTime.UtcNow; }
@@ -238,6 +244,6 @@ public sealed class OrganizerInvitationsController(
         return $"{baseUrl}/accept-invitation?token={Uri.EscapeDataString(token)}";
     }
     private static string HashToken(string token) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
-    private static bool IsAssignableRole(OrganizerRole role) => role is OrganizerRole.EventAdministrator or OrganizerRole.RaceDirector;
+    private static bool IsAssignableRole(OrganizerRole role) => role is OrganizerRole.EventAdministrator or OrganizerRole.RaceDirector or OrganizerRole.CheckpointMarshal;
     private static ProblemDetails InvalidInvitation() => new() { Status = 400, Title = "This invitation is invalid, expired, revoked, or already used." };
 }
