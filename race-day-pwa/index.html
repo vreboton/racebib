@@ -9,26 +9,7 @@
   <title>RaceBib Checkpoint</title>
 </head>
 <body>
-  <main>
-    <header><small>RACEBIB</small><h1>Checkpoint Timing</h1></header>
-    <p id="notice" role="status" hidden></p>
-    <form id="login">
-      <label for="email">Account email</label><input id="email" type="email" autocomplete="username" required>
-      <label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required>
-      <button>Sign in</button>
-    </form>
-    <section id="station" hidden>
-      <div class="actions"><button type="button" id="refresh">Check connection and assignments</button><button type="button" id="logout">Sign out</button></div>
-      <p id="clock" role="status"></p>
-      <label for="assignment">Assigned checkpoint</label><select id="assignment"></select>
-      <form id="capture">
-        <label for="bib">Runner bib</label><input id="bib" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="32">
-        <button id="capture-button">Capture crossing</button>
-      </form>
-      <h2>Session captures</h2>
-      <ul id="captures"></ul>
-    </section>
-  </main>
-  <script type="module" src="/src/main.js"></script>
+  <div id="app"></div>
+  <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

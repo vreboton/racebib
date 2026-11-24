@@ -11,7 +11,7 @@ The shared API already verifies current assignment generation, frozen bib owners
 ## Implementation
 
 1. Add read-only manager setup data and exact-email account lookup. Expose checkpoint creation and mapping, assignment and revocation, arming, late roster admission, and gun declarations in Race Control. Reuse organizer invitation delivery for checkpoint accounts without adding organizer membership.
-2. Build a separate installable web application in race-day-pwa with its own build. Use same-origin API requests through a local development proxy or a production reverse proxy. Authentication and assignments come from the shared API.
+2. Build a separate installable web application in race-day-pwa as a Vue 3, TypeScript, Vite and Vuetify application with its own build. Use same-origin API requests through a local development proxy or a production reverse proxy. Authentication and assignments come from the shared API.
 3. A bib entry captures an immutable timestamp, assignment context, observation UUID and operation UUID synchronously before lookup. Each capture has its own workflow and multiple lookups can run in parallel. Prompt for occurrence if needed. A retry resends exactly the stored request using the original key.
 4. Keep pending online captures in tab-scoped session storage, partitioned by account. Require explicit foreground retry, no offline bib roster, offline capture, service worker cache, or background upload. Suspend capture when the browser is offline or API connectivity cannot be verified.
 5. Sample server time with a round-trip estimate. Warn when skew or uncertainty is high or the estimate is stale. Keep the raw device timestamp and surface server clock flags in receipts.
@@ -22,10 +22,27 @@ The shared API already verifies current assignment generation, frozen bib owners
 1. In Event Details, finish Race Configuration and confirm bibs in Runner Registrations. Move the event to Ready. The manager can create physical checkpoints and map visits before arming.
 2. In Organizer Members, an Event Administrator can send a checkpoint-account-only invitation. The operator accepts using the existing invitation page. This creates or verifies an account without adding an organizer membership. In Race Control → Timing Setup, a manager grants that account access to a physical checkpoint.
 3. In Timing Setup, arm each race with its results and cutoff bases, then move the event Live using Event Details. Declare the actual gun per race or wave. Late roster admission requires a confirmed registration, available bib and reason. Race Control handles timing exceptions and official decisions.
-4. With the local API running, run npm ci and npm run dev in race-day-pwa. Open http://localhost:5174. Vite proxies /api to http://127.0.0.1:5080 by default. Set RACEBIB_API_ORIGIN to a different local API address if needed. npm run build creates the independent dist bundle. On a dedicated HTTPS origin, route /api to the same RaceBib backend.
-5. Sign in, choose an assigned live checkpoint, and press Enter or Capture crossing as the bib arrives. A single occurrence submits automatically. Repeated visits require a choice or an explicit request for race-control review. Lookups and submissions for different captures can complete out of order.
+4. With the local API running, run npm ci and npm run dev in frontend/race-timing-web for administration at http://localhost:5173. For the checkpoint app, run npm ci and npm run dev in race-day-pwa. Open http://localhost:5174. Vite proxies /api to http://127.0.0.1:5080 by default. Set RACEBIB_API_ORIGIN to a different local API address if needed. npm run build creates the independent dist bundle. On a dedicated HTTPS origin, route /api to the same RaceBib backend.
+5. Sign in, choose an assigned live checkpoint, and press Enter or Record crossing as the bib arrives. A single occurrence submits automatically. Repeated visits require a choice or an explicit request for race-control review. Lookups and submissions for different captures can complete out of order.
 6. Retry a capture whose receipt is uncertain using its own Retry capture action. Retry keeps the original timestamp and operation identity. A 403 after a submitted request requires manager verification if access was revoked before a replay could confirm its receipt.
 
 The clock check estimates device offset by comparing the server instant to the midpoint of a round trip. It warns beyond 2 seconds estimated skew, above 500 ms half-trip uncertainty, or when a sample is unavailable. Results are estimates and asymmetric latency can bias them. Captured instants are preserved as read from the device. The application pauses new capture when the browser reports offline, after an API transport failure, or when the last connection check is over 45 seconds old. A sudden undetected disconnect can still leave a pending foreground operation.
 
 Tab-scoped session storage retains pending operations across reload and reauthentication by the same account. Keep the tab open until every capture has a receipt or has been handed to race control. Closing a tab or clearing site data can discard pending records. The manifest provides app identity and icons. The app uses the live API and has no service worker, offline roster, background sync, or persistent offline capture queue.
+
+## API integration
+
+The checkpoint app uses the existing JWT login at `/api/v1/auth/login` and uses `/api/v1/me/timing-clock` and `/api/v1/me/timing-assignments` to verify connectivity and station access. For an assigned station it calls the event-scoped `registrations?bib=...` and `observations` endpoints under `/api/v1/events/{eventId}/timing/checkpoints/{checkpointId}`. Each submission carries the server-issued assignment generation, a client observation UUID, and an Idempotency-Key. Only a matching server receipt changes the capture to recorded. The manager setup endpoints use the existing event timing permissions.
+
+## Browser rehearsal
+
+Run the rehearsal only against a disposable local MySQL database and API. Use Development mode with a synthetic seeded administrator, development invitation delivery, and API port 5092. Set the local API origin on both Vite processes to http://127.0.0.1:5092. From each frontend directory start Vite with the following PowerShell commands, using port 5193 for administration and 5194 for the checkpoint app.
+
+```powershell
+$env:RACEBIB_API_ORIGIN = 'http://127.0.0.1:5092'
+node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5193 --strictPort
+```
+
+From race-day-pwa, install the Playwright Chromium browser with `npx playwright install chromium`. Set `REHEARSAL_EMAIL` and `REHEARSAL_PASSWORD` to the disposable administrator credentials. Optionally set `REHEARSAL_ARTIFACTS` to a directory to save screenshots, or `REHEARSAL_BROWSER` to a local Chromium-compatible executable. Run `npm run rehearsal`.
+
+The script creates a new synthetic organizer and 12K/24K event. It seeds setup data through the shared API and creates both registrations through the administration UI. It signs in as a station-only operator, records start and finish in reverse server receipt order, selects a repeated aid visit, observes a slot conflict, and retries a deliberately dropped receipt with the identical submission. In Race Control it verifies missing and over-limit evidence, applies Finished and DNF decisions, and invalidates the accepted finish to verify that the official Finished decision remains visible with a re-review warning.
