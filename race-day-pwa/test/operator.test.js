@@ -371,3 +371,55 @@ test('a capture read completing after logout never restores the previous account
     window.close()
   }
 })
+
+test('missing or denied Web Locks pauses sync while allowing consecutive durable captures', async t => {
+  for (const capability of ['missing', 'denied']) {
+    await t.test(capability, async () => {
+      const { window, get, start } = await operatorFixture()
+      const locks = window.navigator.locks
+      window.navigator.locks = capability === 'missing' ? undefined : {
+        async request() { throw new window.DOMException('Locks denied', 'SecurityError') },
+      }
+      const requests = []
+      window.fetch = async url => {
+        if (url.endsWith('/timing-clock')) return json({ serverUtc: new Date().toISOString() })
+        if (url.endsWith('/timing-assignments')) return json([assignment])
+        requests.push(url)
+        throw new Error('Unexpected timing request')
+      }
+      try {
+        start()
+        await waitFor(() => !get('capture-button').disabled)
+        for (const bib of ['0042', '0043', '0044']) {
+          get('bib').value = bib
+          get('capture').dispatchEvent(new window.Event('submit', { cancelable: true }))
+          await waitFor(() => get('bib').value === '')
+        }
+        await waitFor(() => !get('sync-compatibility').hidden)
+        assert.match(get('sync-compatibility').textContent, /Pending observations cannot synchronize/)
+        assert.match(get('queue-summary').textContent, /3 pending/)
+        assert.equal(get('sync-now').disabled, true)
+        assert.equal(get('capture-button').disabled, false)
+        assert.doesNotMatch(get('storage-status').textContent, /storage failed/i)
+        assert.deepEqual(requests, [])
+        if (capability === 'missing') {
+          window.navigator.locks = locks
+          window.fetch = async (url, options) => {
+            if (url.endsWith('/timing-clock')) return json({ serverUtc: new Date().toISOString() })
+            if (url.endsWith('/timing-assignments')) return json([assignment])
+            if (url.includes('/registrations?bib=')) return json({
+              registrationId: 'runner', raceId: 'race', bibNumber: new URL(url, window.location).searchParams.get('bib'),
+              occurrences: [{ occurrenceId: 'visit' }],
+            })
+            return json({ observationId: JSON.parse(options.body).observationId, outcome: 'Accepted' })
+          }
+          get('refresh').click()
+          await waitFor(() => get('queue-summary').textContent.includes('0 pending | 3 recorded'))
+          assert.equal(get('sync-compatibility').hidden, true)
+        }
+      } finally {
+        window.close()
+      }
+    })
+  }
+})

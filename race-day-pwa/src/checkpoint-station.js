@@ -28,7 +28,11 @@ export function startCheckpoint() {
   let syncTimer
   const processing = new Set()
   let forceRequested = false
+  let lockRequestFailed = false
   let draining = false
+
+  const syncSupported = () => !lockRequestFailed && typeof navigator.locks?.request === 'function'
+  const canSync = () => syncSupported() && storageReady && !storageFailed && onlineReady()
 
   function onlineReady() {
     return Boolean(session?.accessToken && navigator.onLine && connected &&
@@ -222,7 +226,9 @@ export function startCheckpoint() {
     const online = onlineReady()
     const connection = online ? 'Online' : navigator.onLine && session?.accessToken ? 'Reconnecting' : 'Offline'
     let detail = canCapture() ? 'Capture enabled' : 'Capture paused'
-    if (queueFull()) detail = 'Queue full. Sync pending captures to continue.'
+    if (queueFull()) detail = syncSupported()
+      ? 'Queue full. Sync pending captures to continue.'
+      : 'Queue full. Restore Web Locks support to synchronize and continue.'
     else if (storageReady && !storageFailed && !online && !offlineAllowed()) detail = 'Connect and sign in to renew offline access.'
     const quality = online ? clockWarning(sample) || 'Device clock checked.' :
       'Clock check is stale or unavailable. Captures use the current device time.'
@@ -232,7 +238,8 @@ export function startCheckpoint() {
       ? (online ? 'Assignments checked ' : 'Cached assignments checked ') + new Date(snapshot.verifiedAt).toLocaleString()
       : 'No verified assignments on this device.'
     el('reauthenticate').disabled = !navigator.onLine
-    el('sync-now').disabled = !session?.accessToken || !navigator.onLine || !storageReady || storageFailed
+    el('sync-compatibility').hidden = syncSupported()
+    el('sync-now').disabled = !syncSupported() || !session?.accessToken || !navigator.onLine || !storageReady || storageFailed
 
   }
 
@@ -419,13 +426,20 @@ export function startCheckpoint() {
   }
 
   async function processCapture(operator, candidate, { force = false, visit } = {}) {
-    if (!onlineReady() || session !== operator || storageFailed || processing.has(candidate.observationId)) return
+    if (!canSync() || session !== operator || processing.has(candidate.observationId)) return
+    const locks = navigator.locks
     processing.add(candidate.observationId)
     try {
       const process = async lock => {
-        if (!lock || !onlineReady() || session !== operator) return
-        const row = await readCapture(await database, operator.user.id, candidate.observationId)
-        if (session !== operator || !onlineReady() || !row || row.receipt || row.state === 'Rejected' ||
+        if (!lock || !canSync() || session !== operator) return
+        let row
+        try {
+          row = await readCapture(await database, operator.user.id, candidate.observationId)
+        } catch (error) {
+          storageFailure(operator, error)
+          return
+        }
+        if (session !== operator || !canSync() || !row || row.receipt || row.state === 'Rejected' ||
           (row.state === 'Choose visit' && visit === undefined) ||
           (!force && row.nextAttemptAt > Date.now())) return
 
@@ -436,9 +450,10 @@ export function startCheckpoint() {
         if (row.body || visit !== undefined) await submit(operator, row, visit ?? null)
         else await lookup(operator, row)
       }
-      await navigator.locks.request(captureLockName(candidate), { ifAvailable: true }, process)
-    } catch (error) {
-      storageFailure(operator, error)
+      await locks.request(captureLockName(candidate), { ifAvailable: true }, process)
+    } catch {
+      lockRequestFailed = true
+      if (session === operator) render()
     } finally {
       processing.delete(candidate.observationId)
       scheduleSync()
@@ -447,7 +462,7 @@ export function startCheckpoint() {
 
   function scheduleSync() {
     clearTimeout(syncTimer)
-    if (!onlineReady() || storageFailed) return
+    if (!canSync()) return
     const due = rows.filter(row => row.state === 'Retry needed' && row.nextAttemptAt > Date.now())
       .map(row => row.nextAttemptAt)
     if (due.length) syncTimer = setTimeout(() => void drain(), Math.min(...due) - Date.now())
@@ -458,14 +473,14 @@ export function startCheckpoint() {
       forceRequested ||= force
       return
     }
-    if (!onlineReady() || !storageReady || storageFailed) return
+    if (!canSync()) return
     const operator = session
     draining = true
     try {
       const saved = await loadAccountCaptures(await database, operator.user.id, sessionStorage)
       if (session !== operator) return
       for (const row of saved.reverse()) {
-        if (session !== operator || !onlineReady()) break
+        if (session !== operator || !canSync()) break
         if (!processing.has(row.observationId) && !savingSelections.has(rows.find(entry => entry.observationId === row.observationId))) {
           const index = rows.findIndex(entry => entry.observationId === row.observationId)
           if (index < 0) rows.unshift(row)
@@ -478,7 +493,7 @@ export function startCheckpoint() {
       storageFailure(operator, error)
     } finally {
       draining = false
-      if (forceRequested && onlineReady()) {
+      if (forceRequested && canSync()) {
         forceRequested = false
         void drain(true)
       } else scheduleSync()
@@ -489,7 +504,7 @@ export function startCheckpoint() {
     const button = document.createElement('button')
     button.type = 'button'
     button.textContent = label
-    button.disabled = !onlineReady() || storageFailed
+    button.disabled = !canSync()
     button.addEventListener('click', action)
     parent.append(button)
     return button
@@ -552,7 +567,7 @@ export function startCheckpoint() {
         const save = appendButton(item, 'Submit selected visit', () => { if (select.value) void processCapture(operator, row, { visit: select.value }) })
         select.value = row.selectedOccurrenceId || ''
         const saving = savingSelections.has(row)
-        save.disabled = !select.value || !onlineReady() || storageFailed || saving
+        save.disabled = !select.value || !canSync() || saving
         select.disabled = storageFailed || saving
         const review = appendButton(item, 'Send for race-control review', () => void processCapture(operator, row, { visit: null }))
         review.disabled ||= saving
@@ -635,7 +650,7 @@ export function startCheckpoint() {
     bibInput.focus()
     notice()
     render()
-    if (onlineReady()) void processCapture(operator, row)
+    if (canSync()) void processCapture(operator, row)
   })
   el('sync-now').addEventListener('click', () => void probe(true, true))
   el('refresh').addEventListener('click', () => void probe(true))

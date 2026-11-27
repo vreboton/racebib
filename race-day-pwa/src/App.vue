@@ -15,6 +15,11 @@
           <p id="signin-required" hidden><button type="button" id="reauthenticate">Sign in to sync</button></p>
           <p id="clock" role="status"></p>
           <p id="storage-status" role="status"></p>
+          <p id="sync-compatibility" class="warning" role="status" hidden>
+            Web Locks is unavailable. Captures can still be saved on this device.
+            Pending observations cannot synchronize until Web Locks is available in this same browser profile.
+            If support was disabled, restore it and reload. Keep this profile and its site data.
+          </p>
           <p id="assignment-freshness"></p>
           <p id="station-time"></p>
           <label for="assigned-event">Assigned Event</label><select id="assigned-event"></select>
