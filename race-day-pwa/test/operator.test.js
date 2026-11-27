@@ -284,3 +284,90 @@ test('leaves the entered bib in place if its IndexedDB write fails', async () =>
     window.close()
   }
 })
+
+test('an explicit access denial clears offline authorization while retaining captures', async () => {
+  const { window, get, start } = await operatorFixture()
+  let denied = false
+  window.fetch = async url => {
+    if (url.endsWith('/timing-clock')) return denied ? new Response(null, { status: 403 }) :
+      json({ serverUtc: new Date().toISOString() })
+    if (url.endsWith('/timing-assignments')) return json([assignment])
+    throw new Error('Unexpected capture upload')
+  }
+  const connectivity = online => {
+    Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: online })
+    window.dispatchEvent(new window.Event(online ? 'online' : 'offline'))
+  }
+  try {
+    start()
+    await waitFor(() => !get('capture-button').disabled)
+    connectivity(false)
+    get('bib').value = '0042'
+    get('capture').dispatchEvent(new window.Event('submit', { cancelable: true }))
+    await waitFor(() => get('bib').value === '')
+    denied = true
+    connectivity(true)
+    await waitFor(() => get('notice').textContent.includes('denied checkpoint access'))
+    assert.equal(window.localStorage.getItem('racebib.checkpoint.snapshot.u'), null)
+    connectivity(false)
+    assert.equal(get('capture-button').disabled, true)
+    assert.equal(get('assigned-event').value, '')
+    assert.match(get('captures').textContent, /Bib 0042/)
+  } finally {
+    window.close()
+  }
+})
+
+test('a capture read completing after logout never restores the previous account rows', async () => {
+  const { window, get, start } = await operatorFixture()
+  let capturedRequests = 0
+  window.fetch = async url => {
+    if (url.endsWith('/timing-clock')) return json({ serverUtc: new Date().toISOString() })
+    if (url.endsWith('/timing-assignments')) return json([assignment])
+    if (url.endsWith('/auth/logout')) return new Response(null, { status: 204 })
+    capturedRequests += 1
+    throw new Error('Unexpected capture upload after logout')
+  }
+  try {
+    start()
+    await waitFor(() => !get('capture-button').disabled)
+    Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: false })
+    window.dispatchEvent(new window.Event('offline'))
+    get('bib').value = '0042'
+    get('capture').dispatchEvent(new window.Event('submit', { cancelable: true }))
+    await waitFor(() => get('bib').value === '')
+
+    const db = await new Promise(resolve => {
+      const request = window.indexedDB.open('racebib-checkpoint')
+      request.onsuccess = () => resolve(request.result)
+    })
+    const read = db.transaction('captures').objectStore('captures')
+    const storePrototype = Object.getPrototypeOf(read)
+    const originalGet = storePrototype.get
+    let switched = false
+    storePrototype.get = function (key) {
+      const request = originalGet.call(this, key)
+      request.addEventListener('success', () => {
+        if (!switched) {
+          switched = true
+          get('logout').click()
+        }
+      })
+      return request
+    }
+    try {
+      Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: true })
+      window.dispatchEvent(new window.Event('online'))
+      await waitFor(() => switched)
+      await new Promise(resolve => setTimeout(resolve, 40))
+      assert.equal(get('station').hidden, true)
+      assert.doesNotMatch(get('captures').textContent, /Bib 0042/)
+      assert.equal(capturedRequests, 0)
+    } finally {
+      storePrototype.get = originalGet
+      db.close()
+    }
+  } finally {
+    window.close()
+  }
+})

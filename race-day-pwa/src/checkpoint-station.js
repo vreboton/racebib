@@ -270,6 +270,10 @@ export function startCheckpoint() {
         sample = undefined
         notice(error.status === 401 ? 'Session expired. Sign in again to continue pending captures.' : error.message)
         if (error.status === 401) requireAuthentication(operator)
+        if (error.status === 403) {
+          invalidateAssignments(operator)
+          notice('RaceBib denied checkpoint access. Contact Race Control. Saved captures remain on this device.')
+        }
       }
     } finally {
       if (session === operator) {
@@ -287,6 +291,19 @@ export function startCheckpoint() {
   function expireSession() {
     sessionStorage.removeItem(sessionKey)
     void setSession(undefined)
+  }
+
+  function invalidateAssignments(operator) {
+    snapshot = undefined
+    assignments = []
+    assignmentsLoaded = false
+    connected = false
+    renderAssignments('', '')
+    try {
+      localStorage.removeItem(snapshotKey(operator.user.id))
+    } catch (error) {
+      storageFailure(operator, error)
+    }
   }
 
   function requireAuthentication(operator) {
@@ -408,7 +425,7 @@ export function startCheckpoint() {
       const process = async lock => {
         if (!lock || !onlineReady() || session !== operator) return
         const row = await readCapture(await database, operator.user.id, candidate.observationId)
-        if (!row || row.receipt || row.state === 'Rejected' ||
+        if (session !== operator || !onlineReady() || !row || row.receipt || row.state === 'Rejected' ||
           (row.state === 'Choose visit' && visit === undefined) ||
           (!force && row.nextAttemptAt > Date.now())) return
 
@@ -637,12 +654,18 @@ export function startCheckpoint() {
   window.addEventListener('offline', onOffline)
   const onOnline = () => { render(); void probe(true) }
   window.addEventListener('online', onOnline)
-  const onAccountChange = event => {
-    if (event.key !== offlineAccountKey || !session || event.newValue === session.user.id) return
-    expireSession()
-    notice('The checkpoint account changed in another tab. Sign in to continue.')
+  const onStorageChange = event => {
+    if (!session) return
+    if (event.key === snapshotKey(session.user.id) && event.newValue === null) {
+      invalidateAssignments(session)
+      render()
+    }
+    if (event.key === offlineAccountKey && event.newValue !== session.user.id) {
+      expireSession()
+      notice('The checkpoint account changed in another tab. Sign in to continue.')
+    }
   }
-  window.addEventListener('storage', onAccountChange)
+  window.addEventListener('storage', onStorageChange)
   const onBeforeUnload = event => {
     if (savingCaptures > 0) event.preventDefault()
   }
@@ -671,7 +694,7 @@ export function startCheckpoint() {
     document.removeEventListener('visibilitychange', onVisible)
     window.removeEventListener('offline', onOffline)
     window.removeEventListener('online', onOnline)
-    window.removeEventListener('storage', onAccountChange)
+    window.removeEventListener('storage', onStorageChange)
     window.removeEventListener('beforeunload', onBeforeUnload)
   }
 }
