@@ -148,8 +148,16 @@ public sealed partial class MySqlApiIntegrationTests
             var gateGeneration = await Grant(manager, gatePath, operatorAccount.Id);
             var start = new TimingController.ObservationInput(Guid.NewGuid(), registration.Id, race.Id, "0042",
                 points[0].Id, now.AddMinutes(-18), device, gateGeneration, TimingSource.Manual);
+            // Simulate receipt after the frozen window, while the event remains Live.
+            var expiredWindow = now.UtcDateTime.AddMinutes(-1);
+            await db.Set<RaceTimingSetup>().Where(x => x.RaceId == race.Id)
+                .ExecuteUpdateAsync(x => x.SetProperty(setup => setup.WindowEndUtc, expiredWindow));
             var startReceipt = await Send(station, gatePath, Guid.NewGuid(), start);
             Assert.Equal("Accepted", startReceipt.Body.GetProperty("outcome").GetString());
+            Assert.True(startReceipt.Body.GetProperty("receivedAtUtc").GetDateTime() > expiredWindow);
+            Assert.Equal(start.ObservedAtUtc.UtcDateTime, startReceipt.Body.GetProperty("observedAtUtc").GetDateTime());
+            await db.Set<RaceTimingSetup>().Where(x => x.RaceId == race.Id)
+                .ExecuteUpdateAsync(x => x.SetProperty(setup => setup.WindowEndUtc, item.EndDate));
 
             var lateVisit = new TimingController.ObservationInput(Guid.NewGuid(), registration.Id, race.Id, "0042",
                 points[2].Id, now.AddMinutes(-1), device, generation, TimingSource.Scanner);
