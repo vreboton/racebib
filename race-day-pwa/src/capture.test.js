@@ -29,8 +29,8 @@ test('uncertain submissions recover the same timestamp, grant, operation and exa
   assert.equal(loaded.assignment.generation, 'grant1')
 })
 
-test('offline initiation is rejected and malformed bibs never become captures', () => {
-  assert.throws(() => createCapture(station, '42', 'device', { online: false }), /online/)
+test('a capture can be created without connectivity and malformed bibs never become captures', () => {
+  assert.equal(createCapture(station, '42', 'device', { uuid: () => 'id' }).state, 'Saved locally')
   assert.throws(() => createCapture(station, 'bib 42', 'device', { online: true }), /32/)
 })
 

@@ -1,6 +1,6 @@
 # Milestone 8.1 and 8.2 implementation plan
 
-Baseline: main at f151ca4497452d35e77ef2b75c47e5ce42cea2bb.
+Baseline: main at f151ca4497452d35e77ef2b75c47e5ce42cea2bb. This page records the original plan and the online rehearsal. See [offline checkpoint capture](checkpoint-offline.md) for current operating and recovery procedures.
 
 ## Architecture audit
 
@@ -26,11 +26,11 @@ The shared API already verifies current assignment generation, frozen bib owners
 5. Sign in, choose an assigned event and one of its checkpoints, and press Enter or Record crossing as the bib arrives. A single occurrence submits automatically. Repeated visits require a choice or an explicit request for race-control review. Lookups and submissions for different captures can complete out of order.
 6. Retry a capture whose receipt is uncertain using its own Retry capture action. Retry keeps the original timestamp and operation identity. A 403 after a submitted request requires manager verification if access was revoked before a replay could confirm its receipt.
 
-The clock check estimates device offset by comparing the server instant to the midpoint of a round trip. It warns beyond 2 seconds estimated skew, above 500 ms half-trip uncertainty, or when a sample is unavailable. Results are estimates and asymmetric latency can bias them. Captured instants are preserved as read from the device. The application pauses new capture when the browser reports offline, after an API transport failure, or when the last connection check is over 45 seconds old. A sudden undetected disconnect can still leave a pending foreground operation.
+The clock check estimates device offset by comparing the server instant to the midpoint of a round trip. It warns beyond 2 seconds estimated skew, above 500 ms half-trip uncertainty, or when a sample is unavailable. Results are estimates and asymmetric latency can bias them. Captured instants are preserved as read from the device. If the connection is unavailable, the station uses the last verified assignment for a limited time and saves captures for synchronization.
 
 The checkpoint application stores captures in IndexedDB on the current browser profile, partitioned by operator account. A capture appears in the list and its bib field clears after the local write commits. The server receipt confirms the recorded outcome. Sign back in with the same account on the same origin and browser profile to recover pending captures after restarting. When upgrading, open each tab that still holds pending captures and sign in with the original account so the app can migrate those records. A failed migration keeps the original tab data.
 
-The app requests persistent browser storage when available. Granting it reduces the risk of eviction. Clearing site data or removing the browser profile still removes local captures. If storage fails, the app pauses capture and retry. Keep any tab with unmigrated captures open while you resolve the storage error. New capture and manual retry still use the live API. The manifest provides app identity and icons.
+The app requests persistent browser storage when available. Granting it reduces the risk of eviction. Clearing site data or removing the browser profile still removes local captures. If storage fails, the app pauses capture and retry. Keep any tab with unmigrated captures open while you resolve the storage error. The manifest provides app identity and icons. The service worker caches the shell, and queued captures upload in the foreground after an authenticated connectivity check.
 
 ## API integration
 
@@ -53,7 +53,7 @@ The script creates a new synthetic organizer and 12K/24K event. It seeds setup d
 
 Event, race and wave schedules represent UTC instants. Event management displays them in the configured IANA zone. The editor converts wall times to UTC, rejects nonexistent DST times, and asks for an offset when a wall time occurs twice. Changing the display zone of an existing event preserves its scheduled instants unless the operator edits the schedule. Absolute timestamps from the JSON API include a UTC designator. Legacy offsetless event timestamps are interpreted as UTC. Capture and gun requests require an explicit UTC designator or offset.
 
-The checkpoint UI displays event-local capture time alongside a raw UTC value available on the capture details. The device clock remains labeled separately. Split and cutoff calculations continue to compare instants and durations. UTC check-in exports remain explicitly labeled. Offline capture and synchronization are outside the current implementation.
+The checkpoint UI displays event-local capture time alongside a raw UTC value available on the capture details. The device clock remains labeled separately. Split and cutoff calculations continue to compare instants and durations. UTC check-in exports remain explicitly labeled.
 
 A Suspicious Clock decision can mean an observation fell outside the race's frozen timing window or was more than two minutes ahead of server receipt. A close match between device and server time can rule out drift while the frozen window still rejects the crossing. Editing the event schedule does not change past observations, decisions, or the already-armed window.
 

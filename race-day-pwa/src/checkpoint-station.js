@@ -1,10 +1,13 @@
 import { clockSample, clockWarning, createCapture, prepareSubmission } from './capture.js'
-import { loadAccountCaptures, openCaptureStore, saveCapture } from './capture-store.js'
+import { loadAccountCaptures, openCaptureStore, readCapture, saveCapture } from './capture-store.js'
+import { captureLockName, retryDelay, validOfflineSnapshot } from './offline-policy.js'
 
 export function startCheckpoint() {
   const el = id => document.getElementById(id)
   const sessionKey = 'racebib.checkpoint.session'
   const deviceKey = 'racebib.checkpoint.device'
+  const offlineAccountKey = 'racebib.checkpoint.offline-account'
+  const snapshotKey = accountId => 'racebib.checkpoint.snapshot.' + accountId
   const maximumPending = 200
   const probeLifetime = 45_000
   let session
@@ -21,6 +24,31 @@ export function startCheckpoint() {
   let connected = false
   let probing = false
   let deviceId
+  let snapshot
+  let syncTimer
+  const processing = new Set()
+  let forceRequested = false
+  let draining = false
+
+  function onlineReady() {
+    return Boolean(session?.accessToken && navigator.onLine && connected &&
+      performance.now() - lastProbe < probeLifetime)
+  }
+
+  function rememberStation() {
+    snapshot.eventId = el('assigned-event').value
+    snapshot.checkpointId = el('assigned-checkpoint').value
+    persistSnapshot()
+  }
+
+  function persistSnapshot() {
+    try {
+      localStorage.setItem(snapshotKey(session.user.id), JSON.stringify(snapshot))
+      localStorage.setItem(offlineAccountKey, session.user.id)
+    } catch (error) {
+      storageFailure(session, error)
+    }
+  }
 
   function checkpointPath(assignment) {
     return `/events/${assignment.eventId}/timing/checkpoints/${assignment.checkpointId}`
@@ -71,17 +99,22 @@ export function startCheckpoint() {
   async function setSession(operator) {
     storageReady = false
     storageFailed = false
+    el('bib').value = ''
     connected = false
     lastProbe = -Infinity
     sample = undefined
     probing = false
     assignments = []
     assignmentsLoaded = false
+    snapshot = undefined
+    forceRequested = false
+    clearTimeout(syncTimer)
     renderAssignments('', '')
     session = operator
     rows = []
     el('login').hidden = Boolean(operator)
     el('station').hidden = !operator
+    el('signin-required').hidden = !operator || Boolean(operator.accessToken)
     el('storage-status').textContent = 'Opening capture storage.'
     render()
     if (!operator) return
@@ -90,6 +123,12 @@ export function startCheckpoint() {
       const saved = await loadAccountCaptures(await database, operator.user.id, sessionStorage)
       if (session !== operator) return
       rows = saved
+      snapshot = JSON.parse(localStorage.getItem(snapshotKey(operator.user.id)) || 'null')
+      if (snapshot) {
+        assignments = snapshot.assignments.filter(assignment => assignment.eventStatus !== 'Completed')
+        assignmentsLoaded = true
+        renderAssignments(snapshot.eventId, snapshot.checkpointId)
+      }
       storageReady = true
       el('storage-status').textContent = 'Captures are stored on this device. Clearing site data removes them. The browser may also reclaim storage.'
       render()
@@ -139,7 +178,8 @@ export function startCheckpoint() {
   }
 
   const queueFull = () => rows.filter(row => !row.receipt && row.state !== 'Rejected').length + savingCaptures >= maximumPending
-  const canCapture = () => storageReady && !storageFailed && navigator.onLine && connected && performance.now() - lastProbe < probeLifetime &&
+  const offlineAllowed = () => validOfflineSnapshot(snapshot)
+  const canCapture = () => storageReady && !storageFailed && (onlineReady() || offlineAllowed()) &&
     selectedAssignment()?.entryOpen === true && !queueFull()
 
   function formatStationTime(date, zone, includeDate = false) {
@@ -179,17 +219,27 @@ export function startCheckpoint() {
   function updateStatus() {
     updateStationTime()
     el('capture-button').disabled = !canCapture()
-    const status = !storageReady || storageFailed ? 'Capture storage is unavailable. Capture is paused.' : !navigator.onLine ? 'Offline. Capture is paused.' :
-      !connected || performance.now() - lastProbe >= probeLifetime ? 'Connection check required. Capture is paused.' :
-        queueFull() ? 'Capture queue is full. Retry pending captures to continue.' :
-        selectedAssignment()?.entryOpen ? 'Online · Capture enabled' : 'Online · Select a checkpoint in a live event'
-    const clock = clockWarning(sample)
-    el('clock').textContent = status + (clock ? ' ' + clock : ' · Device clock checked')
-    el('clock').classList.toggle('warning', !!clock || !connected)
+    const online = onlineReady()
+    const connection = online ? 'Online' : navigator.onLine && session?.accessToken ? 'Reconnecting' : 'Offline'
+    let detail = canCapture() ? 'Capture enabled' : 'Capture paused'
+    if (queueFull()) detail = 'Queue full. Sync pending captures to continue.'
+    else if (storageReady && !storageFailed && !online && !offlineAllowed()) detail = 'Connect and sign in to renew offline access.'
+    const quality = online ? clockWarning(sample) || 'Device clock checked.' :
+      'Clock check is stale or unavailable. Captures use the current device time.'
+    el('clock').textContent = connection + ' | ' + detail + '. ' + quality
+    el('clock').classList.toggle('warning', !online || Boolean(clockWarning(sample)))
+    el('assignment-freshness').textContent = snapshot
+      ? (online ? 'Assignments checked ' : 'Cached assignments checked ') + new Date(snapshot.verifiedAt).toLocaleString()
+      : 'No verified assignments on this device.'
+    el('reauthenticate').disabled = !navigator.onLine
+    el('sync-now').disabled = !session?.accessToken || !navigator.onLine || !storageReady || storageFailed
+
   }
 
-  async function probe(loadAssignments = false) {
-    if (!session || !navigator.onLine || probing) return
+  async function probe(loadAssignments = false, forceSync = false) {
+    if (!session?.accessToken || !navigator.onLine) return
+    forceRequested ||= forceSync
+    if (probing) return
     const operator = session
     probing = true
     try {
@@ -210,17 +260,27 @@ export function startCheckpoint() {
         const single = !assignmentsLoaded && assignments.length === 1 ? assignments[0] : null
         renderAssignments(single?.eventId ?? previousEvent, single?.checkpointId ?? previousCheckpoint)
         assignmentsLoaded = true
-        notice(assignments.length ? '' : 'No checkpoint assignments. Ask race control for access.')
+        snapshot = { assignments, verifiedAt: Date.now(), eventId: '', checkpointId: '' }
+        rememberStation()
+        if (!assignments.length) notice('No checkpoint assignments. Ask race control for access.')
       }
     } catch (error) {
       if (session === operator) {
         connected = false
         sample = undefined
         notice(error.status === 401 ? 'Session expired. Sign in again to continue pending captures.' : error.message)
-        if (error.status === 401) expireSession()
+        if (error.status === 401) requireAuthentication(operator)
       }
     } finally {
-      if (session === operator) { probing = false; updateStatus() }
+      if (session === operator) {
+        probing = false
+        updateStatus()
+        if (onlineReady()) {
+          const force = forceRequested
+          forceRequested = false
+          void drain(force)
+        }
+      }
     }
   }
 
@@ -229,28 +289,52 @@ export function startCheckpoint() {
     void setSession(undefined)
   }
 
+  function requireAuthentication(operator) {
+    sessionStorage.removeItem(sessionKey)
+    delete operator.accessToken
+    connected = false
+    el('signin-required').hidden = false
+    notice('Session expired. Sign in again to synchronize pending captures.')
+    updateStatus()
+  }
+
   function recordFailure(operator, row, error, phase) {
     const uncertain = !error.status || error.status >= 500 || error.code === 'timing_write_conflict' ||
       error.status === 401 || error.status === 429
+    row.nextAttemptAt = uncertain ? Date.now() + retryDelay(row.retryCount + 1) : null
     row.state = uncertain ? 'Retry needed' : 'Rejected'
     row.message = (uncertain && phase === 'submit' ? 'Receipt uncertain. Retry the same capture. ' : '') + error.message
     if (phase === 'submit' && row.body && error.status === 403) {
-      row.state = 'Retry needed'
+      row.state = 'Rejected'
       row.message = 'Access denied. Race control must verify whether this capture was recorded.'
     }
+    if (error.status === 403 && phase === 'lookup') {
+      row.message = 'Checkpoint access changed. Ask Race Control to review this locally saved capture.'
+    }
+    if (error.status === 404 && phase === 'lookup') {
+      row.message = 'Bib was not found at this checkpoint. Ask Race Control to reconcile the locally saved capture.'
+    }
     row.lastSyncError = row.message
-    if (session === operator && (!error.status || error.status >= 500)) connected = false
+    if (session === operator && !navigator.onLine) connected = false
     if (session === operator && error.status === 401) {
-      expireSession()
-      notice('Session expired. Sign in again to continue pending captures.')
+      row.nextAttemptAt = null
+      requireAuthentication(operator)
     }
   }
 
-  async function lookup(operator, row, alreadySaved = false) {
+  async function lookup(operator, row) {
     row.state = 'Looking up bib'
     row.message = ''
     render()
-    if (!alreadySaved && !await persist(operator, row)) return
+    if (!await persist(operator, row) || session !== operator) return
+    if (assignmentsLoaded && !assignments.some(assignment => assignment.eventId === row.assignment.eventId &&
+      assignment.checkpointId === row.assignment.checkpointId &&
+      assignment.generation === row.assignment.generation && assignment.entryOpen)) {
+      row.state = 'Rejected'
+      row.lastSyncError = row.message = 'The event is closed or this checkpoint assignment changed. Ask Race Control to review this locally saved capture.'
+      await saveAndRender(operator, row)
+      return
+    }
     try {
       const result = await api(checkpointPath(row.assignment) + '/registrations?bib=' + encodeURIComponent(row.bib), { operator })
       if (session !== operator) {
@@ -270,15 +354,19 @@ export function startCheckpoint() {
       await submit(operator, row, row.occurrences[0].occurrenceId)
       return
     }
+    if (row.capturedOffline && !row.selectedOccurrenceId) {
+      await submit(operator, row, null)
+      return
+    }
     row.state = 'Choose visit'
     await saveAndRender(operator, row)
   }
 
   async function submit(operator, row, occurrenceId) {
-    if (session !== operator || storageFailed || row.state === 'Submitting' || row.receipt) return
-    if (!navigator.onLine) {
+    if (session !== operator || storageFailed || row.receipt) return
+    if (!onlineReady()) {
       row.state = 'Retry needed'
-      row.message = 'Reconnect before retrying this capture.'
+      row.lastSyncError = row.message = 'Reconnect before retrying this capture.'
       await saveAndRender(operator, row)
       return
     }
@@ -294,9 +382,13 @@ export function startCheckpoint() {
         return
       }
       const receipt = await api(checkpointPath(row.assignment) + '/observations', { operator, body, key: row.key })
-      if (receipt?.observationId !== row.observationId) throw new Error('RaceBib returned an unexpected receipt.')
+      if (receipt?.observationId !== row.observationId || typeof receipt.outcome !== 'string') {
+        throw new Error('RaceBib returned an unexpected receipt.')
+      }
       row.receipt = receipt
       row.lastSyncError = null
+      row.nextAttemptAt = null
+      row.syncedAt = Date.now()
       row.state = receipt.outcome === 'Accepted' ? 'Recorded' : 'Recorded · needs review'
       row.message = receipt.outcome === 'Accepted' ? '' : receiptMessage(receipt, row.assignment.timeZoneId ?? 'UTC')
     } catch (error) {
@@ -309,11 +401,78 @@ export function startCheckpoint() {
     if (await persist(operator, row) && session === operator) render()
   }
 
+  async function processCapture(operator, candidate, { force = false, visit } = {}) {
+    if (!onlineReady() || session !== operator || storageFailed || processing.has(candidate.observationId)) return
+    processing.add(candidate.observationId)
+    try {
+      const process = async lock => {
+        if (!lock || !onlineReady() || session !== operator) return
+        const row = await readCapture(await database, operator.user.id, candidate.observationId)
+        if (!row || row.receipt || row.state === 'Rejected' ||
+          (row.state === 'Choose visit' && visit === undefined) ||
+          (!force && row.nextAttemptAt > Date.now())) return
+
+        const index = rows.findIndex(entry => entry.observationId === row.observationId)
+        if (index < 0) rows.unshift(row)
+        else rows[index] = row
+        if (row.state !== 'Saved locally' && row.state !== 'Choose visit') row.retryCount += 1
+        if (row.body || visit !== undefined) await submit(operator, row, visit ?? null)
+        else await lookup(operator, row)
+      }
+      await navigator.locks.request(captureLockName(candidate), { ifAvailable: true }, process)
+    } catch (error) {
+      storageFailure(operator, error)
+    } finally {
+      processing.delete(candidate.observationId)
+      scheduleSync()
+    }
+  }
+
+  function scheduleSync() {
+    clearTimeout(syncTimer)
+    if (!onlineReady() || storageFailed) return
+    const due = rows.filter(row => row.state === 'Retry needed' && row.nextAttemptAt > Date.now())
+      .map(row => row.nextAttemptAt)
+    if (due.length) syncTimer = setTimeout(() => void drain(), Math.min(...due) - Date.now())
+  }
+
+  async function drain(force = false) {
+    if (draining) {
+      forceRequested ||= force
+      return
+    }
+    if (!onlineReady() || !storageReady || storageFailed) return
+    const operator = session
+    draining = true
+    try {
+      const saved = await loadAccountCaptures(await database, operator.user.id, sessionStorage)
+      if (session !== operator) return
+      for (const row of saved.reverse()) {
+        if (session !== operator || !onlineReady()) break
+        if (!processing.has(row.observationId) && !savingSelections.has(rows.find(entry => entry.observationId === row.observationId))) {
+          const index = rows.findIndex(entry => entry.observationId === row.observationId)
+          if (index < 0) rows.unshift(row)
+          else if (row.revision >= rows[index].revision) rows[index] = row
+        }
+        if (['Saved locally', 'Retry needed'].includes(row.state)) await processCapture(operator, row, { force })
+      }
+      if (session === operator) render()
+    } catch (error) {
+      storageFailure(operator, error)
+    } finally {
+      draining = false
+      if (forceRequested && onlineReady()) {
+        forceRequested = false
+        void drain(true)
+      } else scheduleSync()
+    }
+  }
+
   function appendButton(parent, label, action) {
     const button = document.createElement('button')
     button.type = 'button'
     button.textContent = label
-    button.disabled = !navigator.onLine || storageFailed
+    button.disabled = !onlineReady() || storageFailed
     button.addEventListener('click', action)
     parent.append(button)
     return button
@@ -323,6 +482,14 @@ export function startCheckpoint() {
     updateStatus()
     const root = el('captures')
     root.replaceChildren()
+    const recorded = rows.filter(row => row.receipt)
+    const attention = rows.filter(row => ['Rejected', 'Choose visit'].includes(row.state) ||
+      (row.receipt && row.receipt.outcome !== 'Accepted')).length
+    const lastSync = recorded.reduce((latest, row) => Math.max(latest, row.syncedAt || 0), 0)
+    el('queue-summary').textContent = rows.length - recorded.length + ' pending | ' +
+      recorded.length + ' recorded | ' + attention + ' require attention' +
+      (lastSync ? ' | Last synchronized ' + new Date(lastSync).toLocaleString() : '')
+
     if (!rows.length) {
       const item = document.createElement('li')
       item.textContent = 'No captures stored for this account.'
@@ -335,7 +502,9 @@ export function startCheckpoint() {
     for (const row of [...pending, ...recent]) {
       const item = document.createElement('li')
       const title = document.createElement('strong')
-      title.textContent = `Bib ${row.bib} · ${row.state}`
+      const labels = { Rejected: 'Requires operator action', 'Looking up bib': 'Awaiting bib lookup',
+        Submitting: 'Synchronizing', 'Choose visit': 'Choose visit to continue' }
+      title.textContent = `Bib ${row.bib} · ${labels[row.state] ?? row.state}`
       const details = document.createElement('p')
       const zone = row.assignment.timeZoneId ?? 'UTC'
       const localObserved = formatStationTime(new Date(row.observedAtUtc), zone, true)
@@ -347,18 +516,28 @@ export function startCheckpoint() {
         message.textContent = row.message
         item.append(message)
       }
+      if (row.state === 'Rejected' || row.state === 'Retry needed' ||
+        (row.receipt && row.receipt.outcome !== 'Accepted')) {
+        const evidence = document.createElement('details')
+        const summary = document.createElement('summary')
+        summary.textContent = 'Capture details for Race Control'
+        const identifiers = document.createElement('p')
+        identifiers.textContent = row.observedAtUtc + ' | Observation ' + row.observationId
+        evidence.append(summary, identifiers)
+        item.append(evidence)
+      }
       if (row.state === 'Choose visit') {
         const select = document.createElement('select')
         select.setAttribute('aria-label', `Visit for bib ${row.bib}`)
         select.append(new Option('Choose visit', ''), ...row.occurrences.map(visit =>
           new Option(`${visit.sequence} · ${visit.name} · ${visit.distanceKm} km`, visit.occurrenceId)))
         item.append(select)
-        const save = appendButton(item, 'Submit selected visit', () => { if (select.value) void submit(operator, row, select.value) })
+        const save = appendButton(item, 'Submit selected visit', () => { if (select.value) void processCapture(operator, row, { visit: select.value }) })
         select.value = row.selectedOccurrenceId || ''
         const saving = savingSelections.has(row)
-        save.disabled = !select.value || !navigator.onLine || storageFailed || saving
+        save.disabled = !select.value || !onlineReady() || storageFailed || saving
         select.disabled = storageFailed || saving
-        const review = appendButton(item, 'Send for race-control review', () => void submit(operator, row, null))
+        const review = appendButton(item, 'Send for race-control review', () => void processCapture(operator, row, { visit: null }))
         review.disabled ||= saving
         select.addEventListener('change', async () => {
           savingSelections.add(row)
@@ -371,9 +550,7 @@ export function startCheckpoint() {
       }
       if (row.state === 'Retry needed')
         appendButton(item, 'Retry capture', () => {
-          row.retryCount += 1
-          if (row.body) void submit(operator, row, null)
-          else void lookup(operator, row)
+          void processCapture(operator, row, { force: true })
         })
       root.append(item)
     }
@@ -385,30 +562,44 @@ export function startCheckpoint() {
     el('login').querySelector('button').disabled = true
     try {
       const operator = await api('/auth/login', { body: { email: el('email').value.trim(), password: el('password').value }, operator: null })
+      if (session && session.user.id !== operator.user.id && !confirmLeaving()) return
+      localStorage.setItem(offlineAccountKey, operator.user.id)
       sessionStorage.setItem(sessionKey, JSON.stringify(operator))
       await setSession(operator)
       await probe(true)
     } catch (error) { notice(error.message) }
     finally { el('password').value = ''; el('login').querySelector('button').disabled = false }
   })
+  function confirmLeaving() {
+    return !savingCaptures && (!rows.some(row => !row.receipt) ||
+      window.confirm('Unsynchronized captures will stay on this device. Continue signing out?'))
+  }
+  el('reauthenticate').addEventListener('click', () => {
+    el('login').hidden = false
+    el('email').focus()
+  })
   el('logout').addEventListener('click', async () => {
+    if (!confirmLeaving()) return
     const operator = session
+    localStorage.removeItem(offlineAccountKey)
     expireSession()
     notice('Signed out. Pending captures stay on this device for your account.')
+    if (!operator?.accessToken) return
     try { await api('/auth/logout', { body: {}, operator }) } catch { /* Local session is already cleared. */ }
   })
   el('capture').addEventListener('submit', async event => {
     event.preventDefault()
-    if (!canCapture()) { notice('Capture requires working storage, a live checkpoint and a recent connection check.'); return }
+    if (!canCapture()) { notice('Capture is paused. Check storage, checkpoint selection and offline access.'); return }
     const operator = session
     const bibInput = el('bib')
     const entered = bibInput.value
     let row
     try {
       row = {
-        ...createCapture(selectedAssignment(), entered.trim(), deviceId, { online: true }),
+        ...createCapture(selectedAssignment(), entered.trim(), deviceId),
+        capturedOffline: !onlineReady(),
         accountId: operator.user.id,
-        clockQuality: sample ? { ...sample, ageMs: performance.now() - lastProbe, warning: clockWarning(sample) } : null,
+        clockQuality: sample ? { ...sample, ageMs: performance.now() - lastProbe, warning: clockWarning(sample), stale: !onlineReady() } : null,
         retryCount: 0,
         lastSyncError: null,
       }
@@ -426,20 +617,32 @@ export function startCheckpoint() {
     if (bibInput.value === entered) bibInput.value = ''
     bibInput.focus()
     notice()
-    void lookup(operator, row, true)
+    render()
+    if (onlineReady()) void processCapture(operator, row)
   })
+  el('sync-now').addEventListener('click', () => void probe(true, true))
   el('refresh').addEventListener('click', () => void probe(true))
   el('assigned-event').addEventListener('change', () => {
     renderCheckpoints()
+    if (snapshot) rememberStation()
     updateStatus()
   })
-  el('assigned-checkpoint').addEventListener('change', updateStatus)
+  el('assigned-checkpoint').addEventListener('change', () => {
+    if (snapshot) rememberStation()
+    updateStatus()
+  })
   const onVisible = () => { if (document.visibilityState === 'visible') void probe(true) }
   document.addEventListener('visibilitychange', onVisible)
   const onOffline = () => { connected = false; render() }
   window.addEventListener('offline', onOffline)
   const onOnline = () => { render(); void probe(true) }
   window.addEventListener('online', onOnline)
+  const onAccountChange = event => {
+    if (event.key !== offlineAccountKey || !session || event.newValue === session.user.id) return
+    expireSession()
+    notice('The checkpoint account changed in another tab. Sign in to continue.')
+  }
+  window.addEventListener('storage', onAccountChange)
   const onBeforeUnload = event => {
     if (savingCaptures > 0) event.preventDefault()
   }
@@ -450,7 +653,11 @@ export function startCheckpoint() {
   try {
     deviceId = localStorage.getItem(deviceKey) || crypto.randomUUID()
     localStorage.setItem(deviceKey, deviceId)
-    void setSession(JSON.parse(sessionStorage.getItem(sessionKey) || 'null') || undefined).then(() => {
+    const cachedAccount = localStorage.getItem(offlineAccountKey)
+    const authenticated = JSON.parse(sessionStorage.getItem(sessionKey) || 'null')
+    const operator = authenticated && (!cachedAccount || cachedAccount === authenticated.user.id) ? authenticated :
+      cachedAccount ? { user: { id: cachedAccount } } : undefined
+    void setSession(operator).then(() => {
       if (session) void probe(true)
     })
   } catch (error) {
@@ -458,11 +665,13 @@ export function startCheckpoint() {
     el('login').querySelector('button').disabled = true
   }
   return () => {
+    clearTimeout(syncTimer)
     clearInterval(probeInterval)
     clearInterval(clockInterval)
     document.removeEventListener('visibilitychange', onVisible)
     window.removeEventListener('offline', onOffline)
     window.removeEventListener('online', onOnline)
+    window.removeEventListener('storage', onAccountChange)
     window.removeEventListener('beforeunload', onBeforeUnload)
   }
 }

@@ -26,6 +26,13 @@ async function operatorFixture() {
   const get = id => window.document.getElementById(id)
   Object.defineProperty(window.crypto, 'randomUUID', { value: randomUUID })
   window.indexedDB = new IDBFactory()
+  const held = new Set()
+  window.navigator.locks = { async request(name, _options, callback) {
+    if (held.has(name)) return callback(null)
+    held.add(name)
+    try { return await callback({ name }) } finally { held.delete(name) }
+  } }
+  window.confirm = () => true
   window.AbortSignal = AbortSignal
   window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} })
   window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} }
@@ -100,14 +107,16 @@ test('captures on Enter before either lookup returns and retries an uncertain re
     await waitFor(() => get('captures').textContent.includes('0042 \u00b7 Recorded'))
     assert.deepEqual(submissions[2], submissions[1])
     assert.match(get('captures').textContent, /0042 · Recorded/)
+    Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: false })
     window.dispatchEvent(new window.Event('offline'))
-    assert.equal(get('capture-button').disabled, true)
+    assert.equal(get('capture-button').disabled, false)
+    Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: true })
     get('refresh').click()
     await waitFor(() => !get('capture-button').disabled)
     expired = true
     capture('0044')
-    await waitFor(() => !get('login').hidden)
-    assert.equal(get('login').hidden, false)
+    await waitFor(() => !get('signin-required').hidden)
+    assert.equal(get('login').hidden, true)
     assert.match(get('notice').textContent, /Session expired/)
     const db = await new Promise((resolve, reject) => {
       const request = window.indexedDB.open('racebib-checkpoint')
@@ -118,7 +127,7 @@ test('captures on Enter before either lookup returns and retries an uncertain re
     assert.equal(saved.find(row => row.bib === '0044').state, 'Retry needed')
     db.close()
     window.dispatchEvent(new window.Event('offline'))
-    assert.equal(get('capture-button').disabled, true)
+    assert.equal(get('capture-button').disabled, false)
   } finally {
     window.close()
   }
@@ -172,6 +181,105 @@ test('scopes checkpoint choices to the selected event and clears them after even
     assert.equal(events.value, '')
     assert.deepEqual(ids(stations), [''])
     assert.equal(get('capture-button').disabled, true)
+  } finally {
+    window.close()
+  }
+})
+
+
+test('saves consecutive offline crossings and automatically resolves them after reconnect', async () => {
+  const { window, get, start } = await operatorFixture()
+  let grants = [assignment, { ...assignment, eventId: 'revoked' }, { ...assignment, eventId: 'completed' }]
+  const submitted = []
+  const lookups = []
+  window.fetch = async (url, options) => {
+    if (url.endsWith('/timing-clock')) return json({ serverUtc: new Date().toISOString() })
+    if (url.endsWith('/timing-assignments')) return json(grants)
+    if (url.includes('/registrations?bib=')) {
+      const bib = new URL(url, window.location).searchParams.get('bib')
+      lookups.push(bib)
+      if (bib === '9999') return new Response(null, { status: 404 })
+      return json({ registrationId: 'runner', raceId: 'race', bibNumber: bib,
+        occurrences: [{ occurrenceId: 'first' }, { occurrenceId: 'second' }] })
+    }
+    const body = JSON.parse(options.body)
+    submitted.push(body)
+    return json({ observationId: body.observationId, outcome: 'AmbiguousOccurrence' })
+  }
+  const connectivity = online => {
+    Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: online })
+    window.dispatchEvent(new window.Event(online ? 'online' : 'offline'))
+  }
+  function select(id, value) {
+    get(id).value = value
+    get(id).dispatchEvent(new window.Event('change'))
+  }
+  async function capture(bib) {
+    get('bib').value = bib
+    get('capture').dispatchEvent(new window.Event('submit', { cancelable: true }))
+    await waitFor(() => get('bib').value === '')
+  }
+  try {
+    start()
+    await waitFor(() => get('assigned-event').options.length === 4)
+    connectivity(false)
+    for (const [eventId, bib] of [['e', '0042'], ['e', '9999'], ['revoked', '0043'], ['completed', '0044']]) {
+      select('assigned-event', eventId)
+      select('assigned-checkpoint', 'cp')
+      await capture(bib)
+    }
+    assert.equal(lookups.length, 0)
+    assert.match(get('queue-summary').textContent, /4 pending/)
+    grants = [assignment, { ...grants[2], eventStatus: 'Completed', entryOpen: false }]
+    connectivity(true)
+    await waitFor(() => get('queue-summary').textContent.includes('3 pending | 1 recorded | 4 require attention'))
+    assert.deepEqual(lookups.sort(), ['0042', '9999'])
+    assert.equal(submitted.length, 1)
+    assert.equal(submitted[0].occurrenceId, null)
+    assert.equal(submitted[0].assignmentGeneration, assignment.generation)
+    assert.equal(get('assigned-event').options.length, 2)
+    get('sync-now').click()
+    await new Promise(resolve => setTimeout(resolve, 70))
+    assert.deepEqual(lookups, ['0042', '9999'])
+    assert.equal(submitted.length, 1)
+  } finally {
+    window.close()
+  }
+})
+
+test('leaves the entered bib in place if its IndexedDB write fails', async () => {
+  const { window, get, start } = await operatorFixture()
+  let lookups = 0
+  window.fetch = async url => {
+    if (url.endsWith('/timing-clock')) return json({ serverUtc: new Date().toISOString() })
+    if (url.endsWith('/timing-assignments')) return json([assignment])
+    lookups += 1
+    throw new Error('Unexpected lookup')
+  }
+  try {
+    start()
+    await waitFor(() => !get('capture-button').disabled)
+    const database = await new Promise(resolve => {
+      const request = window.indexedDB.open('racebib-checkpoint')
+      request.onsuccess = () => resolve(request.result)
+    })
+    const prototype = Object.getPrototypeOf(database)
+    const createTransaction = prototype.transaction
+    prototype.transaction = function (store, mode, options) {
+      if (mode === 'readwrite') throw new Error('Synthetic storage failure')
+      return createTransaction.call(this, store, mode, options)
+    }
+    try {
+      get('bib').value = '0042'
+      get('capture').dispatchEvent(new window.Event('submit', { cancelable: true }))
+      await waitFor(() => get('storage-status').textContent.includes('Synthetic storage failure'))
+      assert.equal(get('bib').value, '0042')
+      assert.equal(get('capture-button').disabled, true)
+      assert.equal(lookups, 0)
+    } finally {
+      prototype.transaction = createTransaction
+      database.close()
+    }
   } finally {
     window.close()
   }

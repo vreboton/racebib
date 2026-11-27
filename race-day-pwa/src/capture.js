@@ -20,13 +20,12 @@ export function loadCaptures(storage, key) {
     : row)
 }
 
-export function createCapture(assignment, bib, deviceId, { online, now = Date.now, uuid = () => crypto.randomUUID() }) {
-  if (!online) throw new Error('An online connection is required to capture a crossing.')
+export function createCapture(assignment, bib, deviceId, { now = Date.now, uuid = () => crypto.randomUUID() } = {}) {
   const observedAtUtc = new Date(now()).toISOString()
   if (!bibPattern.test(bib)) throw new Error('Enter a bib with 1–32 letters, digits, hyphens, or underscores.')
   return {
     assignment: { ...assignment }, bib, deviceId, observedAtUtc, observationId: uuid(),
-    key: uuid(), state: 'Looking up bib',
+    key: uuid(), state: 'Saved locally',
   }
 }
 

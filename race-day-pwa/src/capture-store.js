@@ -80,3 +80,10 @@ export async function saveCapture(db, row) {
   })
   row.revision = revision
 }
+
+export function readCapture(db, accountId, observationId) {
+  return transact(db, 'readonly', (captures, finish) => {
+    const request = captures.get([accountId, observationId])
+    request.onsuccess = () => finish(request.result)
+  })
+}

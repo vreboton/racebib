@@ -3,6 +3,7 @@
     <v-main>
       <div class="station-shell">
         <header><small>RACEBIB</small><h1>Checkpoint Timing</h1></header>
+        <p id="shell-status" role="status"></p>
         <p id="notice" role="status" hidden></p>
         <form id="login">
           <label for="email">Account email</label><input id="email" type="email" autocomplete="username" required>
@@ -11,8 +12,10 @@
         </form>
         <section id="station" hidden>
           <div class="actions"><button type="button" id="refresh">Check connection and assignments</button><button type="button" id="logout">Sign out</button></div>
+          <p id="signin-required" hidden><button type="button" id="reauthenticate">Sign in to sync</button></p>
           <p id="clock" role="status"></p>
           <p id="storage-status" role="status"></p>
+          <p id="assignment-freshness"></p>
           <p id="station-time"></p>
           <label for="assigned-event">Assigned Event</label><select id="assigned-event"></select>
           <label for="assigned-checkpoint">Assigned Checkpoint</label><select id="assigned-checkpoint" disabled></select>
@@ -27,6 +30,8 @@
             <button id="capture-button" class="record" type="submit">Record crossing</button>
           </form>
           <h2>Device captures</h2>
+          <p id="queue-summary" role="status"></p>
+          <button id="sync-now" type="button">Sync now</button>
           <ul id="captures" aria-live="polite"></ul>
         </section>
       </div>
