@@ -7,7 +7,7 @@ import { build } from 'vite'
 
 const flush = () => new Promise(resolve => setImmediate(resolve))
 const json = data => new Response(JSON.stringify(data))
-const assignment = { eventId: 'e', checkpointId: 'cp', generation: 'grant', eventName: 'Trail race', name: 'Aid', entryOpen: true }
+const assignment = { eventId: 'e', checkpointId: 'cp', generation: 'grant', eventName: 'Trail race', timeZoneId: 'Asia/Manila', name: 'Aid', entryOpen: true }
 
 test('captures on Enter before either lookup returns and retries an uncertain receipt unchanged', async () => {
   const html = await readFile(new URL('../index.html', import.meta.url), 'utf8')
@@ -74,6 +74,8 @@ test('captures on Enter before either lookup returns and retries an uncertain re
     assert.equal(submissions[1].body.observedAtUtc, '2026-11-24T05:00:00.000Z')
     assert.match(get('captures').textContent, /0042 · Retry needed/)
     assert.match(get('captures').textContent, /0043 · Recorded/)
+    const crossing = get('captures').querySelector('[title="2026-11-24T05:00:00.250Z"]')
+    assert.match(crossing.textContent, /(?:1|13):00:00.*Asia\/Manila/)
     const retry = [...get('captures').querySelectorAll('button')].find(button => button.textContent === 'Retry capture')
     retry.click()
     await flush()

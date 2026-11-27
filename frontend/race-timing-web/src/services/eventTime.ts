@@ -11,10 +11,10 @@ export function isTimeZone(zone: string): boolean {
   }
 }
 
-export function formatEventTime(value: string | null | undefined, zone: string, dateOnly = false): string {
+export function formatEventTime(value: string | null | undefined, zone: string, precision: 'date' | 'minute' | 'second' = 'minute'): string {
   if (!value) return ''
   return new Intl.DateTimeFormat(undefined, {
-    timeZone: zone, dateStyle: 'medium', ...(dateOnly ? {} : { timeStyle: 'short', hourCycle: 'h23' }),
+    timeZone: zone, dateStyle: 'medium', ...(precision === 'date' ? {} : { timeStyle: precision === 'second' ? 'medium' : 'short', hourCycle: 'h23' }),
   }).format(new Date(utcTimestamp(value)))
 }
 export function localTime(instant: Date, zone: string): string {

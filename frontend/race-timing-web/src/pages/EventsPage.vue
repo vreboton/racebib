@@ -68,8 +68,8 @@
               <div class="text-caption text-medium-emphasis">{{ item.location || 'Location not set' }}</div>
             </td>
             <td>
-              <div>{{ formatEventTime(item.startDate, item.timeZoneId, true) }}</div>
-              <div class="text-caption text-medium-emphasis">to {{ formatEventTime(item.endDate, item.timeZoneId, true) }}</div>
+              <div>{{ formatEventTime(item.startDate, item.timeZoneId, 'date') }}</div>
+              <div class="text-caption text-medium-emphasis">to {{ formatEventTime(item.endDate, item.timeZoneId, 'date') }}</div>
             </td>
             <td><v-chip size="small" :color="statusColor(item.status)" variant="tonal">{{ statusLabel(item.status) }}</v-chip></td>
             <td class="text-right">
