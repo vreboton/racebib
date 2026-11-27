@@ -28,7 +28,9 @@ The shared API already verifies current assignment generation, frozen bib owners
 
 The clock check estimates device offset by comparing the server instant to the midpoint of a round trip. It warns beyond 2 seconds estimated skew, above 500 ms half-trip uncertainty, or when a sample is unavailable. Results are estimates and asymmetric latency can bias them. Captured instants are preserved as read from the device. The application pauses new capture when the browser reports offline, after an API transport failure, or when the last connection check is over 45 seconds old. A sudden undetected disconnect can still leave a pending foreground operation.
 
-Tab-scoped session storage retains pending operations across reload and reauthentication by the same account. Keep the tab open until every capture has a receipt or has been handed to race control. Closing a tab or clearing site data can discard pending records. The manifest provides app identity and icons. The app uses the live API and has no service worker, offline roster, background sync, or persistent offline capture queue.
+The checkpoint application stores captures in IndexedDB on the current browser profile, partitioned by operator account. A capture appears in the list and its bib field clears after the local write commits. The server receipt confirms the recorded outcome. Sign back in with the same account on the same origin and browser profile to recover pending captures after restarting. When upgrading, open each tab that still holds pending captures and sign in with the original account so the app can migrate those records. A failed migration keeps the original tab data.
+
+The app requests persistent browser storage when available. Granting it reduces the risk of eviction. Clearing site data or removing the browser profile still removes local captures. If storage fails, the app pauses capture and retry. Keep any tab with unmigrated captures open while you resolve the storage error. New capture and manual retry still use the live API. The manifest provides app identity and icons.
 
 ## API integration
 

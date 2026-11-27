@@ -2,10 +2,18 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
+import { IDBFactory } from 'fake-indexeddb'
+import { loadAccountCaptures } from '../src/capture-store.js'
 import { JSDOM } from 'jsdom'
 import { build } from 'vite'
 
-const flush = () => new Promise(resolve => setImmediate(resolve))
+async function waitFor(condition) {
+  const timeout = Date.now() + 2000
+  while (!condition()) {
+    assert.ok(Date.now() < timeout, 'Timed out waiting for the checkpoint UI')
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+}
 const json = data => new Response(JSON.stringify(data))
 const assignment = { eventId: 'e', checkpointId: 'cp', generation: 'grant', eventName: 'Trail race', timeZoneId: 'Asia/Manila', name: 'Aid', entryOpen: true }
 
@@ -17,6 +25,7 @@ async function operatorFixture() {
   const window = dom.window
   const get = id => window.document.getElementById(id)
   Object.defineProperty(window.crypto, 'randomUUID', { value: randomUUID })
+  window.indexedDB = new IDBFactory()
   window.AbortSignal = AbortSignal
   window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} })
   window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} }
@@ -53,8 +62,7 @@ test('captures on Enter before either lookup returns and retries an uncertain re
   }
   try {
     start()
-    await flush()
-    assert.equal(get('capture-button').disabled, false)
+    await waitFor(() => !get('capture-button').disabled)
     function capture(bib) {
       get('bib').value = bib
       get('capture').dispatchEvent(new window.Event('submit', { cancelable: true }))
@@ -71,14 +79,15 @@ test('captures on Enter before either lookup returns and retries an uncertain re
     get('capture').dispatchEvent(new window.Event('submit', { cancelable: true }))
     wall += 250
     capture('0043')
+    await waitFor(() => pendingLookup.size === 2)
     assert.deepEqual([...pendingLookup.keys()], ['0042', '0043'])
     assert.equal(submissions.length, 0)
     const runner = bib => json({ registrationId: 'r' + bib, raceId: 'race', bibNumber: bib,
       occurrences: [{ occurrenceId: 'visit', sequence: 1, name: 'Aid', distanceKm: 12 }] })
     pendingLookup.get('0043')(runner('0043'))
-    await flush()
+    await waitFor(() => get('captures').textContent.includes('0043 \u00b7 Recorded'))
     pendingLookup.get('0042')(runner('0042'))
-    await flush()
+    await waitFor(() => get('captures').textContent.includes('0042 \u00b7 Retry needed'))
     assert.equal(submissions[0].body.observedAtUtc, '2026-11-24T05:00:00.250Z')
     assert.equal(submissions[1].body.observedAtUtc, '2026-11-24T05:00:00.000Z')
     assert.match(get('captures').textContent, /0042 · Retry needed/)
@@ -88,20 +97,26 @@ test('captures on Enter before either lookup returns and retries an uncertain re
     assert.match(crossing.textContent, /(?:1|13):00:00.*Asia\/Manila/)
     const retry = [...get('captures').querySelectorAll('button')].find(button => button.textContent === 'Retry capture')
     retry.click()
-    await flush()
+    await waitFor(() => get('captures').textContent.includes('0042 \u00b7 Recorded'))
     assert.deepEqual(submissions[2], submissions[1])
     assert.match(get('captures').textContent, /0042 · Recorded/)
     window.dispatchEvent(new window.Event('offline'))
     assert.equal(get('capture-button').disabled, true)
     get('refresh').click()
-    await flush()
-    assert.equal(get('capture-button').disabled, false)
+    await waitFor(() => !get('capture-button').disabled)
     expired = true
     capture('0044')
-    await flush()
+    await waitFor(() => !get('login').hidden)
     assert.equal(get('login').hidden, false)
     assert.match(get('notice').textContent, /Session expired/)
-    assert.equal(JSON.parse(window.sessionStorage.getItem('racebib.checkpoint.captures.u'))[0].bib, '0044')
+    const db = await new Promise((resolve, reject) => {
+      const request = window.indexedDB.open('racebib-checkpoint')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const saved = await loadAccountCaptures(db, 'u', window.sessionStorage)
+    assert.equal(saved.find(row => row.bib === '0044').state, 'Retry needed')
+    db.close()
     window.dispatchEvent(new window.Event('offline'))
     assert.equal(get('capture-button').disabled, true)
   } finally {
@@ -128,7 +143,7 @@ test('scopes checkpoint choices to the selected event and clears them after even
 
   try {
     start()
-    await flush()
+    await waitFor(() => get('assigned-event').options.length === 3)
     const events = get('assigned-event')
     const stations = get('assigned-checkpoint')
     const ids = select => Array.from(select.options, x => x.value)
@@ -148,11 +163,11 @@ test('scopes checkpoint choices to the selected event and clears them after even
     assert.equal(get('capture-button').disabled, true)
     select(stations, 'cp3')
     pollAssignments()
-    await flush()
+    await waitFor(() => get('assigned-checkpoint').value === 'cp3')
     assert.equal(stations.value, 'cp3')
     available = [first, second]
     pollAssignments()
-    await flush()
+    await waitFor(() => get('assigned-event').options.length === 2)
     assert.deepEqual(ids(events), ['', 'e'])
     assert.equal(events.value, '')
     assert.deepEqual(ids(stations), [''])

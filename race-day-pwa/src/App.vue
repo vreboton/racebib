@@ -12,6 +12,7 @@
         <section id="station" hidden>
           <div class="actions"><button type="button" id="refresh">Check connection and assignments</button><button type="button" id="logout">Sign out</button></div>
           <p id="clock" role="status"></p>
+          <p id="storage-status" role="status"></p>
           <p id="station-time"></p>
           <label for="assigned-event">Assigned Event</label><select id="assigned-event"></select>
           <label for="assigned-checkpoint">Assigned Checkpoint</label><select id="assigned-checkpoint" disabled></select>
@@ -25,7 +26,7 @@
             </div>
             <button id="capture-button" class="record" type="submit">Record crossing</button>
           </form>
-          <h2>Session captures</h2>
+          <h2>Device captures</h2>
           <ul id="captures" aria-live="polite"></ul>
         </section>
       </div>

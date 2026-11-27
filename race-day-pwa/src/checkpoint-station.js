@@ -1,4 +1,5 @@
-import { clockSample, clockWarning, createCapture, loadCaptures, prepareSubmission } from './capture.js'
+import { clockSample, clockWarning, createCapture, prepareSubmission } from './capture.js'
+import { loadAccountCaptures, openCaptureStore, saveCapture } from './capture-store.js'
 
 export function startCheckpoint() {
   const el = id => document.getElementById(id)
@@ -10,7 +11,11 @@ export function startCheckpoint() {
   let assignments = []
   let assignmentsLoaded = false
   let rows = []
-  const sessionRows = new Map()
+  let database
+  let savingCaptures = 0
+  const savingSelections = new Set()
+  let storageReady = false
+  let storageFailed = false
   let sample
   let lastProbe = -Infinity
   let connected = false
@@ -46,17 +51,26 @@ export function startCheckpoint() {
     return payload
   }
 
-  function storageKey(operator) {
-    return 'racebib.checkpoint.captures.' + operator.user.id
+  function storageFailure(operator, error) {
+    if (session !== operator) return
+    storageFailed = true
+    el('storage-status').textContent = 'Capture storage failed. Reload before recording or retrying. ' + error.message
+    render()
   }
 
-  function persist(operator) {
-    const pending = operator.rows.filter(row => !row.receipt)
-    const recent = operator.rows.filter(row => row.receipt).slice(0, 30)
-    sessionStorage.setItem(storageKey(operator), JSON.stringify([...pending, ...recent]))
+  async function persist(operator, row) {
+    try {
+      await saveCapture(await database, row)
+      return true
+    } catch (error) {
+      storageFailure(operator, error)
+      return false
+    }
   }
 
-  function setSession(operator) {
+  async function setSession(operator) {
+    storageReady = false
+    storageFailed = false
     connected = false
     lastProbe = -Infinity
     sample = undefined
@@ -65,14 +79,36 @@ export function startCheckpoint() {
     assignmentsLoaded = false
     renderAssignments('', '')
     session = operator
-    rows = operator ? sessionRows.get(operator.user.id) ?? loadCaptures(sessionStorage, storageKey(operator)) : []
-    if (operator) {
-      operator.rows = rows
-      sessionRows.set(operator.user.id, rows)
-    }
+    rows = []
     el('login').hidden = Boolean(operator)
     el('station').hidden = !operator
+    el('storage-status').textContent = 'Opening capture storage.'
     render()
+    if (!operator) return
+    try {
+      database ??= openCaptureStore()
+      const saved = await loadAccountCaptures(await database, operator.user.id, sessionStorage)
+      if (session !== operator) return
+      rows = saved
+      storageReady = true
+      el('storage-status').textContent = 'Captures are stored on this device. Clearing site data removes them. The browser may also reclaim storage.'
+      render()
+      void requestPersistence(operator)
+    } catch (error) {
+      storageFailure(operator, error)
+    }
+  }
+
+  async function requestPersistence(operator) {
+    try {
+      const storage = navigator.storage
+      const persistent = await storage?.persisted?.() || await storage?.persist?.()
+      if (persistent && session === operator && !storageFailed) {
+        el('storage-status').textContent = 'Persistent storage is active. Clearing site data or removing the browser profile still removes captures.'
+      }
+    } catch {
+      // Browsers can deny the request. The storage warning remains visible.
+    }
   }
 
   function selectedAssignment() {
@@ -102,8 +138,9 @@ export function startCheckpoint() {
     renderCheckpoints(eventSelect.value === previousEvent ? previousCheckpoint : '')
   }
 
-  const canCapture = () => navigator.onLine && connected && performance.now() - lastProbe < probeLifetime &&
-    selectedAssignment()?.entryOpen === true && rows.filter(row => !row.receipt).length < maximumPending
+  const queueFull = () => rows.filter(row => !row.receipt && row.state !== 'Rejected').length + savingCaptures >= maximumPending
+  const canCapture = () => storageReady && !storageFailed && navigator.onLine && connected && performance.now() - lastProbe < probeLifetime &&
+    selectedAssignment()?.entryOpen === true && !queueFull()
 
   function formatStationTime(date, zone, includeDate = false) {
     try {
@@ -142,8 +179,9 @@ export function startCheckpoint() {
   function updateStatus() {
     updateStationTime()
     el('capture-button').disabled = !canCapture()
-    const status = !navigator.onLine ? 'Offline. Capture is paused.' :
+    const status = !storageReady || storageFailed ? 'Capture storage is unavailable. Capture is paused.' : !navigator.onLine ? 'Offline. Capture is paused.' :
       !connected || performance.now() - lastProbe >= probeLifetime ? 'Connection check required. Capture is paused.' :
+        queueFull() ? 'Capture queue is full. Retry pending captures to continue.' :
         selectedAssignment()?.entryOpen ? 'Online · Capture enabled' : 'Online · Select a checkpoint in a live event'
     const clock = clockWarning(sample)
     el('clock').textContent = status + (clock ? ' ' + clock : ' · Device clock checked')
@@ -188,7 +226,7 @@ export function startCheckpoint() {
 
   function expireSession() {
     sessionStorage.removeItem(sessionKey)
-    setSession(undefined)
+    void setSession(undefined)
   }
 
   function recordFailure(operator, row, error, phase) {
@@ -200,6 +238,7 @@ export function startCheckpoint() {
       row.state = 'Retry needed'
       row.message = 'Access denied. Race control must verify whether this capture was recorded.'
     }
+    row.lastSyncError = row.message
     if (session === operator && (!error.status || error.status >= 500)) connected = false
     if (session === operator && error.status === 401) {
       expireSession()
@@ -207,34 +246,40 @@ export function startCheckpoint() {
     }
   }
 
-  async function lookup(operator, row) {
+  async function lookup(operator, row, alreadySaved = false) {
     row.state = 'Looking up bib'
     row.message = ''
     render()
+    if (!alreadySaved && !await persist(operator, row)) return
     try {
-      persist(operator)
       const result = await api(checkpointPath(row.assignment) + '/registrations?bib=' + encodeURIComponent(row.bib), { operator })
       if (session !== operator) {
         row.state = 'Retry needed'
+        await saveAndRender(operator, row)
         return
       }
       row.registration = { registrationId: result.registrationId, raceId: result.raceId, bibNumber: result.bibNumber }
+      if (!Array.isArray(result.occurrences)) throw new Error('RaceBib did not return checkpoint visits.')
       row.occurrences = result.occurrences
-      if (row.occurrences.length === 1) return await submit(operator, row, row.occurrences[0].occurrenceId)
-      row.state = 'Choose visit'
     } catch (error) {
       recordFailure(operator, row, error, 'lookup')
-    } finally {
-      saveAndRender(operator)
+      await saveAndRender(operator, row)
+      return
     }
+    if (row.occurrences.length === 1) {
+      await submit(operator, row, row.occurrences[0].occurrenceId)
+      return
+    }
+    row.state = 'Choose visit'
+    await saveAndRender(operator, row)
   }
 
   async function submit(operator, row, occurrenceId) {
-    if (row.state === 'Submitting' || row.receipt) return
-    if (session !== operator || !navigator.onLine) {
+    if (session !== operator || storageFailed || row.state === 'Submitting' || row.receipt) return
+    if (!navigator.onLine) {
       row.state = 'Retry needed'
       row.message = 'Reconnect before retrying this capture.'
-      saveAndRender(operator)
+      await saveAndRender(operator, row)
       return
     }
     row.state = 'Submitting'
@@ -242,31 +287,33 @@ export function startCheckpoint() {
     render()
     try {
       const body = prepareSubmission(row, row.registration, occurrenceId)
-      persist(operator)
+      row.selectedOccurrenceId = body.occurrenceId
+      if (!await persist(operator, row)) return
+      if (session !== operator) {
+        row.state = 'Retry needed'
+        return
+      }
       const receipt = await api(checkpointPath(row.assignment) + '/observations', { operator, body, key: row.key })
       if (receipt?.observationId !== row.observationId) throw new Error('RaceBib returned an unexpected receipt.')
       row.receipt = receipt
+      row.lastSyncError = null
       row.state = receipt.outcome === 'Accepted' ? 'Recorded' : 'Recorded · needs review'
       row.message = receipt.outcome === 'Accepted' ? '' : receiptMessage(receipt, row.assignment.timeZoneId ?? 'UTC')
     } catch (error) {
       recordFailure(operator, row, error, 'submit')
-    } finally {
-      saveAndRender(operator)
     }
+    await saveAndRender(operator, row)
   }
 
-  function saveAndRender(operator) {
-    try { persist(operator) } catch {
-      if (session === operator) notice('Capture storage is unavailable. Keep this tab open to retain pending items.')
-    }
-    if (session === operator) render()
+  async function saveAndRender(operator, row) {
+    if (await persist(operator, row) && session === operator) render()
   }
 
   function appendButton(parent, label, action) {
     const button = document.createElement('button')
     button.type = 'button'
     button.textContent = label
-    button.disabled = !navigator.onLine
+    button.disabled = !navigator.onLine || storageFailed
     button.addEventListener('click', action)
     parent.append(button)
     return button
@@ -278,7 +325,7 @@ export function startCheckpoint() {
     root.replaceChildren()
     if (!rows.length) {
       const item = document.createElement('li')
-      item.textContent = 'No captures in this session.'
+      item.textContent = 'No captures stored for this account.'
       root.append(item)
       return
     }
@@ -308,22 +355,26 @@ export function startCheckpoint() {
         item.append(select)
         const save = appendButton(item, 'Submit selected visit', () => { if (select.value) void submit(operator, row, select.value) })
         select.value = row.selectedOccurrenceId || ''
-        save.disabled = !select.value || !navigator.onLine
-        select.addEventListener('change', () => {
-          row.selectedOccurrenceId = select.value
-          save.disabled = !select.value || !navigator.onLine
+        const saving = savingSelections.has(row)
+        save.disabled = !select.value || !navigator.onLine || storageFailed || saving
+        select.disabled = storageFailed || saving
+        const review = appendButton(item, 'Send for race-control review', () => void submit(operator, row, null))
+        review.disabled ||= saving
+        select.addEventListener('change', async () => {
+          savingSelections.add(row)
+          row.selectedOccurrenceId = select.value || null
+          select.disabled = save.disabled = review.disabled = true
+          await persist(operator, row)
+          savingSelections.delete(row)
+          if (session === operator) render()
         })
-        appendButton(item, 'Send for race-control review', () => void submit(operator, row, null))
       }
       if (row.state === 'Retry needed')
-        appendButton(item, 'Retry capture', () => { if (row.body) void submit(operator, row, null); else void lookup(operator, row) })
-      if (row.state === 'Rejected') {
-        appendButton(item, 'Dismiss rejected capture', () => {
-          const index = rows.indexOf(row)
-          if (index >= 0) rows.splice(index, 1)
-          saveAndRender(operator)
+        appendButton(item, 'Retry capture', () => {
+          row.retryCount += 1
+          if (row.body) void submit(operator, row, null)
+          else void lookup(operator, row)
         })
-      }
       root.append(item)
     }
   }
@@ -335,7 +386,7 @@ export function startCheckpoint() {
     try {
       const operator = await api('/auth/login', { body: { email: el('email').value.trim(), password: el('password').value }, operator: null })
       sessionStorage.setItem(sessionKey, JSON.stringify(operator))
-      setSession(operator)
+      await setSession(operator)
       await probe(true)
     } catch (error) { notice(error.message) }
     finally { el('password').value = ''; el('login').querySelector('button').disabled = false }
@@ -343,22 +394,39 @@ export function startCheckpoint() {
   el('logout').addEventListener('click', async () => {
     const operator = session
     expireSession()
-    notice('Signed out. Pending captures stay in this tab for your account.')
+    notice('Signed out. Pending captures stay on this device for your account.')
     try { await api('/auth/logout', { body: {}, operator }) } catch { /* Local session is already cleared. */ }
   })
-  el('capture').addEventListener('submit', event => {
+  el('capture').addEventListener('submit', async event => {
     event.preventDefault()
-    if (!canCapture()) { notice('Capture requires a live checkpoint and a recent connection check.'); return }
+    if (!canCapture()) { notice('Capture requires working storage, a live checkpoint and a recent connection check.'); return }
     const operator = session
+    const bibInput = el('bib')
+    const entered = bibInput.value
+    let row
     try {
-      const row = createCapture(selectedAssignment(), el('bib').value.trim(), deviceId, { online: true })
-      rows.unshift(row)
-      try { persist(operator) } catch (error) { rows.shift(); throw error }
-      el('bib').value = ''
-      el('bib').focus()
-      notice()
-      void lookup(operator, row)
-    } catch (error) { notice(error.message) }
+      row = {
+        ...createCapture(selectedAssignment(), entered.trim(), deviceId, { online: true }),
+        accountId: operator.user.id,
+        clockQuality: sample ? { ...sample, ageMs: performance.now() - lastProbe, warning: clockWarning(sample) } : null,
+        retryCount: 0,
+        lastSyncError: null,
+      }
+    } catch (error) {
+      notice(error.message)
+      return
+    }
+    savingCaptures += 1
+    updateStatus()
+    const saved = await persist(operator, row)
+    savingCaptures -= 1
+    if (session !== operator) return
+    if (!saved) { render(); return }
+    rows.unshift(row)
+    if (bibInput.value === entered) bibInput.value = ''
+    bibInput.focus()
+    notice()
+    void lookup(operator, row, true)
   })
   el('refresh').addEventListener('click', () => void probe(true))
   el('assigned-event').addEventListener('change', () => {
@@ -373,7 +441,7 @@ export function startCheckpoint() {
   const onOnline = () => { render(); void probe(true) }
   window.addEventListener('online', onOnline)
   const onBeforeUnload = event => {
-    if ([...sessionRows.values()].some(captures => captures.some(row => !row.receipt && row.state !== 'Rejected'))) event.preventDefault()
+    if (savingCaptures > 0) event.preventDefault()
   }
   window.addEventListener('beforeunload', onBeforeUnload)
   const probeInterval = setInterval(() => { updateStatus(); void probe(true) }, 15_000)
@@ -382,8 +450,9 @@ export function startCheckpoint() {
   try {
     deviceId = localStorage.getItem(deviceKey) || crypto.randomUUID()
     localStorage.setItem(deviceKey, deviceId)
-    setSession(JSON.parse(sessionStorage.getItem(sessionKey) || 'null') || undefined)
-    if (session) void probe(true)
+    void setSession(JSON.parse(sessionStorage.getItem(sessionKey) || 'null') || undefined).then(() => {
+      if (session) void probe(true)
+    })
   } catch (error) {
     notice('This device could not initialize secure capture storage. ' + error.message)
     el('login').querySelector('button').disabled = true
