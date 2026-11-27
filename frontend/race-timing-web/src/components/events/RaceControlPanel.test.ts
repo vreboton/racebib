@@ -78,6 +78,7 @@ it('requires an explicit resolution action and reloads stale revisions', async (
     total: 1, items: [{ observationId: 'o', bibNumber: '0042', outcome: 'SlotConflict', revision: 1 }],
   }))
   vi.mocked(raceControlApi.resolution).mockResolvedValue(response({
+    diagnostic: { code: 'observed_after_timing_window', observedAtUtc: '2026-11-20T00:00:37.539Z', boundaryAtUtc: '2026-11-19T23:00:00Z' },
     id: 'o', bibNumber: '0042', observedAtUtc: '2026-11-20T00:00:37.539Z', receivedAtUtc: '2026-11-20T00:01:38.575288Z',
     acceptedOccurrenceId: null, choices: [], decisions: [{ revision: 1, outcome: 'SlotConflict',
       reason: 'Slot occupied', actorUserId: 'operator', decidedAtUtc: '2026-11-20T00:01:00Z' }],
@@ -94,6 +95,8 @@ it('requires an explicit resolution action and reloads stale revisions', async (
   await flushPromises()
   expect(wrapper.text()).toContain('08:00:37 (2026-11-20T00:00:37.539Z)')
   expect(wrapper.text()).toContain('08:01:38 (2026-11-20T00:01:38.575288Z)')
+  expect(wrapper.text()).toContain('after the frozen timing window ends')
+  expect(wrapper.text()).toContain('07:00:00 (Asia/Manila)')
   wrapper.findComponent({ name: 'TestTextarea' }).vm.$emit('update:modelValue', 'Incorrect crossing')
   await wrapper.vm.$nextTick()
   expect(button('Confirm decision').attributes('disabled')).toBeDefined()

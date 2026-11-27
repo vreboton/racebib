@@ -26,6 +26,7 @@ export interface EventListItem {
 }
 
 export interface EventDetails extends EventListItem {
+  hasArmedTiming?: boolean
   description?: string | null
   organizerName: string
   createdAt: string

@@ -44,6 +44,28 @@
           </div>
         </v-card-text>
       </v-card>
+      <v-card v-for="setup in data.setups" :key="setup.raceId" variant="outlined" class="my-3"
+        :title="raceName(setup.raceId)">
+        <v-card-text>
+          <v-alert v-if="setup.differsFromEventSchedule" type="warning" variant="tonal" class="mb-3">
+            The current event schedule differs from this race's frozen timing window. New captures are still checked against the frozen window.
+          </v-alert>
+          <p class="mb-2"><strong>Timing window:</strong> {{ setup.windowStatus }} · {{ data.eventSchedule.timeZoneId }}</p>
+          <dl class="timing-window-details">
+            <dt>Current event schedule</dt><dd>{{ timingTime(data.eventSchedule.startUtc) }} – {{ timingTime(data.eventSchedule.endUtc) }}</dd>
+            <dt>Configured race start</dt><dd>{{ timingTime(data.races.find(race => race.id === setup.raceId)?.startAtUtc) }}</dd>
+            <dt>Frozen timing window</dt><dd>{{ timingTime(setup.windowStartUtc) }} – {{ timingTime(setup.windowEndUtc) }}</dd>
+            <dt>Scheduled gun</dt><dd>{{ timingTime(setup.scheduledGunUtc) }}</dd>
+            <dt>Actual race gun</dt><dd>{{ timingTime(data.guns.find(gun => gun.raceId === setup.raceId && gun.waveId === null)?.gunAtUtc) }}</dd>
+            <template v-for="gun in data.guns.filter(gun => gun.raceId === setup.raceId && gun.waveId)" :key="gun.id">
+              <dt>Actual gun · {{ data.races.find(race => race.id === setup.raceId)?.waves.find(wave => wave.id === gun.waveId)?.name ?? 'Start wave' }}</dt>
+              <dd>{{ timingTime(gun.gunAtUtc) }}</dd>
+            </template>
+            <dt>Armed at</dt><dd>{{ timingTime(setup.armedAtUtc) }}</dd>
+          </dl>
+        </v-card-text>
+      </v-card>
+
       <v-card variant="outlined" class="my-3" title="Race timing">
         <v-card-text>
           <v-select v-model="raceId" :items="data.races" item-title="name" item-value="id" label="Race" :disabled="busy" />
@@ -91,8 +113,11 @@ interface Setup {
   courses: { id: string; name: string; version: number; occurrences: { id: string; name: string; sequence: number }[] }[]
   mappings: { occurrenceId: string; checkpointId: string }[]
   assignments: { checkpointId: string; userId: string; displayName: string; email: string }[]
-  races: { id: string; name: string; waves: { id: string; name: string }[] }[]
-  setups: { raceId: string; courseId: string }[]
+  races: { id: string; name: string; startAtUtc: string; waves: { id: string; name: string }[] }[]
+  eventSchedule: { startUtc: string; endUtc: string; timeZoneId: string }
+  setups: { raceId: string; courseId: string; windowStartUtc: string; windowEndUtc: string;
+    scheduledGunUtc: string; armedAtUtc: string | null; windowStatus: 'Upcoming' | 'Active' | 'Expired';
+    differsFromEventSchedule: boolean }[]
   guns: { id: string; raceId: string; waveId: string | null; gunAtUtc: string }[]
 }
 interface LateRunner { id: string; bibNumber: string; firstName: string; lastName: string }
@@ -106,6 +131,14 @@ const locationName = ref('')
 const locationCode = ref('')
 const checkpoint = ref<string>()
 const email = ref('')
+function timingTime(value?: string | null) {
+  return value ? formatEventTime(value, data.value?.eventSchedule.timeZoneId ?? props.zone, 'second') : 'Not recorded'
+}
+
+function raceName(id: string) {
+  return data.value?.races.find(race => race.id === id)?.name ?? 'Armed race'
+}
+
 const raceId = ref<string>()
 const resultsBasis = ref(0)
 const cutoffBasis = ref(0)
@@ -190,3 +223,15 @@ function admit() {
   })
 }
 </script>
+
+<style scoped>
+.timing-window-details {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: .35rem 1rem;
+}
+.timing-window-details dt { font-weight: 600; }
+@media (max-width: 600px) {
+  .timing-window-details { grid-template-columns: minmax(0, 1fr); }
+}
+</style>

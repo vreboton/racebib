@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using RaceTiming.Application;
 using RaceTiming.Domain.Entities;
 using RaceTiming.Domain.Enums;
+using RaceTiming.Domain.Services;
 
 namespace RaceTiming.Api.Controllers;
 
@@ -57,7 +58,9 @@ public sealed partial class TimingController
                     previous.AssignmentGeneration != input.AssignmentGeneration || !string.Equals(previous.BibNumber, bib, StringComparison.OrdinalIgnoreCase))
                     return ConflictProblem("idempotency_mismatch", "This key was used for a different submission.");
                 var initial = await db.Set<TimingDecision>().SingleAsync(x => x.ObservationId == previous.Id && x.Revision == 1, ct);
-                return Ok(Receipt(previous, initial));
+                var previousSetup = initial.Outcome == TimingOutcome.SuspiciousClock
+                    ? await db.Set<RaceTimingSetup>().SingleAsync(x => x.RaceId == previous.RaceId, ct) : null;
+                return Ok(Receipt(previous, initial, previousSetup));
             }
             if (item.Status != EventStatus.Live) return ConflictProblem("capture_closed", "The event is closed for timing entry.");
             if (await db.Set<TimingObservation>().AnyAsync(x => x.Id == input.ObservationId, ct))
@@ -81,12 +84,13 @@ public sealed partial class TimingController
             };
             var selected = input.OccurrenceId ?? (visits.Count == 1 ? visits[0].OccurrenceId : null);
             var setup = await db.Set<RaceTimingSetup>().SingleAsync(x => x.RaceId == input.RaceId, ct);
-            var outcome = observed < setup.WindowStartUtc || observed > setup.WindowEndUtc || observed > received.AddMinutes(2)
+            var reasonCode = TimingWindowPolicy.Diagnose(setup.WindowStartUtc, setup.WindowEndUtc, observed, received);
+            var outcome = reasonCode is not null
                 ? TimingOutcome.SuspiciousClock
                 : selected is Guid visitId ? await ValidateSlot(observation, visitId, ct) : TimingOutcome.AmbiguousOccurrence;
             db.Add(observation);
-            var decision = AddDecision(observation, 1, selected, outcome, outcome.ToString());
-            return StatusCode(201, Receipt(observation, decision));
+            var decision = AddDecision(observation, 1, selected, outcome, reasonCode ?? outcome.ToString());
+            return StatusCode(201, Receipt(observation, decision, setup));
         }, manager: false);
     }
 
@@ -212,10 +216,29 @@ public sealed partial class TimingController
         return decision;
     }
 
-    private static object Receipt(TimingObservation observation, TimingDecision decision) => new
+    private static object? CaptureDiagnostic(TimingObservation observation, TimingDecision? decision, RaceTimingSetup? setup) =>
+        decision is null ? null : CaptureDiagnostic(observation.ObservedAtUtc, observation.ReceivedAtUtc,
+            decision.Revision, decision.Outcome, decision.Reason, setup);
+
+    private static object? CaptureDiagnostic(DateTime observed, DateTime received, int revision, TimingOutcome outcome,
+        string reason, RaceTimingSetup? setup)
+    {
+        if (revision != 1 || outcome != TimingOutcome.SuspiciousClock || setup is null) return null;
+        DateTime? boundary = reason switch
+        {
+            TimingWindowPolicy.BeforeWindow => setup.WindowStartUtc,
+            TimingWindowPolicy.AfterWindow => setup.WindowEndUtc,
+            TimingWindowPolicy.AheadOfClock => received.Add(TimingWindowPolicy.FutureTolerance),
+            _ => null
+        };
+        return boundary is DateTime instant ? new { code = reason, observedAtUtc = Utc(observed), boundaryAtUtc = Utc(instant) } : null;
+    }
+
+    private static object Receipt(TimingObservation observation, TimingDecision decision, RaceTimingSetup? setup = null) => new
     {
         observationId = observation.Id, observation.RegistrationId, observation.RaceId,
         observedAtUtc = Utc(observation.ObservedAtUtc), receivedAtUtc = Utc(observation.ReceivedAtUtc),
-        outcome = decision.Outcome.ToString(), decision.Revision, decision.OccurrenceId
+        outcome = decision.Outcome.ToString(), decision.Revision, decision.OccurrenceId,
+        diagnostic = CaptureDiagnostic(observation, decision, setup)
     };
 }

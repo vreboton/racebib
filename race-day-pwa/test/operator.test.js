@@ -38,6 +38,11 @@ test('captures on Enter before either lookup returns and retries an uncertain re
       submissions.push({ body, key: options.headers['Idempotency-Key'] })
       if (body.bibNumber === '0042' && submissions.filter(x => x.body.bibNumber === '0042').length === 1)
         throw new Error('Connection dropped after send')
+      if (body.bibNumber === '0043') return json({
+        observationId: body.observationId, outcome: 'SuspiciousClock',
+        diagnostic: { code: 'observed_after_timing_window', observedAtUtc: body.observedAtUtc,
+          boundaryAtUtc: '2026-11-24T04:59:59.000Z' },
+      })
       return json({ observationId: body.observationId, outcome: 'Accepted' })
     }
     throw new Error('Unexpected request ' + url)
@@ -73,7 +78,8 @@ test('captures on Enter before either lookup returns and retries an uncertain re
     assert.equal(submissions[0].body.observedAtUtc, '2026-11-24T05:00:00.250Z')
     assert.equal(submissions[1].body.observedAtUtc, '2026-11-24T05:00:00.000Z')
     assert.match(get('captures').textContent, /0042 · Retry needed/)
-    assert.match(get('captures').textContent, /0043 · Recorded/)
+    assert.match(get('captures').textContent, /0043 · Recorded · needs review/)
+    assert.match(get('captures').textContent, /after the frozen window ends.*boundary.*12:59:59/)
     const crossing = get('captures').querySelector('[title="2026-11-24T05:00:00.250Z"]')
     assert.match(crossing.textContent, /(?:1|13):00:00.*Asia\/Manila/)
     const retry = [...get('captures').querySelectorAll('button')].find(button => button.textContent === 'Retry capture')

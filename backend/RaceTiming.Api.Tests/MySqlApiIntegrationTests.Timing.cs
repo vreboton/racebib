@@ -79,7 +79,7 @@ public sealed partial class MySqlApiIntegrationTests
             var setup = await manager.GetFromJsonAsync<JsonElement>(path + "/setup");
             Assert.Equal(2, setup.GetProperty("locations").GetArrayLength());
             Assert.Equal(4, setup.GetProperty("mappings").GetArrayLength());
-            Assert.Single(setup.GetProperty("setups").EnumerateArray());
+            Assert.Equal("Active", Assert.Single(setup.GetProperty("setups").EnumerateArray()).GetProperty("windowStatus").GetString());
             var operatorDetails = await manager.GetFromJsonAsync<JsonElement>(path + "/setup/operator?email=" + Uri.EscapeDataString(operatorAccount.Email));
             Assert.Equal(operatorAccount.Id, operatorDetails.GetProperty("id").GetString());
             using var deniedSetup = await station.GetAsync(path + "/setup");
@@ -190,7 +190,15 @@ public sealed partial class MySqlApiIntegrationTests
             offsetless["observedAtUtc"] = "2026-11-27T12:00:00";
             using var invalidCapture = await station.PostAsJsonAsync(stationPath + "/observations", offsetless);
             Assert.Equal(HttpStatusCode.BadRequest, invalidCapture.StatusCode);
-            var suspect = await Send(station, stationPath, Guid.NewGuid(), clock);
+            var clockKey = Guid.NewGuid();
+            var suspect = await Send(station, stationPath, clockKey, clock);
+            var diagnostic = suspect.Body.GetProperty("diagnostic");
+            Assert.Equal("observed_ahead_of_server_clock", diagnostic.GetProperty("code").GetString());
+            Assert.Equal(suspect.Body.GetProperty("receivedAtUtc").GetDateTimeOffset().AddMinutes(2),
+                diagnostic.GetProperty("boundaryAtUtc").GetDateTimeOffset());
+            var replayed = await Send(station, stationPath, clockKey, clock);
+            Assert.Equal(HttpStatusCode.OK, replayed.Status);
+            Assert.Equal(diagnostic.GetRawText(), replayed.Body.GetProperty("diagnostic").GetRawText());
             Assert.Equal("SuspiciousClock", suspect.Body.GetProperty("outcome").GetString());
             Assert.Equal(clock.ObservedAtUtc, suspect.Body.GetProperty("observedAtUtc").GetDateTimeOffset());
 
@@ -231,6 +239,23 @@ public sealed partial class MySqlApiIntegrationTests
                 Assert.Equal("stale_decision", (await stale.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
             }
             finally { foreach (var response in resolutions) response.Dispose(); }
+
+            var before = lateVisit with { ObservationId = Guid.NewGuid(), ObservedAtUtc = item.StartDate.AddTicks(-10) };
+            var after = lateVisit with { ObservationId = Guid.NewGuid(), ObservedAtUtc = item.EndDate.AddTicks(10) };
+            var earlyResult = await Send(station, stationPath, Guid.NewGuid(), before);
+            var lateResult = await Send(station, stationPath, Guid.NewGuid(), after);
+            Assert.Equal("observed_before_timing_window", earlyResult.Body.GetProperty("diagnostic").GetProperty("code").GetString());
+            Assert.Equal("observed_after_timing_window", lateResult.Body.GetProperty("diagnostic").GetProperty("code").GetString());
+            Assert.Equal(item.EndDate, lateResult.Body.GetProperty("diagnostic").GetProperty("boundaryAtUtc").GetDateTime());
+
+            // Model evidence written before diagnostic codes existed.
+            await db.Set<TimingDecision>().Where(x => x.ObservationId == before.ObservationId)
+                .ExecuteUpdateAsync(x => x.SetProperty(d => d.Reason, "SuspiciousClock"));
+            var legacy = await manager.GetFromJsonAsync<JsonElement>(path + $"/control/observations/{before.ObservationId}/resolution");
+            Assert.Equal(JsonValueKind.Null, legacy.GetProperty("diagnostic").ValueKind);
+            var legacyDecision = Assert.Single(legacy.GetProperty("decisions").EnumerateArray());
+            Assert.Equal(1, legacyDecision.GetProperty("revision").GetInt32());
+            Assert.Equal("SuspiciousClock", legacyDecision.GetProperty("reason").GetString());
 
             using var revoke = await manager.PutAsJsonAsync(stationPath + $"/assignments/{operatorAccount.Id}", new { active = false });
             Assert.Equal(HttpStatusCode.OK, revoke.StatusCode);
@@ -388,6 +413,7 @@ public sealed partial class MySqlApiIntegrationTests
             var now = DateTimeOffset.FromUnixTimeSeconds(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
             item.StartDate = now.UtcDateTime.AddHours(-1);
             item.EndDate = now.UtcDateTime.AddHours(1);
+            race.StartAtUtc = now.UtcDateTime.AddMinutes(-30);
             item.Status = EventStatus.Live;
             await db.SaveChangesAsync();
             using var arm = await manager.PostAsJsonAsync(timing + $"/races/{raceId}/arm", new { });
@@ -487,6 +513,7 @@ public sealed partial class MySqlApiIntegrationTests
         item.StartDate = finishAt.UtcDateTime.AddDays(-2);
         item.EndDate = finishAt.UtcDateTime.AddDays(1);
         item.Status = EventStatus.Live;
+        race.StartAtUtc = finishAt.UtcDateTime.AddMinutes(-30);
         race.CutoffDurationSeconds = 300;
         await db.SaveChangesAsync();
 
