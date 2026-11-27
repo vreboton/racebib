@@ -230,8 +230,9 @@ try {
   await page.getByLabel('Account email').fill(operatorEmail)
   await page.getByLabel('Password').fill(password)
   await page.getByRole('button', { name: 'Sign in' }).click()
-  const assignment = page.getByLabel('Assigned event and checkpoint')
-  await assignment.selectOption({ value: event.id + '/' + gate.id })
+  await page.getByLabel('Assigned Event').selectOption({ value: event.id })
+  const checkpoint = page.getByLabel('Assigned Checkpoint')
+  await checkpoint.selectOption({ value: gate.id })
   const record = page.getByRole('button', { name: 'Record crossing' })
   const bib = page.getByLabel('Runner bib')
   async function capture(number, choice) {
@@ -265,7 +266,7 @@ try {
     .getByText(/needs review/i)
     .first()
     .waitFor()
-  await assignment.selectOption({ value: event.id + '/' + aid.id })
+  await checkpoint.selectOption({ value: aid.id })
   const aidAttempts = []
   await page.route(
     '**/checkpoints/' + aid.id + '/observations',

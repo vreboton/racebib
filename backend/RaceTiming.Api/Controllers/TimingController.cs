@@ -26,20 +26,23 @@ public sealed partial class TimingController(RaceTimingDbContext db, IAuditLogge
             (x.Role == OrganizerRole.EventAdministrator || x.Role == OrganizerRole.RaceDirector), ct);
 
     [HttpGet("/api/v1/me/timing-assignments")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
     public async Task<IActionResult> Assignments(CancellationToken ct)
     {
         if (!await ActiveAccount(ct)) return Forbid();
         var items = await (from grant in Grants
             join item in EnabledEvents on grant.EventId equals item.Id
-            join location in db.Set<PhysicalCheckpoint>() on grant.CheckpointId equals location.Id
+            join location in db.Set<PhysicalCheckpoint>() on new { grant.EventId, grant.CheckpointId }
+                equals new { location.EventId, CheckpointId = location.Id }
+            where item.Status != EventStatus.Completed
             orderby item.Name, location.Code
             select new { eventId = item.Id, eventName = item.Name, item.TimeZoneId,
-                checkpointId = location.Id, location.Name, location.Code, grant.Generation, entryOpen = item.Status == EventStatus.Live })
+                checkpointId = location.Id, location.Name, location.Code, grant.Generation, eventStatus = item.Status, entryOpen = item.Status == EventStatus.Live })
             .ToListAsync(ct);
         return Ok(items.Select(x => new
         {
             x.eventId, x.eventName, TimeZoneId = EventsController.BrowserTimeZone(x.TimeZoneId),
-            x.checkpointId, x.Name, x.Code, x.Generation, x.entryOpen
+            x.checkpointId, x.Name, x.Code, x.Generation, x.eventStatus, x.entryOpen
         }));
     }
 

@@ -8,6 +8,7 @@ export function startCheckpoint() {
   const probeLifetime = 45_000
   let session
   let assignments = []
+  let assignmentsLoaded = false
   let rows = []
   const sessionRows = new Map()
   let sample
@@ -61,7 +62,8 @@ export function startCheckpoint() {
     sample = undefined
     probing = false
     assignments = []
-    el('assignment').replaceChildren()
+    assignmentsLoaded = false
+    renderAssignments('', '')
     session = operator
     rows = operator ? sessionRows.get(operator.user.id) ?? loadCaptures(sessionStorage, storageKey(operator)) : []
     if (operator) {
@@ -74,9 +76,32 @@ export function startCheckpoint() {
   }
 
   function selectedAssignment() {
-    return assignments.find(assignment => assignmentKey(assignment) === el('assignment').value)
+    const eventId = el('assigned-event').value
+    const checkpointId = el('assigned-checkpoint').value
+    return assignments.find(assignment => assignment.eventId === eventId && assignment.checkpointId === checkpointId)
   }
-  const assignmentKey = value => value.eventId + '/' + value.checkpointId
+
+  function renderCheckpoints(preferredCheckpoint = '') {
+    const eventId = el('assigned-event').value
+    const checkpoint = el('assigned-checkpoint')
+    const stations = assignments.filter(assignment => assignment.eventId === eventId)
+    checkpoint.replaceChildren(new Option('Choose checkpoint', ''), ...stations.map(assignment =>
+      new Option(assignment.name + (assignment.entryOpen ? '' : ' (closed)'), assignment.checkpointId)))
+    checkpoint.disabled = !eventId || !stations.length
+    if (stations.some(assignment => assignment.checkpointId === preferredCheckpoint)) {
+      checkpoint.value = preferredCheckpoint
+    }
+  }
+
+  function renderAssignments(previousEvent, previousCheckpoint) {
+    const eventSelect = el('assigned-event')
+    const events = new Map(assignments.map(assignment => [assignment.eventId, assignment.eventName]))
+    eventSelect.replaceChildren(new Option('Choose event', ''), ...Array.from(events, ([id, name]) => new Option(name, id)))
+    eventSelect.disabled = !events.size
+    if (events.has(previousEvent)) eventSelect.value = previousEvent
+    renderCheckpoints(eventSelect.value === previousEvent ? previousCheckpoint : '')
+  }
+
   const canCapture = () => navigator.onLine && connected && performance.now() - lastProbe < probeLifetime &&
     selectedAssignment()?.entryOpen === true && rows.filter(row => !row.receipt).length < maximumPending
 
@@ -141,12 +166,12 @@ export function startCheckpoint() {
       lastProbe = performance.now()
       connected = true
       if (available) {
-        const prior = el('assignment').value
-        assignments = available
-        el('assignment').replaceChildren(new Option('Choose checkpoint', ''), ...assignments.map(assignment =>
-          new Option(`${assignment.eventName} · ${assignment.name}${assignment.entryOpen ? '' : ' (closed)'}`, assignmentKey(assignment))))
-        if (assignments.some(assignment => assignmentKey(assignment) === prior)) el('assignment').value = prior
-        else if (assignments.length === 1) el('assignment').selectedIndex = 1
+        const previousEvent = el('assigned-event').value
+        const previousCheckpoint = el('assigned-checkpoint').value
+        assignments = available.filter(assignment => assignment.eventStatus !== 'Completed')
+        const single = !assignmentsLoaded && assignments.length === 1 ? assignments[0] : null
+        renderAssignments(single?.eventId ?? previousEvent, single?.checkpointId ?? previousCheckpoint)
+        assignmentsLoaded = true
         notice(assignments.length ? '' : 'No checkpoint assignments. Ask race control for access.')
       }
     } catch (error) {
@@ -336,7 +361,13 @@ export function startCheckpoint() {
     } catch (error) { notice(error.message) }
   })
   el('refresh').addEventListener('click', () => void probe(true))
-  el('assignment').addEventListener('change', updateStatus)
+  el('assigned-event').addEventListener('change', () => {
+    renderCheckpoints()
+    updateStatus()
+  })
+  el('assigned-checkpoint').addEventListener('change', updateStatus)
+  const onVisible = () => { if (document.visibilityState === 'visible') void probe(true) }
+  document.addEventListener('visibilitychange', onVisible)
   const onOffline = () => { connected = false; render() }
   window.addEventListener('offline', onOffline)
   const onOnline = () => { render(); void probe(true) }
@@ -360,6 +391,7 @@ export function startCheckpoint() {
   return () => {
     clearInterval(probeInterval)
     clearInterval(clockInterval)
+    document.removeEventListener('visibilitychange', onVisible)
     window.removeEventListener('offline', onOffline)
     window.removeEventListener('online', onOnline)
     window.removeEventListener('beforeunload', onBeforeUnload)

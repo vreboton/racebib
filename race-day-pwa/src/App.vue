@@ -13,7 +13,8 @@
           <div class="actions"><button type="button" id="refresh">Check connection and assignments</button><button type="button" id="logout">Sign out</button></div>
           <p id="clock" role="status"></p>
           <p id="station-time"></p>
-          <label for="assignment">Assigned event and checkpoint</label><select id="assignment"></select>
+          <label for="assigned-event">Assigned Event</label><select id="assigned-event"></select>
+          <label for="assigned-checkpoint">Assigned Checkpoint</label><select id="assigned-checkpoint" disabled></select>
           <form id="capture">
             <label for="bib">Runner bib</label><input id="bib" ref="bib" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="32" aria-describedby="bib-hint">
             <p id="bib-hint">Use the keypad or keyboard. Press Enter to record.</p>
