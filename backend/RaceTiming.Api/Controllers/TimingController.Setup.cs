@@ -52,6 +52,9 @@ public sealed partial class TimingController
             if (!await db.Set<PhysicalCheckpoint>().AnyAsync(x => x.EventId == eventId && x.Id == checkpointId, ct) ||
                 (input.Active && !await db.Users.AnyAsync(x => x.Id == userId && x.IsActive, ct)))
                 return NotFound();
+            if (input.Active && item.Status == EventStatus.Completed)
+                return ConflictProblem("event_completed", "Checkpoint access cannot be granted for a completed event.");
+
             var grant = await db.Set<CheckpointAssignment>().FindAsync([eventId, checkpointId, userId], ct);
             if (grant is null)
             {

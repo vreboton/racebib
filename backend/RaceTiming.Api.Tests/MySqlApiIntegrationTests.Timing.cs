@@ -261,6 +261,21 @@ public sealed partial class MySqlApiIntegrationTests
             Assert.Equal(HttpStatusCode.OK, revoke.StatusCode);
             Assert.Equal(HttpStatusCode.Forbidden, (await Send(station, stationPath, key, lateVisit)).Status);
             Assert.NotEqual(generation, await Grant(manager, stationPath, operatorAccount.Id));
+            var liveAssignments = await station.GetFromJsonAsync<JsonElement>("/api/v1/me/timing-assignments");
+            Assert.Contains(liveAssignments.EnumerateArray(), row =>
+                row.GetProperty("eventId").GetGuid() == eventId && row.GetProperty("eventStatus").GetString() == "Live");
+            var observationsBefore = await db.Set<TimingObservation>().CountAsync(x => x.EventId == eventId);
+            var acceptedBefore = await db.Set<AcceptedTiming>().CountAsync(x => x.EventId == eventId);
+            using var completed = await manager.PatchAsJsonAsync($"/api/v1/events/{eventId}/status", new { status = "Completed" });
+            Assert.Equal(HttpStatusCode.OK, completed.StatusCode);
+            var afterCompletion = await station.GetFromJsonAsync<JsonElement>("/api/v1/me/timing-assignments");
+            Assert.DoesNotContain(afterCompletion.EnumerateArray(), row => row.GetProperty("eventId").GetGuid() == eventId);
+            using var closedGrant = await manager.PutAsJsonAsync(stationPath + $"/assignments/{operatorAccount.Id}", new { active = true });
+            Assert.Equal(HttpStatusCode.Conflict, closedGrant.StatusCode);
+            Assert.Equal("event_completed", (await closedGrant.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+            Assert.True(await db.Set<CheckpointAssignment>().AnyAsync(x => x.EventId == eventId && x.UserId == operatorAccount.Id && x.Active));
+            Assert.Equal(observationsBefore, await db.Set<TimingObservation>().CountAsync(x => x.EventId == eventId));
+            Assert.Equal(acceptedBefore, await db.Set<AcceptedTiming>().CountAsync(x => x.EventId == eventId));
             Assert.Equal(HttpStatusCode.Forbidden, (await Send(station, stationPath, key, lateVisit)).Status);
         }
         finally
