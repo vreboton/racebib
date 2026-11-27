@@ -95,7 +95,7 @@ public sealed partial class RaceConfigurationController(
         var canManage = await authorization.CanAccessAsync(User, item.OrganizerId, true, ct);
         return Ok(new
         {
-            timeZoneId = TimeZoneInfo.TryConvertWindowsIdToIanaId(item.TimeZoneId, out var zone) ? zone : item.TimeZoneId,
+            timeZoneId = EventsController.BrowserTimeZone(item.TimeZoneId),
             canEdit = !Locked(item.Status) && canManage,
             courses = courses.Select(x =>
             {

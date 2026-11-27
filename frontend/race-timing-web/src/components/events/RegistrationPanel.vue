@@ -4,7 +4,7 @@
     <v-btn value="check-in">Check-in</v-btn>
     <v-btn value="readiness">Race readiness</v-btn>
   </v-btn-toggle>
-  <CheckInPanel v-if="workspace === 'check-in'" :event-id="eventId" />
+  <CheckInPanel v-if="workspace === 'check-in'" :event-id="eventId" :zone="zone" />
   <RaceReadinessPanel v-if="workspace === 'readiness'" :event-id="eventId" />
   <v-card v-show="workspace === 'manage'" class="my-4" variant="outlined" :loading="busy">
     <v-card-title>Runner registrations</v-card-title>
@@ -77,7 +77,7 @@
         <div v-if="editing">
           <h3>Audit history</h3>
           <p v-if="!history.length">No changes recorded.</p>
-          <p v-for="(change, index) in history" :key="index">{{ change.action }} · {{ new Date(change.timestampUtc).toLocaleString() }}</p>
+          <p v-for="(change, index) in history" :key="index">{{ change.action }} · {{ formatEventTime(change.timestampUtc, zone) }}</p>
         </div>
         <v-checkbox v-if="editing && [0, 1, 2].includes(editing.status)" v-model="confirmCancel" label="Confirm withdrawal and keep the bib reserved" />
       </v-card-text>
@@ -157,6 +157,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatEventTime } from '../../services/eventTime'
 import BulkBibDialog from './BulkBibDialog.vue'
 import CheckInPanel from './CheckInPanel.vue'
 import RaceReadinessPanel from './RaceReadinessPanel.vue'
@@ -198,7 +199,7 @@ interface Preview {
   error: string | null
   errorCsv: string
 }
-const props = defineProps<{ eventId: string; organizerId: string }>()
+const props = withDefaults(defineProps<{ eventId: string; organizerId: string; zone?: string }>(), { zone: 'UTC' })
 const showBulkBibs = ref(false)
 const workspace = ref('manage')
 const registrationUrl = '/events/' + props.eventId + '/registrations'

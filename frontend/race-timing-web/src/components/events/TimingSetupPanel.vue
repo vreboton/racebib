@@ -57,7 +57,7 @@
           <template v-if="armed">
             <p class="mb-3">Timing is armed.</p>
             <v-select v-model="waveId" :items="waveOptions" label="Gun declaration scope" />
-            <p v-if="currentGun" class="mb-3">Current declaration · {{ currentGun.gunAtUtc }}</p>
+            <p v-if="currentGun" class="mb-3">Current declaration · {{ formatEventTime(currentGun.gunAtUtc, zone) }} ({{ zone }})</p>
             <v-form @submit.prevent="declareGun">
               <v-text-field v-model="gunDate" label="Actual gun time (ISO 8601, with offset)" placeholder="2026-11-24T06:00:00+08:00" />
               <v-text-field v-model="gunReason" label="Gun declaration reason" maxlength="300" />
@@ -81,6 +81,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatEventTime } from '../../services/eventTime'
 import { computed, ref, watch } from 'vue'
 import { api } from '../../services/api'
 import { getApiError } from '../../services/events'
@@ -96,7 +97,7 @@ interface Setup {
 }
 interface LateRunner { id: string; bibNumber: string; firstName: string; lastName: string }
 
-const props = defineProps<{ eventId: string }>()
+const props = withDefaults(defineProps<{ eventId: string; zone?: string }>(), { zone: 'UTC' })
 const base = computed(() => `/events/${props.eventId}/timing`)
 const data = ref<Setup>()
 const busy = ref(false)

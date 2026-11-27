@@ -11,12 +11,12 @@ vi.mock('../services/events', async importOriginal => ({
   eventsApi: { get: vi.fn() },
 }))
 
-async function mountDetails(path: string, canManage: boolean) {
+async function mountDetails(path: string, canManage: boolean, zone = 'UTC') {
   canManageOrganizer.mockReturnValue(canManage)
   vi.mocked(eventsApi.get).mockResolvedValue({
     id: 'event-1', organizerId: 'org-1', organizerName: 'Trail Club', name: 'Summit Weekend',
-    slug: 'summit-weekend', status: 'Draft', timeZoneId: 'UTC',
-    startDate: '2026-11-20T10:00:00Z', endDate: '2026-11-20T13:00:00Z',
+    slug: 'summit-weekend', status: 'Draft', timeZoneId: zone,
+    startDate: '2026-11-27T04:00:00', endDate: '2026-11-27T09:00:00Z',
   } as EventDetails)
   const router = createRouter({
     history: createMemoryHistory(), routes: [{ path: '/events/:id', component: EventDetailsPage }],
@@ -60,5 +60,12 @@ it('keeps registration tools hidden for a read-only organizer member', async () 
 it('opens the manager Race Control deep link', async () => {
   const { wrapper } = await mountDetails('/events/event-1?tab=race-control', true)
   expect(wrapper.get('[role="tabpanel"]').attributes('id')).toBe('race-control')
+  wrapper.unmount()
+})
+
+it('renders the Manila schedule from UTC even with a legacy offsetless response', async () => {
+  const { wrapper } = await mountDetails('/events/event-1', false, 'Asia/Manila')
+  expect(wrapper.text()).toContain('12:00')
+  expect(wrapper.text()).toContain('17:00')
   wrapper.unmount()
 })

@@ -46,3 +46,11 @@ node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5193 --strictPort
 From race-day-pwa, install the Playwright Chromium browser with `npx playwright install chromium`. Set `REHEARSAL_EMAIL` and `REHEARSAL_PASSWORD` to the disposable administrator credentials. Optionally set `REHEARSAL_ARTIFACTS` to a directory to save screenshots, or `REHEARSAL_BROWSER` to a local Chromium-compatible executable. Run `npm run rehearsal`.
 
 The script creates a new synthetic organizer and 12K/24K event. It seeds setup data through the shared API and creates both registrations through the administration UI. It signs in as a station-only operator, records start and finish in reverse server receipt order, selects a repeated aid visit, observes a slot conflict, and retries a deliberately dropped receipt with the identical submission. In Race Control it verifies missing and over-limit evidence, applies Finished and DNF decisions, and invalidates the accepted finish to verify that the official Finished decision remains visible with a re-review warning.
+
+## Time zones and Suspicious Clock
+
+Event, race and wave schedules represent UTC instants. Event management displays them in the configured IANA zone. The editor converts wall times to UTC, rejects nonexistent DST times, and asks for an offset when a wall time occurs twice. Changing the display zone of an existing event preserves its scheduled instants unless the operator edits the schedule. Absolute timestamps from the JSON API include a UTC designator. Legacy offsetless event timestamps are interpreted as UTC. Capture and gun requests require an explicit UTC designator or offset.
+
+The checkpoint UI displays event-local capture time alongside a raw UTC value available on the capture details. The device clock remains labeled separately. Split and cutoff calculations continue to compare instants and durations. UTC check-in exports remain explicitly labeled. Offline capture and synchronization are outside the current implementation.
+
+A Suspicious Clock decision can mean an observation fell outside the race's frozen timing window or was more than two minutes ahead of server receipt. A close match between device and server time can rule out drift while the frozen window still rejects the crossing. Editing the event schedule does not change past observations, decisions, or the already-armed window.

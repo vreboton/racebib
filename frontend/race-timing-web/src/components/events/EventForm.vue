@@ -43,13 +43,13 @@
             <v-text-field v-model="form.location" label="City / Location" />
           </v-col>
           <v-col cols="12" md="6">
-            <v-text-field v-model="form.startLocal" label="Event start" type="datetime-local" :rules="[required]" />
+            <ScheduleInput v-model="form.startUtc" label="Event start" :zone="form.timeZoneId.trim()" :preserve-instant-on-zone-change="Boolean(event)" required />
           </v-col>
           <v-col cols="12" md="6">
-            <v-text-field v-model="form.endLocal" label="Event end" type="datetime-local" :rules="[required, endAfterStart]" />
+            <ScheduleInput v-model="form.endUtc" label="Event end" :zone="form.timeZoneId.trim()" :preserve-instant-on-zone-change="Boolean(event)" required />
           </v-col>
           <v-col cols="12" md="6">
-            <v-text-field v-model="form.timeZoneId" label="Time zone" hint="IANA or system time-zone ID, e.g. Asia/Manila" persistent-hint :rules="[required]" />
+            <v-text-field v-model="form.timeZoneId" label="Time zone" hint="IANA time-zone ID, e.g. Asia/Manila" persistent-hint :rules="[required]" />
           </v-col>
         </v-row>
       </v-card-text>
@@ -57,7 +57,7 @@
       <v-card-actions class="pa-5">
         <v-spacer />
         <v-btn variant="text" :disabled="saving" @click="$emit('cancel')">Cancel</v-btn>
-        <v-btn color="primary" type="submit" :loading="saving" :disabled="!valid || saving || loadingOrganizers || (!event && !form.organizerId)">
+        <v-btn color="primary" type="submit" :loading="saving" :disabled="!valid || !form.startUtc || !form.endUtc || saving || loadingOrganizers || (!event && !form.organizerId)">
           {{ event ? 'Save changes' : 'Create event' }}
         </v-btn>
       </v-card-actions>
@@ -66,7 +66,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
+import ScheduleInput from './ScheduleInput.vue'
+import { isTimeZone, utcTimestamp } from '../../services/eventTime'
 import type { EventDetails, EventPayload, Organizer } from '../../services/events'
 import { getApiError, loadOrganizers } from '../../services/events'
 import { useAuthStore } from '../../stores/auth'
@@ -91,19 +93,10 @@ const form = reactive({
   organizerName: '',
   venue: '',
   location: '',
-  startLocal: '',
-  endLocal: '',
-  timeZoneId: 'Asia/Manila',
+  startUtc: props.event ? utcTimestamp(props.event.startDate) : '',
+  endUtc: props.event ? utcTimestamp(props.event.endDate) : '',
+  timeZoneId: props.event?.timeZoneId ?? 'Asia/Manila',
 })
-const endAfterStart = computed(() => () => !form.startLocal || !form.endLocal || new Date(form.endLocal) > new Date(form.startLocal) || 'End must be after start')
-
-function toLocalInput(value?: string) {
-  if (!value) return ''
-  const date = new Date(value)
-  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
-  return local.toISOString().slice(0, 16)
-}
-
 function syncOrganizerName(id: string) {
   form.organizerName = organizers.value.find(item => item.id === id)?.name ?? ''
 }
@@ -113,8 +106,7 @@ onMounted(async () => {
     Object.assign(form, {
       name: props.event.name, slug: props.event.slug, description: props.event.description ?? '',
       organizerName: props.event.organizerName, venue: props.event.venue ?? '',
-      location: props.event.location ?? '', startLocal: toLocalInput(props.event.startDate),
-      endLocal: toLocalInput(props.event.endDate), timeZoneId: props.event.timeZoneId,
+      location: props.event.location ?? '',
     })
     return
   }
@@ -134,12 +126,20 @@ onMounted(async () => {
 })
 
 function submit() {
-  if (!formRef.value?.validate || !valid.value) return
+  if (!formRef.value?.validate || !valid.value || !form.startUtc || !form.endUtc) return
+  if (!isTimeZone(form.timeZoneId.trim())) {
+    errorMessage.value = 'Enter a valid IANA time zone.'
+    return
+  }
+  if (Date.parse(form.endUtc) <= Date.parse(form.startUtc)) {
+    errorMessage.value = 'End must be after start.'
+    return
+  }
   const payload: EventPayload & { organizerId?: string } = {
     name: form.name.trim(), slug: form.slug.trim().toLowerCase(),
     description: form.description.trim() || null, organizerName: form.organizerName.trim(),
     venue: form.venue.trim() || null, location: form.location.trim() || null,
-    startDateUtc: new Date(form.startLocal).toISOString(), endDateUtc: new Date(form.endLocal).toISOString(),
+    startDateUtc: form.startUtc, endDateUtc: form.endUtc,
     timeZoneId: form.timeZoneId.trim(),
   }
   if (!props.event) payload.organizerId = form.organizerId

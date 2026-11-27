@@ -17,7 +17,7 @@ function response<T>(data: T): AxiosResponse<T> {
 function panel() {
   const slot = { template: '<div><slot /><slot name="append" /></div>' }
   return shallowMount(RaceControlPanel, {
-    props: { eventId: 'e' },
+    props: { eventId: 'e', zone: 'Asia/Manila' },
     global: { stubs: {
       'v-tabs': { name: 'TestTabs', emits: ['update:modelValue'], template: '<div><slot /></div>' },
       ...Object.fromEntries(['v-alert', 'v-list', 'v-list-item', 'v-list-item-title', 'v-list-item-subtitle',
@@ -78,7 +78,7 @@ it('requires an explicit resolution action and reloads stale revisions', async (
     total: 1, items: [{ observationId: 'o', bibNumber: '0042', outcome: 'SlotConflict', revision: 1 }],
   }))
   vi.mocked(raceControlApi.resolution).mockResolvedValue(response({
-    id: 'o', bibNumber: '0042', observedAtUtc: '2026-11-20T00:00:00Z', receivedAtUtc: '2026-11-20T00:01:00Z',
+    id: 'o', bibNumber: '0042', observedAtUtc: '2026-11-20T00:00:37.539Z', receivedAtUtc: '2026-11-20T00:01:38.575288Z',
     acceptedOccurrenceId: null, choices: [], decisions: [{ revision: 1, outcome: 'SlotConflict',
       reason: 'Slot occupied', actorUserId: 'operator', decidedAtUtc: '2026-11-20T00:01:00Z' }],
   }))
@@ -92,6 +92,8 @@ it('requires an explicit resolution action and reloads stale revisions', async (
   await flushPromises()
   await button('Review').trigger('click')
   await flushPromises()
+  expect(wrapper.text()).toContain('08:00:37 (2026-11-20T00:00:37.539Z)')
+  expect(wrapper.text()).toContain('08:01:38 (2026-11-20T00:01:38.575288Z)')
   wrapper.findComponent({ name: 'TestTextarea' }).vm.$emit('update:modelValue', 'Incorrect crossing')
   await wrapper.vm.$nextTick()
   expect(button('Confirm decision').attributes('disabled')).toBeDefined()
@@ -105,5 +107,36 @@ it('requires an explicit resolution action and reloads stale revisions', async (
   expect(wrapper.text()).toContain('Reload the observation')
   await button('Reload current decision').trigger('click')
   expect(raceControlApi.resolution).toHaveBeenCalledTimes(2)
+  wrapper.unmount()
+})
+
+it('shows seconds and keeps the full UTC timestamp on a runner split', async () => {
+  const instant = '2026-11-27T04:01:41.725123Z'
+  vi.mocked(raceControlApi.overview).mockResolvedValue(response({
+    races: [{ raceId: 'r', name: '21KM', timeZoneId: 'Asia/Manila', registered: 1, acceptedVisits: 1, recordedFinishes: 0 }],
+    actionable: 0, bibConflicts: 0,
+  }))
+  vi.mocked(raceControlApi.runners).mockResolvedValue(response({
+    total: 1, items: [{
+      classification: 'Pending', revision: 0, needsReview: false, bibConflict: false, warnings: [],
+      timing: {
+        registrationId: 'registration', bibNumber: '30-009', raceCutoff: null, provisionalFinish: null,
+        readiness: { missingOfficialGun: false, missingIndividualStart: false, missingMandatoryOccurrences: [] },
+        visits: [{
+          occurrenceId: 'visit', sequence: 1, name: 'Checkpoint', crossingAtUtc: instant, observationId: 'o',
+          gunElapsedMicroseconds: 60000000, netElapsedMicroseconds: null, segmentMicroseconds: null,
+          flags: [], cutoff: null,
+        }],
+      },
+    }],
+  }))
+  const wrapper = panel()
+  await flushPromises()
+  wrapper.findComponent({ name: 'TestTabs' }).vm.$emit('update:modelValue', 'runners')
+  await flushPromises()
+  const crossing = wrapper.get('time')
+  expect(crossing.text()).toContain('12:01:41')
+  expect(crossing.attributes('datetime')).toBe(instant)
+  expect(crossing.attributes('title')).toBe(instant)
   wrapper.unmount()
 })

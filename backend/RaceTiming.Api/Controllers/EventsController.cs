@@ -49,7 +49,7 @@ public sealed class EventsController(
         var items = await query.OrderBy(x => x.StartDate).Skip((page - 1) * pageSize).Take(pageSize)
             .Select(x => new { x.Id, x.OrganizerId, x.Name, x.Slug, x.Location, x.Venue, x.StartDate, x.EndDate, x.TimeZoneId, x.Status })
             .ToListAsync(ct);
-        return Ok(new { items, page, pageSize, total, totalPages = (int)Math.Ceiling(total / (double)pageSize) });
+        return Ok(new { items = items.Select(x => new { x.Id, x.OrganizerId, x.Name, x.Slug, x.Location, x.Venue, x.StartDate, x.EndDate, TimeZoneId = BrowserTimeZone(x.TimeZoneId), x.Status }), page, pageSize, total, totalPages = (int)Math.Ceiling(total / (double)pageSize) });
     }
 
     [HttpGet("{id:guid}")]
@@ -116,7 +116,7 @@ public sealed class EventsController(
         item.TimeZoneId = request.TimeZoneId.Trim(); item.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
         if (transaction is not null) await transaction.CommitAsync(ct);
-        return Ok(item);
+        return Ok(ToDto(item));
     }
 
     [HttpPatch("{id:guid}/status")]
@@ -168,9 +168,12 @@ public sealed class EventsController(
     private static object ToDto(Event item) => new
     {
         item.Id, item.OrganizerId, item.Name, item.Slug, item.Description, item.OrganizerName,
-        item.Venue, item.Location, item.StartDate, item.EndDate, item.TimeZoneId,
+        item.Venue, item.Location, item.StartDate, item.EndDate, TimeZoneId = BrowserTimeZone(item.TimeZoneId),
         item.Status, item.CreatedAt, item.UpdatedAt
     };
+
+    internal static string BrowserTimeZone(string id) =>
+        !TimeZoneInfo.TryConvertIanaIdToWindowsId(id, out _) && TimeZoneInfo.TryConvertWindowsIdToIanaId(id, out var zone) ? zone : id;
 
     private static ProblemDetails? ValidateEvent(string name, string slug, string organizerName,
         DateTime start, DateTime end, string timeZoneId)
@@ -181,7 +184,7 @@ public sealed class EventsController(
         if (!System.Text.RegularExpressions.Regex.IsMatch(slug.Trim(), "^[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*$") || slug.Length > 220)
             return new ProblemDetails { Status = 400, Title = "Event slug must contain letters, numbers and single hyphens." };
         if (end <= start) return new ProblemDetails { Status = 400, Title = "Event end must be after its start." };
-        try { _ = TimeZoneInfo.FindSystemTimeZoneById(timeZoneId); }
+        try { _ = TimeZoneInfo.FindSystemTimeZoneById(timeZoneId.Trim()); }
         catch (TimeZoneNotFoundException) { return new ProblemDetails { Status = 400, Title = "Unknown time zone identifier." }; }
         catch (InvalidTimeZoneException) { return new ProblemDetails { Status = 400, Title = "Invalid time zone identifier." }; }
         return null;

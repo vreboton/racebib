@@ -14,7 +14,7 @@
     <v-alert v-if="error" type="error" variant="tonal" class="mt-4" role="alert">{{ error }}</v-alert>
     <v-progress-linear v-if="loading" indeterminate class="mt-4" aria-label="Loading Race Control" />
     <template v-else-if="overview && !error">
-      <TimingSetupPanel v-if="tab === 'setup'" :key="eventId" :event-id="eventId" />
+      <TimingSetupPanel v-if="tab === 'setup'" :key="eventId" :event-id="eventId" :zone="zone" />
       <div v-else-if="tab === 'overview'" class="mt-4">
         <p>{{ overview.actionable }} evidence exceptions · {{ overview.bibConflicts }} bib ownership conflicts</p>
         <p v-if="!overview.races.length">No races are armed for timing.</p>
@@ -35,7 +35,7 @@
         <v-list v-else-if="!showRunners" density="comfortable">
           <v-list-item v-for="row in evidence" :key="`${row.observationId ?? row.registrationId}-${row.revision ?? 0}`">
             <v-list-item-title>Bib {{ row.bibNumber }} · {{ label(row.outcome ?? row.classification ?? 'Bib ownership conflict') }}</v-list-item-title>
-            <v-list-item-subtitle v-if="row.decidedAtUtc || row.receivedAtUtc">{{ row.decidedAtUtc ?? row.receivedAtUtc }}</v-list-item-subtitle>
+            <v-list-item-subtitle v-if="row.decidedAtUtc || row.receivedAtUtc">{{ formatEventTime(row.decidedAtUtc ?? row.receivedAtUtc, zone, 'second') }}</v-list-item-subtitle>
             <p v-if="row.reason" class="text-body-2">
               {{ row.previousClassification ? label(row.previousClassification) + ' → ' : '' }}{{ label(row.classification ?? '') }}
               · {{ row.actorUserId }} · {{ row.reason }}
@@ -56,9 +56,9 @@
             <details v-if="tab === 'runners'" class="mt-2">
               <summary>Ordered checkpoint splits</summary>
               <v-table density="compact">
-                <thead><tr><th>Visit</th><th>Crossing (UTC)</th><th>Gun</th><th>Net</th><th>Segment</th><th>Evidence</th></tr></thead>
+                <thead><tr><th>Visit</th><th>Crossing ({{ zone }})</th><th>Gun</th><th>Net</th><th>Segment</th><th>Evidence</th></tr></thead>
                 <tbody><tr v-for="visit in row.timing.visits" :key="visit.occurrenceId">
-                  <td>{{ visit.sequence }} · {{ visit.name }}</td><td>{{ visit.crossingAtUtc ?? 'Missing' }}</td>
+                  <td>{{ visit.sequence }} · {{ visit.name }}</td><td><time v-if="visit.crossingAtUtc" :datetime="visit.crossingAtUtc" :title="visit.crossingAtUtc">{{ formatEventTime(visit.crossingAtUtc, zone, 'second') }}</time><template v-else>Missing</template></td>
                   <td>{{ elapsed(visit.gunElapsedMicroseconds) }}</td><td>{{ elapsed(visit.netElapsedMicroseconds) }}</td>
                   <td>{{ elapsed(visit.segmentMicroseconds) }}</td>
                   <td>{{ visit.flags.map(label).join(', ') }} {{ visit.cutoff ? label(visit.cutoff.status) : '' }}
@@ -87,11 +87,11 @@
           <v-alert v-if="actionError" type="error" variant="tonal" class="mb-3">{{ actionError }}</v-alert>
           <v-progress-linear v-if="detailLoading" indeterminate aria-label="Loading evidence" />
           <template v-if="resolution">
-            <p>Bib {{ resolution.bibNumber }} · Observed {{ resolution.observedAtUtc }}</p>
-            <p>Server received {{ resolution.receivedAtUtc }}</p>
+            <p>Bib {{ resolution.bibNumber }} · Observed {{ formatEventTime(resolution.observedAtUtc, zone, 'second') }} ({{ resolution.observedAtUtc }})</p>
+            <p>Server received {{ formatEventTime(resolution.receivedAtUtc, zone, 'second') }} ({{ resolution.receivedAtUtc }})</p>
             <p class="mb-2">{{ resolution.acceptedOccurrenceId ? 'Accepted slot · ' + (resolution.choices.find(visit => visit.occurrenceId === resolution?.acceptedOccurrenceId)?.name ?? resolution.acceptedOccurrenceId) : 'This observation has no accepted slot.' }}</p>
             <ul class="ps-5 mb-3"><li v-for="decision in resolution.decisions" :key="decision.revision">
-              Revision {{ decision.revision }} · {{ label(decision.outcome) }} · {{ decision.decidedAtUtc }}
+              Revision {{ decision.revision }} · {{ label(decision.outcome) }} · {{ formatEventTime(decision.decidedAtUtc, zone, 'second') }}
               · {{ decision.actorUserId }} · {{ decision.reason }}
             </li></ul>
             <v-select v-model="proposedAction" :items="resolutionChoices" label="Proposed action" />
@@ -121,6 +121,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatEventTime } from '../../services/eventTime'
 import { computed, ref, watch } from 'vue'
 import { isAxiosError } from 'axios'
 import { getApiError } from '../../services/events'
@@ -128,7 +129,7 @@ import { raceControlApi } from '../../services/raceControl'
 import TimingSetupPanel from './TimingSetupPanel.vue'
 import type { EvidenceRow, Overview, Resolution, RunnerRow } from '../../services/raceControl'
 
-const props = defineProps<{ eventId: string }>()
+const props = withDefaults(defineProps<{ eventId: string; zone?: string }>(), { zone: 'UTC' })
 const tab = ref('overview')
 const kind = ref('evidence')
 const auditKind = ref('classification')

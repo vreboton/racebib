@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { localTime, scheduleOptions } from './raceConfiguration'
+import { localTime, scheduleOptions } from './eventTime'
 
 describe('event-zone race scheduling', () => {
   it('round-trips an overnight schedule independently of the browser time zone', () => {

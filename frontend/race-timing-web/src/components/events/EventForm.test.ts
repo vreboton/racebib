@@ -12,7 +12,7 @@ import { VSelect } from 'vuetify/components/VSelect'
 import { VTextField } from 'vuetify/components/VTextField'
 import { VTextarea } from 'vuetify/components/VTextarea'
 import { api } from '../../services/api'
-import type { EventPayload } from '../../services/events'
+import type { EventDetails, EventPayload } from '../../services/events'
 import { useAuthStore } from '../../stores/auth'
 import EventForm from './EventForm.vue'
 
@@ -28,6 +28,16 @@ function inputForLabel(wrapper: ReturnType<typeof mount>, labelText: string) {
   return wrapper.get(`#${inputId}`)
 }
 
+function mountForm(event?: EventDetails) {
+  return mount(EventForm, {
+    props: { event },
+    global: {
+      plugins: [createVuetify({ components: {
+        VAlert, VBtn, VCard, VCardActions, VCardText, VDivider, VForm, VCol, VRow, VSelect, VSpacer, VTextField, VTextarea,
+      } })],
+    },
+  })
+}
 describe('Event form workflow', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -40,13 +50,7 @@ describe('Event form workflow', () => {
       id: 'organizer-admin', email: 'organizer@example.test', displayName: 'Organizer Admin', roles: [],
       organizerMemberships: [{ organizerId: organizer.id, organizerName: organizer.name, role: 'EventAdministrator' }],
     }
-    const wrapper = mount(EventForm, {
-      global: {
-        plugins: [createVuetify({ components: {
-          VAlert, VBtn, VCard, VCardActions, VCardText, VDivider, VForm, VCol, VRow, VSelect, VSpacer, VTextField, VTextarea,
-        } })],
-      },
-    })
+    const wrapper = mountForm()
     await flushPromises()
 
     await inputForLabel(wrapper, 'Event name').setValue('  Alpine Trail 25K  ')
@@ -74,8 +78,25 @@ describe('Event form workflow', () => {
       organizerName: organizer.name,
       timeZoneId: 'Asia/Manila',
     })
-    expect(payload.startDateUtc).toBe(new Date('2027-06-01T06:00').toISOString())
-    expect(payload.endDateUtc).toBe(new Date('2027-06-01T12:00').toISOString())
+    expect(payload.startDateUtc).toBe('2027-05-31T22:00:00.000Z')
+    expect(payload.endDateUtc).toBe('2027-06-01T04:00:00.000Z')
     wrapper.unmount()
   })
-})
+
+  it('renders an existing Manila schedule and round trips its original precision', async () => {
+    const wrapper = mountForm({
+      id: 'event-1', name: 'Canlandog Community Run', slug: 'canlandog', organizerId: organizer.id,
+      organizerName: organizer.name, timeZoneId: 'Asia/Manila', status: 'Draft',
+      startDate: '2026-11-27T04:00:00.123456Z', endDate: '2026-11-27T09:00:00Z',
+    } as EventDetails)
+    await flushPromises()
+    expect((inputForLabel(wrapper, 'Event start').element as HTMLInputElement).value).toBe('2026-11-27T12:00')
+    expect((inputForLabel(wrapper, 'Event end').element as HTMLInputElement).value).toBe('2026-11-27T17:00')
+    await inputForLabel(wrapper, 'Time zone').setValue('America/New_York')
+    expect((inputForLabel(wrapper, 'Event start').element as HTMLInputElement).value).toBe('2026-11-26T23:00')
+    await wrapper.get('form').trigger('submit')
+    expect(wrapper.emitted('submit')?.[0]?.[0]).toMatchObject({
+      startDateUtc: '2026-11-27T04:00:00.123456Z', endDateUtc: '2026-11-27T09:00:00Z',
+    })
+    wrapper.unmount()
+  })})
