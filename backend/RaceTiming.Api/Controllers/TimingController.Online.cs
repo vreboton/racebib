@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using RaceTiming.Domain.Entities;
 using RaceTiming.Domain.Enums;
+using RaceTiming.Domain.Services;
 
 namespace RaceTiming.Api.Controllers;
 
@@ -19,10 +20,14 @@ public sealed partial class TimingController
     public Task<IActionResult> SetupOverview(Guid eventId, CancellationToken ct) =>
         ReadRaceControl(eventId, ct, async () =>
         {
-            var races = await db.Races.Where(x => x.EventId == eventId && x.Status == RecordStatus.Active)
+            var item = await db.Events.Where(x => x.Id == eventId)
+                .Select(x => new { x.StartDate, x.EndDate, x.TimeZoneId }).SingleAsync(ct);
+            var now = DateTime.UtcNow;
+            var races = await db.Races.Where(x => x.EventId == eventId && (x.Status == RecordStatus.Active ||
+                db.Set<RaceTimingSetup>().Any(setup => setup.RaceId == x.Id)))
                 .OrderBy(x => x.Name).Select(x => new
                 {
-                    x.Id, x.Name, x.CourseId,
+                    x.Id, x.Name, x.CourseId, x.StartAtUtc,
                     waves = x.StartWaves.OrderBy(wave => wave.Sequence).Select(wave => new { wave.Id, wave.Name })
                 }).ToListAsync(ct);
             var courses = await db.Courses.Where(x => x.EventId == eventId && x.Races.Any(r => r.Status == RecordStatus.Active))
@@ -37,7 +42,7 @@ public sealed partial class TimingController
             var mappings = await db.Set<CheckpointMapping>().Where(x => x.EventId == eventId)
                 .Select(x => new { x.OccurrenceId, x.CheckpointId }).ToListAsync(ct);
             var setups = await db.Set<RaceTimingSetup>().Where(x => x.EventId == eventId)
-                .Select(x => new { x.RaceId, x.CourseId, x.ResultsBasis, x.CutoffBasis }).ToListAsync(ct);
+                .Select(x => new { x.RaceId, x.CourseId, x.ResultsBasis, x.CutoffBasis, x.WindowStartUtc, x.WindowEndUtc, x.ScheduledGunUtc, x.ArmedAtUtc }).ToListAsync(ct);
             var assignments = await (from grant in db.Set<CheckpointAssignment>()
                 join user in db.Users on grant.UserId equals user.Id
                 where grant.EventId == eventId && grant.Active
@@ -51,7 +56,16 @@ public sealed partial class TimingController
                 select new { gun.Id, gun.RaceId, gun.WaveId, gun.GunAtUtc }).ToListAsync(ct);
             return Ok(new
             {
-                races, courses, locations, mappings, setups, assignments,
+                eventSchedule = new { startUtc = item.StartDate, endUtc = item.EndDate,
+                    timeZoneId = EventsController.BrowserTimeZone(item.TimeZoneId) },
+                races, courses, locations, mappings, assignments,
+                setups = setups.Select(x => new
+                {
+                    x.RaceId, x.CourseId, x.ResultsBasis, x.CutoffBasis, x.WindowStartUtc, x.WindowEndUtc,
+                    x.ScheduledGunUtc, x.ArmedAtUtc,
+                    windowStatus = TimingWindowPolicy.Status(x.WindowStartUtc, x.WindowEndUtc, now),
+                    differsFromEventSchedule = x.WindowStartUtc != item.StartDate || x.WindowEndUtc != item.EndDate
+                }),
                 guns = guns.Select(x => new { x.Id, x.RaceId, x.WaveId, gunAtUtc = Utc(x.GunAtUtc) })
             });
         });

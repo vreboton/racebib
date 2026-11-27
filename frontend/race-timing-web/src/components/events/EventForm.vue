@@ -8,6 +8,10 @@
         <v-alert v-if="!event && !loadingOrganizers && !organizers.length" type="warning" variant="tonal" class="mb-5">
           You do not have event-management access to an active organizer. Ask an organizer administrator to update your membership.
         </v-alert>
+        <v-alert v-if="event?.hasArmedTiming" type="warning" variant="tonal" class="mb-5">
+          Timing is already armed. Editing the event schedule does not change any frozen race timing window.
+          Check the frozen window in Race Control before recording crossings.
+        </v-alert>
         <v-row>
           <v-col cols="12" md="8">
             <v-text-field v-model="form.name" label="Event name" :rules="[required, maxLength(200)]" counter="200" />

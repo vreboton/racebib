@@ -36,6 +36,7 @@
           <v-list-item v-for="row in evidence" :key="`${row.observationId ?? row.registrationId}-${row.revision ?? 0}`">
             <v-list-item-title>Bib {{ row.bibNumber }} · {{ label(row.outcome ?? row.classification ?? 'Bib ownership conflict') }}</v-list-item-title>
             <v-list-item-subtitle v-if="row.decidedAtUtc || row.receivedAtUtc">{{ formatEventTime(row.decidedAtUtc ?? row.receivedAtUtc, zone, 'second') }}</v-list-item-subtitle>
+            <p v-if="row.diagnostic" class="text-body-2">{{ describeDiagnostic(row.diagnostic) }}</p>
             <p v-if="row.reason" class="text-body-2">
               {{ row.previousClassification ? label(row.previousClassification) + ' → ' : '' }}{{ label(row.classification ?? '') }}
               · {{ row.actorUserId }} · {{ row.reason }}
@@ -89,6 +90,9 @@
           <template v-if="resolution">
             <p>Bib {{ resolution.bibNumber }} · Observed {{ formatEventTime(resolution.observedAtUtc, zone, 'second') }} ({{ resolution.observedAtUtc }})</p>
             <p>Server received {{ formatEventTime(resolution.receivedAtUtc, zone, 'second') }} ({{ resolution.receivedAtUtc }})</p>
+            <v-alert v-if="resolution.diagnostic" type="warning" variant="tonal" class="mb-2">
+              {{ describeDiagnostic(resolution.diagnostic) }}
+            </v-alert>
             <p class="mb-2">{{ resolution.acceptedOccurrenceId ? 'Accepted slot · ' + (resolution.choices.find(visit => visit.occurrenceId === resolution?.acceptedOccurrenceId)?.name ?? resolution.acceptedOccurrenceId) : 'This observation has no accepted slot.' }}</p>
             <ul class="ps-5 mb-3"><li v-for="decision in resolution.decisions" :key="decision.revision">
               Revision {{ decision.revision }} · {{ label(decision.outcome) }} · {{ formatEventTime(decision.decidedAtUtc, zone, 'second') }}
@@ -122,6 +126,7 @@
 
 <script setup lang="ts">
 import { formatEventTime } from '../../services/eventTime'
+import type { CaptureDiagnostic } from '../../services/raceControl'
 import { computed, ref, watch } from 'vue'
 import { isAxiosError } from 'axios'
 import { getApiError } from '../../services/events'
@@ -202,6 +207,22 @@ async function loadPage() {
     if (id === request) error.value = failure(cause, 'Unable to load this timing view.')
   } finally {
     if (id === request) loading.value = false
+  }
+}
+
+function describeDiagnostic(diagnostic: CaptureDiagnostic) {
+  const observed = formatEventTime(diagnostic.observedAtUtc, props.zone, 'second')
+  const boundary = formatEventTime(diagnostic.boundaryAtUtc, props.zone, 'second')
+  const context = `Observed ${observed}; boundary ${boundary} (${props.zone}).`
+  switch (diagnostic.code) {
+    case 'observed_before_timing_window':
+      return 'Crossing is before the frozen timing window starts. Check the armed window and the device clock. ' + context
+    case 'observed_after_timing_window':
+      return 'Crossing is after the frozen timing window ends. Compare the frozen window with the current event schedule. ' + context
+    case 'observed_ahead_of_server_clock':
+      return 'Crossing is ahead of the server clock tolerance. Check automatic date and time on the device. ' + context
+    default:
+      return 'Timing evidence needs review. ' + context
   }
 }
 

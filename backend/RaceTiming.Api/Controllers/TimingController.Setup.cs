@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using RaceTiming.Domain.Entities;
 using RaceTiming.Domain.Enums;
+using RaceTiming.Domain.Services;
 
 namespace RaceTiming.Api.Controllers;
 
@@ -80,6 +81,21 @@ public sealed partial class TimingController
             if (race is null) return NotFound();
             if (await db.Set<RaceTimingSetup>().AnyAsync(x => x.RaceId == raceId, ct))
                 return ConflictProblem("already_armed", "The race is already armed.");
+            var armedAt = DateTime.UtcNow;
+            if (item.StartDate >= item.EndDate)
+                return ConflictProblem("invalid_timing_window", "Set the event end after its start before arming timing.");
+            if (armedAt > item.EndDate)
+                return ConflictProblem("expired_timing_window", "The event timing window has ended. Update the event schedule before arming.");
+            if (!TimingWindowPolicy.Contains(item.StartDate, item.EndDate, race.StartAtUtc))
+                return ConflictProblem("race_outside_timing_window", "Move the scheduled race start inside the event timing window before arming.");
+            var activeWaves = race.StartWaves.Where(wave => wave.Status == RecordStatus.Active).ToArray();
+            var invalidWave = activeWaves.OrderBy(wave => wave.Sequence).FirstOrDefault(wave =>
+                !TimingWindowPolicy.Contains(race.StartAtUtc, item.EndDate, wave.StartAtUtc));
+            if (invalidWave is not null)
+                return ConflictProblem("wave_outside_timing_window",
+                    $"Move start wave '{invalidWave.Name}' to a time between the race start and event end before arming.");
+            if (!EventsController.HasValidWaveSchedule(race, item.EndDate))
+                return ConflictProblem("invalid_timing_wave_schedule", "Check active wave order, start times, and capacity before arming.");
             var mappings = await db.Set<CheckpointMapping>().Where(x => x.CourseId == race.CourseId)
                 .ToDictionaryAsync(x => x.OccurrenceId, x => x.CheckpointId, ct);
             var points = race.Course.Checkpoints;
@@ -89,7 +105,7 @@ public sealed partial class TimingController
                 return ConflictProblem("incomplete_route", "Map every visit and configure a start and finish before arming.");
             var setup = new RaceTimingSetup
             {
-                EventId = eventId, RaceId = raceId, CourseId = race.CourseId, ArmedAtUtc = DateTime.UtcNow,
+                EventId = eventId, RaceId = raceId, CourseId = race.CourseId, ArmedAtUtc = armedAt,
                 WindowStartUtc = item.StartDate, WindowEndUtc = item.EndDate, TimeZoneId = item.TimeZoneId,
                 ScheduledGunUtc = race.StartAtUtc, CutoffDurationSeconds = race.CutoffDurationSeconds,
                 ResultsBasis = input.ResultsBasis, CutoffBasis = input.CutoffBasis

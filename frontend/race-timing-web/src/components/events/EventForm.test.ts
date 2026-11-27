@@ -86,10 +86,11 @@ describe('Event form workflow', () => {
   it('renders an existing Manila schedule and round trips its original precision', async () => {
     const wrapper = mountForm({
       id: 'event-1', name: 'Canlandog Community Run', slug: 'canlandog', organizerId: organizer.id,
-      organizerName: organizer.name, timeZoneId: 'Asia/Manila', status: 'Draft',
+      organizerName: organizer.name, timeZoneId: 'Asia/Manila', status: 'Ready', hasArmedTiming: true,
       startDate: '2026-11-27T04:00:00.123456Z', endDate: '2026-11-27T09:00:00Z',
     } as EventDetails)
     await flushPromises()
+    expect(wrapper.text()).toContain('Editing the event schedule does not change any frozen race timing window.')
     expect((inputForLabel(wrapper, 'Event start').element as HTMLInputElement).value).toBe('2026-11-27T12:00')
     expect((inputForLabel(wrapper, 'Event end').element as HTMLInputElement).value).toBe('2026-11-27T17:00')
     await inputForLabel(wrapper, 'Time zone').setValue('America/New_York')

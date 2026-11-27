@@ -58,7 +58,7 @@ public sealed class EventsController(
         var item = await db.Events.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
         if (item is null) return NotFound();
         if (!await organizerAuthorization.CanAccessAsync(User, item.OrganizerId, false, ct)) return Forbid();
-        return Ok(ToDto(item));
+        return Ok(ToDto(item, await db.Set<RaceTimingSetup>().AnyAsync(x => x.EventId == id, ct)));
     }
 
     [HttpPost]
@@ -116,7 +116,7 @@ public sealed class EventsController(
         item.TimeZoneId = request.TimeZoneId.Trim(); item.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
         if (transaction is not null) await transaction.CommitAsync(ct);
-        return Ok(ToDto(item));
+        return Ok(ToDto(item, await db.Set<RaceTimingSetup>().AnyAsync(x => x.EventId == id, ct)));
     }
 
     [HttpPatch("{id:guid}/status")]
@@ -149,7 +149,7 @@ public sealed class EventsController(
         return Ok(new { item.Id, item.Status, item.UpdatedAt });
     }
 
-    private static bool HasValidWaveSchedule(Race race, DateTime eventEnd)
+    internal static bool HasValidWaveSchedule(Race race, DateTime eventEnd)
     {
         var previousStart = race.StartAtUtc;
         // Active sequence numbers are unique and positive. Gaps can remain after retirement.
@@ -165,11 +165,11 @@ public sealed class EventsController(
         return true;
     }
 
-    private static object ToDto(Event item) => new
+    private static object ToDto(Event item, bool hasArmedTiming = false) => new
     {
         item.Id, item.OrganizerId, item.Name, item.Slug, item.Description, item.OrganizerName,
         item.Venue, item.Location, item.StartDate, item.EndDate, TimeZoneId = BrowserTimeZone(item.TimeZoneId),
-        item.Status, item.CreatedAt, item.UpdatedAt
+        item.Status, item.CreatedAt, item.UpdatedAt, hasArmedTiming
     };
 
     internal static string BrowserTimeZone(string id) =>

@@ -92,6 +92,20 @@ export function startCheckpoint() {
     }
   }
 
+  function receiptMessage(receipt, zone) {
+    const diagnostic = receipt.diagnostic
+    if (!diagnostic) return receipt.outcome.replace(/([a-z])([A-Z])/g, '$1 $2')
+    const explanations = {
+      observed_before_timing_window: 'Crossing is before the frozen window starts. Check the device clock and ask race control to verify the timing window.',
+      observed_after_timing_window: 'Crossing is after the frozen window ends. Ask race control to check the frozen window.',
+      observed_ahead_of_server_clock: 'Crossing is ahead of the server clock tolerance. Enable automatic date and time, then check the connection and device clock.',
+    }
+    const observed = formatStationTime(new Date(diagnostic.observedAtUtc), zone, true)
+    const boundary = formatStationTime(new Date(diagnostic.boundaryAtUtc), zone, true)
+    return (explanations[diagnostic.code] ?? 'Timing evidence needs review.') +
+      ` Observed ${observed}; boundary ${boundary} (${zone}).`
+  }
+
   function updateStationTime() {
     const date = new Date()
     const zone = selectedAssignment()?.timeZoneId
@@ -208,7 +222,7 @@ export function startCheckpoint() {
       if (receipt?.observationId !== row.observationId) throw new Error('RaceBib returned an unexpected receipt.')
       row.receipt = receipt
       row.state = receipt.outcome === 'Accepted' ? 'Recorded' : 'Recorded · needs review'
-      row.message = receipt.outcome === 'Accepted' ? '' : receipt.outcome.replace(/([a-z])([A-Z])/g, '$1 $2')
+      row.message = receipt.outcome === 'Accepted' ? '' : receiptMessage(receipt, row.assignment.timeZoneId ?? 'UTC')
     } catch (error) {
       recordFailure(operator, row, error, 'submit')
     } finally {

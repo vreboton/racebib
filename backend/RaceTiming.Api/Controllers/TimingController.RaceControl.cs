@@ -47,7 +47,8 @@ public sealed partial class TimingController
         select new EvidenceException
         {
             ObservationId = observation.Id, RaceId = observation.RaceId, RegistrationId = observation.RegistrationId,
-            BibNumber = observation.BibNumber, ReceivedAtUtc = observation.ReceivedAtUtc, Outcome = decision.Outcome,
+            BibNumber = observation.BibNumber, ObservedAtUtc = observation.ObservedAtUtc,
+            ReceivedAtUtc = observation.ReceivedAtUtc, Outcome = decision.Outcome, Reason = decision.Reason,
             Revision = decision.Revision
         };
 
@@ -57,6 +58,8 @@ public sealed partial class TimingController
         public Guid RaceId { get; init; }
         public Guid RegistrationId { get; init; }
         public required string BibNumber { get; init; }
+        public DateTime ObservedAtUtc { get; init; }
+        public required string Reason { get; init; }
         public DateTime ReceivedAtUtc { get; init; }
         public TimingOutcome Outcome { get; init; }
         public int Revision { get; init; }
@@ -78,10 +81,15 @@ public sealed partial class TimingController
             var query = Exceptions(eventId);
             var rows = await query.OrderByDescending(x => x.ReceivedAtUtc).ThenBy(x => x.ObservationId)
                 .Skip(offset).Take(limit).ToListAsync(ct);
+            var raceIds = rows.Where(x => x.Outcome == TimingOutcome.SuspiciousClock).Select(x => x.RaceId).Distinct().ToArray();
+            var setups = await db.Set<RaceTimingSetup>().Where(x => x.EventId == eventId && raceIds.Contains(x.RaceId))
+                .ToDictionaryAsync(x => x.RaceId, ct);
             return Ok(new { offset, limit, total = await query.CountAsync(ct), items = rows.Select(x => new
             {
                 x.ObservationId, x.RaceId, x.RegistrationId, x.BibNumber, x.Revision,
-                receivedAtUtc = Utc(x.ReceivedAtUtc), outcome = x.Outcome.ToString()
+                receivedAtUtc = Utc(x.ReceivedAtUtc), outcome = x.Outcome.ToString(),
+                diagnostic = CaptureDiagnostic(x.ObservedAtUtc, x.ReceivedAtUtc, x.Revision, x.Outcome, x.Reason,
+                    setups.GetValueOrDefault(x.RaceId))
             }) });
         });
 
@@ -205,6 +213,7 @@ public sealed partial class TimingController
             if (observation is null) return NotFound();
             var decisions = await db.Set<TimingDecision>().Where(x => x.ObservationId == observationId)
                 .OrderBy(x => x.Revision).ToListAsync(ct);
+            var setup = await db.Set<RaceTimingSetup>().SingleOrDefaultAsync(x => x.RaceId == observation.RaceId, ct);
             var accepted = await db.Set<AcceptedTiming>().Where(x => x.RegistrationId == observation.RegistrationId)
                 .ToDictionaryAsync(x => x.OccurrenceId, ct);
             var visits = await Visits(observation.RaceId, observation.CheckpointId).ToListAsync(ct);
@@ -222,6 +231,7 @@ public sealed partial class TimingController
                 observation.Id, observation.BibNumber, observedAtUtc = Utc(observation.ObservedAtUtc),
                 receivedAtUtc = Utc(observation.ReceivedAtUtc), acceptedOccurrenceId = accepted.Values
                     .FirstOrDefault(x => x.ObservationId == observationId)?.OccurrenceId,
+                diagnostic = CaptureDiagnostic(observation, decisions.FirstOrDefault(), setup),
                 choices, decisions = decisions.Select(x => new
                 {
                     x.Revision, x.OccurrenceId, outcome = x.Outcome.ToString(), x.Reason, x.ActorUserId, decidedAtUtc = Utc(x.DecidedAtUtc)

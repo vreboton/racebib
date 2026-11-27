@@ -54,3 +54,11 @@ Event, race and wave schedules represent UTC instants. Event management displays
 The checkpoint UI displays event-local capture time alongside a raw UTC value available on the capture details. The device clock remains labeled separately. Split and cutoff calculations continue to compare instants and durations. UTC check-in exports remain explicitly labeled. Offline capture and synchronization are outside the current implementation.
 
 A Suspicious Clock decision can mean an observation fell outside the race's frozen timing window or was more than two minutes ahead of server receipt. A close match between device and server time can rule out drift while the frozen window still rejects the crossing. Editing the event schedule does not change past observations, decisions, or the already-armed window.
+
+## Timing window safeguards and diagnostics
+
+Arming requires an event end after its start, a window that has not expired, and an active race start inside the inclusive window. Active waves must be ordered and start from the race start through the event end. A past scheduled start is allowed within an active window. The setup records a frozen copy of the schedule, so later event edits do not revise validation for an already armed race.
+
+Timing Setup compares the current event schedule with each frozen window. It shows server-evaluated Upcoming, Active, or Expired status as of the last load or refresh. An event edit warns when timing is already armed. There is no adjustment or rearming operation in this workflow.
+
+Capture outcomes remain compatible. New SuspiciousClock decisions store a stable reason code and expose an optional diagnostic containing the code, observedAtUtc, and boundaryAtUtc. The codes are observed_before_timing_window, observed_after_timing_window, and observed_ahead_of_server_clock. Precedence is before, after, then future skew. Exact endpoints and the exact two-minute tolerance are allowed. Idempotent retries return the initial decision and its corresponding diagnostic. Older decisions retain their original reason and revision and have no structured diagnostic.

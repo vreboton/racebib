@@ -6,7 +6,14 @@ export interface Overview {
   actionable: number
   bibConflicts: number
 }
+export interface CaptureDiagnostic {
+  code: string
+  observedAtUtc: string
+  boundaryAtUtc: string
+}
+
 export interface EvidenceRow {
+  diagnostic?: CaptureDiagnostic | null
   bibNumber: string
   registrationId?: string
   observationId?: string
@@ -34,6 +41,7 @@ export interface RunnerRow {
   }
 }
 export interface Resolution {
+  diagnostic?: CaptureDiagnostic | null
   id: string; bibNumber: string; observedAtUtc: string; receivedAtUtc: string; acceptedOccurrenceId: string | null
   choices: { occurrenceId: string; sequence: number; name: string; effect: string; currentObservationId: string | null }[]
   decisions: { revision: number; outcome: string; reason: string; actorUserId: string; decidedAtUtc: string }[]
