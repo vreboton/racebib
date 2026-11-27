@@ -1,7 +1,11 @@
-import { mkdir } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { chromium } from 'playwright'
 import assert from 'node:assert/strict'
-const root = 'http://127.0.0.1:5092/api/v1'
+const root = (process.env.REHEARSAL_API_ORIGIN || 'http://127.0.0.1:5092') + '/api/v1'
+const adminOrigin = process.env.REHEARSAL_ADMIN_ORIGIN || 'http://127.0.0.1:5193'
+const checkpointOrigin = process.env.REHEARSAL_CHECKPOINT_ORIGIN || 'http://127.0.0.1:5194'
 const email = process.env.REHEARSAL_EMAIL || 'director@rehearsal.example.test'
 const password = process.env.REHEARSAL_PASSWORD
 assert.ok(
@@ -100,21 +104,13 @@ try {
   })
   admin.setDefaultTimeout(8000)
 
-  await admin.goto('http://127.0.0.1:5193/login')
+  await admin.goto(adminOrigin + '/login')
 
   await admin.locator('input[type=email]').fill(email)
   await admin.locator('input[type=password]').fill(password)
   await admin.getByRole('button', { name: 'Sign in' }).click()
   await admin.waitForURL((url) => !url.pathname.endsWith('/login'))
-  async function select(container, label, value) {
-    await container
-      .locator('.v-input')
-      .filter({ hasText: label })
-      .locator('.v-field')
-      .first()
-      .click()
-    await admin.getByRole('option', { name: value, exact: true }).click()
-  }
+
   const layout = await api(base + '/configuration')
   for (const { course, distanceKm } of races) {
     const points = layout.courses.find((c) => c.id === course.id).checkpoints
@@ -133,7 +129,7 @@ try {
       firstName: 'Runner',
       lastName: bibNumber,
     })
-    await admin.goto('http://127.0.0.1:5193' + base)
+    await admin.goto(adminOrigin + base)
     await admin.getByRole('tab', { name: 'Runner Registrations' }).click()
     await admin.getByRole('button', { name: 'Register runner' }).click()
     const registration = admin.getByRole('dialog')
@@ -224,9 +220,17 @@ try {
     })
   }
   console.log('Seeded isolated event ' + event.id)
+  const fixture = { event, base, timing, gate, aid, operatorEmail, screenshot }
+  if (process.env.REHEARSAL_OFFLINE === 'true') await rehearseOffline(admin, fixture)
+  else await rehearseOnline(admin, fixture)
+} finally {
+  await browser.close()
+}
+
+async function rehearseOnline(admin, { event, base, gate, aid, operatorEmail, screenshot }) {
   const page = await browser.newPage({ viewport: { width: 414, height: 900 } })
   page.setDefaultTimeout(8000)
-  await page.goto('http://127.0.0.1:5194')
+  await page.goto(checkpointOrigin)
   await page.getByLabel('Account email').fill(operatorEmail)
   await page.getByLabel('Password').fill(password)
   await page.getByRole('button', { name: 'Sign in' }).click()
@@ -306,7 +310,7 @@ try {
   console.log(
     'Verified operator login, assigned station and unchanged lost-receipt replay',
   )
-  await admin.goto('http://127.0.0.1:5193' + base + '?tab=race-control')
+  await admin.goto(adminOrigin + base + '?tab=race-control')
   await admin.getByRole('tab', { name: 'Runner Results' }).click()
   async function classify(classification) {
     await admin
@@ -360,6 +364,106 @@ try {
   console.log(
     'Verified UI registrations, missing evidence, cutoff exceedance, Finished, correction and DNF',
   )
-} finally {
-  await browser.close()
+}
+
+async function rehearseOffline(admin, { event, base, timing, aid, operatorEmail, screenshot }) {
+  const profile = await mkdtemp(join(tmpdir(), 'racebib-checkpoint-rehearsal-'))
+  const launch = () => chromium.launchPersistentContext(profile, {
+    executablePath: process.env.REHEARSAL_BROWSER, headless: true, viewport: { width: 414, height: 900 },
+  })
+  let context
+  try {
+    context = await launch()
+    let page = context.pages()[0]
+    await page.goto(checkpointOrigin)
+    await signIn(page)
+    await page.getByLabel('Assigned Event').selectOption({ value: event.id })
+    await page.getByLabel('Assigned Checkpoint').selectOption({ value: aid.id })
+    await page.waitForFunction(() => navigator.serviceWorker.controller !== null)
+    await context.setOffline(true)
+    for (const bib of ['0042', '0043', '9999']) {
+      await page.getByLabel('Runner bib').fill(bib)
+      await page.getByRole('button', { name: 'Record crossing' }).click()
+      await page.getByText(new RegExp('Bib ' + bib + ' .* Saved locally')).waitFor()
+    }
+    await page.reload()
+    await assertPending(page, 'reload')
+    await context.close()
+    context = await launch()
+    await context.setOffline(true)
+    page = context.pages()[0]
+    await page.goto(checkpointOrigin)
+    await assertPending(page, 'restart')
+    assert.equal(await page.getByLabel('Assigned Checkpoint').inputValue(), aid.id)
+    if (screenshot) await page.screenshot({ path: join(screenshot, 'm83-offline-restart.png'), fullPage: true })
+
+    const attempts = []
+    await page.route('**/checkpoints/' + aid.id + '/observations', async route => {
+      const response = await route.fetch()
+      const receipt = await response.json()
+      const request = route.request()
+      const body = request.postDataJSON()
+      attempts.push({ key: request.headers()['idempotency-key'], body, status: response.status(), receipt })
+      if (body.bibNumber === '0042' && attempts.filter(attempt => attempt.body.bibNumber === '0042').length === 1)
+        await route.abort()
+      else await route.fulfill({ response })
+    })
+    await context.setOffline(false)
+    await page.getByRole('button', { name: 'Sign in to sync' }).click()
+    await signIn(page)
+    await page.getByText(/Bib 0042 .* Recorded$/).waitFor()
+    await page.getByText(/Bib 0043 .* Recorded .* needs review/).waitFor()
+    await page.getByText(/Bib 9999 .* Requires operator action/).waitFor()
+
+    const accepted = attempts.filter(entry => entry.body.bibNumber === '0042')
+    assert.deepEqual(accepted.map(entry => entry.status), [201, 200])
+    assert.equal(accepted[0].key, accepted[1].key)
+    assert.deepEqual(accepted[0].body, accepted[1].body)
+    assert.deepEqual(accepted[0].receipt, accepted[1].receipt)
+    const ambiguous = attempts.filter(entry => entry.body.bibNumber === '0043')
+    assert.equal(ambiguous.length, 1)
+    assert.equal(ambiguous[0].receipt.outcome, 'AmbiguousOccurrence')
+    assert.equal(ambiguous[0].body.occurrenceId, null)
+    const histories = await Promise.all([accepted[0], ambiguous[0]].map(attempt =>
+      api(timing + '/observations/' + attempt.receipt.observationId + '/history')))
+    await admin.goto(adminOrigin + base + '?tab=race-control')
+    await admin.getByRole('tab', { name: /Exceptions/ }).click()
+    await admin.getByText(/Ambiguous occurrence/i).first().waitFor()
+    if (screenshot) {
+      await page.screenshot({ path: join(screenshot, 'm83-synced.png'), fullPage: true })
+      await admin.screenshot({ path: join(screenshot, 'm83-race-control.png'), fullPage: true })
+      await writeFile(join(screenshot, 'm83-api-evidence.json'), JSON.stringify({ eventId: event.id, attempts, histories }, null, 2))
+    }
+    console.log('Verified offline capture, offline reload and Chromium restart, authentication recovery, automatic sync, idempotent replay, and Race Control.')
+  } finally {
+    await context?.close()
+    await rm(profile, { recursive: true, force: true })
+  }
+
+  async function assertPending(page, phase) {
+    try {
+      await page.getByText(/3 pending/).waitFor({ timeout: 8000 })
+    } catch (error) {
+      if (screenshot) await page.screenshot({ path: join(screenshot, 'm83-' + phase + '-failure.png'), fullPage: true })
+      throw new Error('Offline ' + phase + ' failed: ' + await page.locator('body').innerText(), { cause: error })
+    }
+  }
+
+  async function signIn(page) {
+    await page.getByLabel('Account email').fill(operatorEmail)
+    await page.getByLabel('Password').fill(password)
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+    await page.getByText(/^Online \|/).waitFor()
+  }
+}
+
+async function select(container, label, value) {
+  await container
+    .locator('.v-input')
+    .filter({ hasText: label })
+    .locator('.v-field')
+    .first()
+    .click()
+  const page = typeof container.page === 'function' ? container.page() : container
+  await page.getByRole('option', { name: value, exact: true }).click()
 }
