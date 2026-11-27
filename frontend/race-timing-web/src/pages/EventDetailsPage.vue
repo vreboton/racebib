@@ -24,8 +24,8 @@
         <v-row>
           <v-col cols="12" md="6"><div class="detail-label">Organizer</div><div class="detail-value">{{ event.organizerName }}</div></v-col>
           <v-col cols="12" md="6"><div class="detail-label">Slug</div><div class="detail-value">{{ event.slug }}</div></v-col>
-          <v-col cols="12" md="6"><div class="detail-label">Start</div><div class="detail-value">{{ formatDate(event.startDate) }}</div></v-col>
-          <v-col cols="12" md="6"><div class="detail-label">End</div><div class="detail-value">{{ formatDate(event.endDate) }}</div></v-col>
+          <v-col cols="12" md="6"><div class="detail-label">Start</div><div class="detail-value">{{ formatEventTime(event.startDate, event.timeZoneId) }}</div></v-col>
+          <v-col cols="12" md="6"><div class="detail-label">End</div><div class="detail-value">{{ formatEventTime(event.endDate, event.timeZoneId) }}</div></v-col>
           <v-col cols="12" md="6"><div class="detail-label">Venue</div><div class="detail-value">{{ event.venue || 'Not specified' }}</div></v-col>
           <v-col cols="12" md="6"><div class="detail-label">Location</div><div class="detail-value">{{ event.location || 'Not specified' }}</div></v-col>
           <v-col cols="12"><div class="detail-label">Description</div><div class="detail-value description-value">{{ event.description || 'No description provided.' }}</div></v-col>
@@ -50,10 +50,10 @@
       <v-tab v-if="canEdit" value="race-control" id="race-control-tab" aria-controls="race-control">Race Control</v-tab>
     </v-tabs>
     <section v-if="managementTab === 'registrations'" id="registrations" role="tabpanel" aria-labelledby="registrations-tab">
-      <RegistrationPanel :key="event.id" :event-id="event.id" :organizer-id="event.organizerId" />
+      <RegistrationPanel :key="event.id" :event-id="event.id" :organizer-id="event.organizerId" :zone="event.timeZoneId" />
     </section>
     <section v-else-if="managementTab === 'race-control'" id="race-control" role="tabpanel" aria-labelledby="race-control-tab">
-      <RaceControlPanel :key="event.id" :event-id="event.id" />
+      <RaceControlPanel :key="event.id" :event-id="event.id" :zone="event.timeZoneId" />
     </section>
     <section v-else id="configuration" role="tabpanel" aria-labelledby="configuration-tab">
       <RaceConfigurationPanel :key="event.id" :event-id="event.id" :zone="event.timeZoneId" />
@@ -63,6 +63,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatEventTime } from '../services/eventTime'
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { eventStatusTransitions, eventsApi, getApiError } from '../services/events'
@@ -123,8 +124,5 @@ function statusLabel(status: EventStatus) {
 }
 function statusColor(status: EventStatus) {
   return ({ Draft: 'grey', Published: 'info', RegistrationOpen: 'success', RegistrationClosed: 'warning', Ready: 'primary', Live: 'error', Completed: 'teal', Cancelled: 'grey-darken-1' } as Record<EventStatus, string>)[status]
-}
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
 }
 </script>

@@ -79,32 +79,3 @@ export async function saveConfiguration<T = void>(eventId: string, path: string,
   const response = await api.request<T>({ method, url: `/events/${eventId}/${path}`, data })
   return response.data
 }
-
-export function localTime(instant: Date, zone: string): string {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
-  }).formatToParts(instant)
-  const fields = Object.fromEntries(parts.map(({ type, value }) => [type, value]))
-  return `${fields.year}-${fields.month}-${fields.day}T${fields.hour}:${fields.minute}:${fields.second}`
-}
-
-export function scheduleOptions(value: string, zone: string) {
-  const local = value.length === 16 ? value + ':00' : value
-  const wall = Date.parse(local + 'Z')
-  if (!Number.isFinite(wall)) return []
-  const offsets = new Set<number>()
-  for (const hours of [-36, 0, 36]) {
-    const sample = wall + hours * 3600000
-    offsets.add(Date.parse(localTime(new Date(sample), zone) + 'Z') - sample)
-  }
-  return Array.from(offsets).map(offset => new Date(wall - offset))
-    .filter(candidate => localTime(candidate, zone) === local)
-    .sort((a, b) => a.getTime() - b.getTime())
-    .map(candidate => ({
-      value: candidate.toISOString(),
-      title: new Intl.DateTimeFormat('en', {
-        timeZone: zone, hour: '2-digit', minute: '2-digit', timeZoneName: 'longOffset',
-      }).format(candidate),
-    }))
-}

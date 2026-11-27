@@ -36,7 +36,11 @@ public sealed partial class TimingController(RaceTimingDbContext db, IAuditLogge
             select new { eventId = item.Id, eventName = item.Name, item.TimeZoneId,
                 checkpointId = location.Id, location.Name, location.Code, grant.Generation, entryOpen = item.Status == EventStatus.Live })
             .ToListAsync(ct);
-        return Ok(items);
+        return Ok(items.Select(x => new
+        {
+            x.eventId, x.eventName, TimeZoneId = EventsController.BrowserTimeZone(x.TimeZoneId),
+            x.checkpointId, x.Name, x.Code, x.Generation, x.entryOpen
+        }));
     }
 
     private async Task<IActionResult> Write(Guid eventId, CancellationToken ct,

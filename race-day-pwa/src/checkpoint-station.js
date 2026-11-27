@@ -80,15 +80,23 @@ export function startCheckpoint() {
   const canCapture = () => navigator.onLine && connected && performance.now() - lastProbe < probeLifetime &&
     selectedAssignment()?.entryOpen === true && rows.filter(row => !row.receipt).length < maximumPending
 
+  function formatStationTime(date, zone, includeDate = false) {
+    try {
+      return new Intl.DateTimeFormat(undefined, {
+        ...(includeDate ? { dateStyle: 'medium' } : {}),
+        timeStyle: 'medium',
+        timeZone: zone,
+      }).format(date)
+    } catch {
+      return date.toISOString()
+    }
+  }
+
   function updateStationTime() {
     const date = new Date()
     const zone = selectedAssignment()?.timeZoneId
     const local = date.toLocaleTimeString()
-    let eventTime = ''
-    if (zone) {
-      try { eventTime = new Intl.DateTimeFormat(undefined, { timeStyle: 'medium', timeZone: zone }).format(date) + ' · ' + zone }
-      catch { eventTime = zone }
-    }
+    const eventTime = zone ? formatStationTime(date, zone) + ' · ' + zone : ''
     el('station-time').textContent = 'Device ' + local + (eventTime ? ' | Event ' + eventTime : '')
   }
 
@@ -243,7 +251,10 @@ export function startCheckpoint() {
       const title = document.createElement('strong')
       title.textContent = `Bib ${row.bib} · ${row.state}`
       const details = document.createElement('p')
-      details.textContent = `${row.assignment.eventName} · ${row.assignment.name} · ${row.observedAtUtc}`
+      const zone = row.assignment.timeZoneId ?? 'UTC'
+      const localObserved = formatStationTime(new Date(row.observedAtUtc), zone, true)
+      details.textContent = `${row.assignment.eventName} · ${row.assignment.name} · ${localObserved} (${zone})`
+      details.title = row.observedAtUtc
       item.append(title, details)
       if (row.message) {
         const message = document.createElement('p')

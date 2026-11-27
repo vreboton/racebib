@@ -185,7 +185,11 @@ public sealed partial class MySqlApiIntegrationTests
             Assert.Equal(new[] { "Accepted", "SlotConflict" },
                 new[] { confirmedBody.GetProperty("outcome").GetString(), competitor.Body.GetProperty("outcome").GetString() }.Order());
 
-            var clock = lateVisit with { ObservationId = Guid.NewGuid(), ObservedAtUtc = now.AddHours(1) };
+            var clock = lateVisit with { ObservationId = Guid.NewGuid(), ObservedAtUtc = now.AddHours(1).ToOffset(TimeSpan.FromHours(8)) };
+            var offsetless = JsonSerializer.SerializeToNode(clock, new JsonSerializerOptions(JsonSerializerDefaults.Web))!.AsObject();
+            offsetless["observedAtUtc"] = "2026-11-27T12:00:00";
+            using var invalidCapture = await station.PostAsJsonAsync(stationPath + "/observations", offsetless);
+            Assert.Equal(HttpStatusCode.BadRequest, invalidCapture.StatusCode);
             var suspect = await Send(station, stationPath, Guid.NewGuid(), clock);
             Assert.Equal("SuspiciousClock", suspect.Body.GetProperty("outcome").GetString());
             Assert.Equal(clock.ObservedAtUtc, suspect.Body.GetProperty("observedAtUtc").GetDateTimeOffset());

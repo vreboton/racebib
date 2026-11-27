@@ -68,8 +68,8 @@
               <div class="text-caption text-medium-emphasis">{{ item.location || 'Location not set' }}</div>
             </td>
             <td>
-              <div>{{ formatDate(item.startDate) }}</div>
-              <div class="text-caption text-medium-emphasis">to {{ formatDate(item.endDate) }}</div>
+              <div>{{ formatEventTime(item.startDate, item.timeZoneId, true) }}</div>
+              <div class="text-caption text-medium-emphasis">to {{ formatEventTime(item.endDate, item.timeZoneId, true) }}</div>
             </td>
             <td><v-chip size="small" :color="statusColor(item.status)" variant="tonal">{{ statusLabel(item.status) }}</v-chip></td>
             <td class="text-right">
@@ -104,6 +104,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatEventTime } from '../services/eventTime'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { eventStatuses, eventsApi, getApiError } from '../services/events'
@@ -193,9 +194,6 @@ function statusLabel(status: EventStatus) {
 }
 function statusColor(status: EventStatus) {
   return ({ Draft: 'grey', Published: 'info', RegistrationOpen: 'success', RegistrationClosed: 'warning', Ready: 'primary', Live: 'error', Completed: 'teal', Cancelled: 'grey-darken-1' } as Record<EventStatus, string>)[status]
-}
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(value))
 }
 </script>
 

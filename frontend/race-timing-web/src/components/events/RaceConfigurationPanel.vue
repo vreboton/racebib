@@ -192,7 +192,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { getApiError } from '../../services/events'
-import { loadConfiguration, localTime, saveConfiguration, scheduleOptions } from '../../services/raceConfiguration'
+import { loadConfiguration, saveConfiguration } from '../../services/raceConfiguration'
+import { localTime, scheduleOptions } from '../../services/eventTime'
 import type { Checkpoint, Configuration, Course, Race, Wave } from '../../services/raceConfiguration'
 import ScheduleInput from './ScheduleInput.vue'
 

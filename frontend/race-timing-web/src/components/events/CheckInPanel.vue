@@ -15,7 +15,7 @@
         <div class="runner-info">
           <div class="text-subtitle-1 font-weight-bold">{{ row.firstName }} {{ row.lastName }}</div>
           <div>Bib {{ row.bibNumber || 'unassigned' }} · {{ row.race }} · {{ statuses[row.status] }}</div>
-          <div v-if="row.checkedInAtUtc">Checked in {{ localTime.format(new Date(row.checkedInAtUtc)) }}</div>
+          <div v-if="row.checkedInAtUtc">Checked in {{ formatEventTime(row.checkedInAtUtc, zone) }}</div>
           <div v-else>Not checked in<span v-if="row.checkInError"> · {{ row.checkInError }}</span></div>
         </div>
         <v-btn v-if="row.checkedInAtUtc && row.canReverse" variant="outlined"
@@ -51,6 +51,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatEventTime } from '../../services/eventTime'
 import { onMounted, ref } from 'vue'
 import { api } from '../../services/api'
 import { getApiError } from '../../services/events'
@@ -68,10 +69,9 @@ interface VerificationRow {
   canReverse: boolean
 }
 
-const props = defineProps<{ eventId: string }>()
+const props = withDefaults(defineProps<{ eventId: string; zone?: string }>(), { zone: 'UTC' })
 const url = '/events/' + props.eventId + '/registrations'
 const statuses = ['Pending', 'Confirmed', 'Waitlisted', 'Withdrawn', 'DNF', 'DNS', 'Disqualified']
-const localTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 const rows = ref<VerificationRow[]>([])
 const query = ref('')
 const submittedQuery = ref('')
