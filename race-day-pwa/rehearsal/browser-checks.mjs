@@ -51,7 +51,11 @@ const server = createServer(async (request, response) => {
     let body = ''
     for await (const chunk of request) body += chunk
     attempts.push({ body, key: request.headers['idempotency-key'] })
-    if (attempts.length === 1) await new Promise(resolve => { blockedResponse = resolve })
+    if (attempts.length === 1) {
+      await new Promise(resolve => { blockedResponse = resolve })
+      response.destroy()
+      return
+    }
     return json({ observationId: JSON.parse(body).observationId, outcome: 'Accepted' })
   }
   const asset = files.get(path === '/' ? '/index.html' : path)
@@ -128,8 +132,8 @@ try {
     throw new Error('Interrupted replay failed after ' + attempts.length + ' attempts: ' +
       await competing.locator('body').innerText(), { cause: error })
   }
-  assert.equal(attempts.length, 2)
-  assert.deepEqual(attempts[0], attempts[1])
+  assert.ok(attempts.length >= 2)
+  for (const attempt of attempts.slice(1)) assert.deepEqual(attempt, attempts[0])
   await context.setOffline(true)
   await competing.getByLabel('Runner bib').fill('0049')
   await competing.getByRole('button', { name: 'Record crossing' }).click()
