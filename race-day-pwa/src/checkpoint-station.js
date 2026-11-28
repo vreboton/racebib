@@ -1,4 +1,4 @@
-import { permitTime, verifyStationPermit } from './station-permit.js'
+import { permitMatchesAssignment, permitTime, verifyStationPermit } from './station-permit.js'
 import { clockSample, clockWarning, createCapture, prepareSubmission } from './capture.js'
 import { loadAccountCaptures, openCaptureStore, readCapture, saveCapture } from './capture-store.js'
 import { captureLockName, retryDelay } from './offline-policy.js'
@@ -68,7 +68,8 @@ export function startCheckpoint() {
     try {
       const saved = storedPermits(operator)
       const previous = saved.get(key)
-      if (!issue && previous?.envelope?.payload !== permit.envelope.payload) return false
+      if (!issue && (!previous || previous.envelope?.payload !== permit.envelope?.payload ||
+        previous.envelope?.signature !== permit.envelope?.signature)) return false
       if (remove) saved.delete(key)
       else saved.set(key, { envelope: permit.envelope,
         lastWall: Math.max(permit.lastWall, issue ? -Infinity : previous.lastWall),
@@ -101,7 +102,8 @@ export function startCheckpoint() {
 
   function selectedPermit() {
     const assignment = selectedAssignment()
-    return assignment ? permits.get(stationKey(assignment)) : undefined
+    const permit = assignment ? permits.get(stationKey(assignment)) : undefined
+    return permitMatchesAssignment(permit?.claims, session?.user.id, assignment) ? permit : undefined
   }
 
   async function issuePermit() {
@@ -140,14 +142,13 @@ export function startCheckpoint() {
     }
   }
 
-  function invalidateChangedPermits(operator) {
-    for (const [key, permit] of permits) {
+  async function invalidateChangedPermits(operator) {
+    for (const [key, permit] of storedPermits(operator)) {
       const assignment = assignments.find(item => stationKey(item) === key)
-      if (!assignment?.entryOpen || assignment.generation !== permit.claims.generation ||
-        assignment.offlinePolicyRevision !== permit.claims.policyRevision ||
-        permit.claims.expiresAt * 1000 > Date.parse(assignment.operationalEndUtc) ||
-        permit.claims.issuedAt < Math.floor(Date.parse(assignment.operationalStartUtc) / 1000)) {
-        permits.delete(key)
+      const valid = await verifyStationPermit(permit.envelope, verificationKey, operator.user.id, assignment)
+      if (session !== operator) return
+      if (!valid) {
+        if (permits.get(key)?.envelope.payload === permit.envelope?.payload) permits.delete(key)
         persistPermit(operator, key, permit, { remove: true })
       }
     }
@@ -396,7 +397,8 @@ export function startCheckpoint() {
         renderAssignments(single?.eventId ?? previousEvent, single?.checkpointId ?? previousCheckpoint)
         assignmentsLoaded = true
         snapshot = { assignments, verifiedAt: Date.now(), eventId: '', checkpointId: '' }
-        invalidateChangedPermits(operator)
+        await invalidateChangedPermits(operator)
+        if (session !== operator) return
         rememberStation()
         if (!assignments.length) notice('No checkpoint assignments. Ask race control for access.')
       }
@@ -456,10 +458,12 @@ export function startCheckpoint() {
   function recordFailure(operator, row, error, phase) {
     if (session === operator && error.status === 403) {
       const key = stationKey(row.assignment)
-      const permit = permits.get(key)
-      if (permit) {
-        permits.delete(key)
-        persistPermit(operator, key, permit, { remove: true })
+      permits.delete(key)
+      try {
+        const stored = storedPermits(operator).get(key)
+        if (stored) persistPermit(operator, key, stored, { remove: true })
+      } catch (storageError) {
+        storageFailure(operator, storageError)
       }
     }
     const uncertain = !error.status || error.status >= 500 || error.code === 'timing_write_conflict' ||

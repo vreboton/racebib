@@ -14,7 +14,15 @@ export async function verifyStationPermit(envelope, key, accountId, assignment) 
     if (!await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' },
       publicKey, decode(envelope.signature), encoded)) return null
     const claims = JSON.parse(new TextDecoder().decode(encoded))
-    if (typeof claims.id !== 'string' || claims.operatorId !== accountId ||
+    return permitMatchesAssignment(claims, accountId, assignment) ? claims : null
+  } catch {
+    return null
+  }
+}
+
+export function permitMatchesAssignment(claims, accountId, assignment) {
+  if (!claims || !assignment?.entryOpen) return false
+  return !(typeof claims.id !== 'string' || claims.operatorId !== accountId ||
       claims.eventId !== assignment.eventId || claims.checkpointId !== assignment.checkpointId ||
       claims.generation !== assignment.generation || claims.policyRevision !== assignment.offlinePolicyRevision ||
       !Number.isSafeInteger(claims.issuedAt) || !Number.isSafeInteger(claims.expiresAt) ||
@@ -22,11 +30,7 @@ export async function verifyStationPermit(envelope, key, accountId, assignment) 
       !Number.isFinite(Date.parse(assignment.operationalStartUtc)) ||
       !Number.isFinite(Date.parse(assignment.operationalEndUtc)) ||
       claims.issuedAt * 1000 < Math.floor(Date.parse(assignment.operationalStartUtc) / 1000) * 1000 ||
-      claims.expiresAt * 1000 > Date.parse(assignment.operationalEndUtc)) return null
-    return claims
-  } catch {
-    return null
-  }
+      claims.expiresAt * 1000 > Date.parse(assignment.operationalEndUtc))
 }
 
 export function permitTime(permit, wallNow, monotonicNow) {

@@ -453,3 +453,29 @@ test('missing or denied Web Locks pauses sync while allowing consecutive durable
     })
   }
 })
+
+test('assignment refresh invalidates a permit issued by another tab after initialization', async () => {
+  const { window, get, start } = await operatorFixture()
+  let grants = [assignment]
+  window.fetch = async url => {
+    if (url.endsWith('/timing-clock')) return json({ serverUtc: new Date().toISOString() })
+    if (url.endsWith('/timing-assignments')) return json(grants)
+    throw new Error('Unexpected capture request')
+  }
+  try {
+    start()
+    await waitFor(() => !get('capture-button').disabled)
+    const response = await window.fetch('/api/v1/events/e/timing/checkpoints/cp/offline-permit')
+    const envelope = await response.json()
+    const storageKey = 'racebib.checkpoint.permits.u'
+    window.localStorage.setItem(storageKey, JSON.stringify([['e:cp', {
+      envelope, lastWall: Date.now(), lastVerifiedTime: Date.now(),
+    }]]))
+    grants = []
+    get('refresh').click()
+    await waitFor(() => window.localStorage.getItem(storageKey) === '[]')
+    assert.equal(get('capture-button').disabled, true)
+  } finally {
+    window.close()
+  }
+})
