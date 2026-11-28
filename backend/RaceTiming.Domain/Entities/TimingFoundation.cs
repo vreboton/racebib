@@ -19,6 +19,8 @@ public sealed class CheckpointAssignment
     public required string UserId { get; init; }
     public Guid Generation { get; set; }
     public bool Active { get; set; }
+    public int OfflineHours { get; set; } = 12;
+    public Guid OfflinePolicyRevision { get; set; }
 }
 
 public sealed class RaceTimingSetup

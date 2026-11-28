@@ -37,12 +37,12 @@ public sealed partial class TimingController(RaceTimingDbContext db, IAuditLogge
             where item.Status != EventStatus.Completed
             orderby item.Name, location.Code
             select new { eventId = item.Id, eventName = item.Name, item.TimeZoneId,
-                checkpointId = location.Id, location.Name, location.Code, grant.Generation, eventStatus = item.Status, entryOpen = item.Status == EventStatus.Live })
+                checkpointId = location.Id, location.Name, location.Code, grant.Generation, grant.OfflinePolicyRevision, item.StartDate, item.EndDate, eventStatus = item.Status, entryOpen = item.Status == EventStatus.Live })
             .ToListAsync(ct);
         return Ok(items.Select(x => new
         {
             x.eventId, x.eventName, TimeZoneId = EventsController.BrowserTimeZone(x.TimeZoneId),
-            x.checkpointId, x.Name, x.Code, x.Generation, x.eventStatus, x.entryOpen
+            x.checkpointId, x.Name, x.Code, x.Generation, x.OfflinePolicyRevision, operationalStartUtc = Utc(x.StartDate), operationalEndUtc = Utc(x.EndDate), x.eventStatus, x.entryOpen
         }));
     }
 

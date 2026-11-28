@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { randomUUID } from 'node:crypto'
+import { createSign, generateKeyPairSync, randomUUID, webcrypto } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { IDBFactory } from 'fake-indexeddb'
 import { loadAccountCaptures } from '../src/capture-store.js'
@@ -15,16 +15,34 @@ async function waitFor(condition) {
   }
 }
 const json = data => new Response(JSON.stringify(data))
-const assignment = { eventId: 'e', checkpointId: 'cp', generation: 'grant', eventName: 'Trail race', timeZoneId: 'Asia/Manila', name: 'Aid', entryOpen: true }
+const permitKeys = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
+const publicKey = permitKeys.publicKey.export({ type: 'spki', format: 'der' }).toString('base64url')
+const assignment = { eventId: 'e', checkpointId: 'cp', generation: 'grant', eventName: 'Trail race', timeZoneId: 'Asia/Manila', name: 'Aid', entryOpen: true,
+  offlinePolicyRevision: 'policy', operationalStartUtc: '2020-01-01T00:00:00Z', operationalEndUtc: '2099-01-01T00:00:00Z' }
 
 async function operatorFixture() {
   const html = await readFile(new URL('../index.html', import.meta.url), 'utf8')
-  const output = await build({ logLevel: 'silent', build: { write: false } })
+  const output = await build({ define: { 'import.meta.env.VITE_OFFLINE_PERMIT_PUBLIC_KEY': JSON.stringify(publicKey) }, logLevel: 'silent', build: { write: false } })
   const bundle = output.output.find(item => item.type === 'chunk' && item.isEntry)
   const dom = new JSDOM(html, { url: 'http://localhost:5174/', runScripts: 'outside-only', pretendToBeVisual: true })
   const window = dom.window
   const get = id => window.document.getElementById(id)
   Object.defineProperty(window.crypto, 'randomUUID', { value: randomUUID })
+  Object.defineProperty(window.crypto, 'subtle', { value: webcrypto.subtle })
+  window.TextDecoder = TextDecoder
+  let transport
+  Object.defineProperty(window, 'fetch', {
+    set: handler => { transport = handler },
+    get: () => (url, options) => {
+      const match = /events\/([^/]+)\/timing\/checkpoints\/([^/]+)\/offline-permit$/.exec(url)
+      if (!match) return transport(url, options)
+      const issuedAt = Math.floor(window.Date.now() / 1000)
+      const bytes = Buffer.from(JSON.stringify({ id: randomUUID(), operatorId: 'u', eventId: match[1], checkpointId: match[2],
+        generation: assignment.generation, policyRevision: assignment.offlinePolicyRevision, issuedAt, expiresAt: issuedAt + 43200 }))
+      const signature = createSign('SHA256').update(bytes).sign({ key: permitKeys.privateKey, dsaEncoding: 'ieee-p1363' })
+      return Promise.resolve(json({ payload: bytes.toString('base64url'), signature: signature.toString('base64url') }))
+    },
+  })
   window.indexedDB = new IDBFactory()
   const held = new Set()
   window.navigator.locks = { async request(name, _options, callback) {
@@ -37,10 +55,14 @@ async function operatorFixture() {
   window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} })
   window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} }
   window.sessionStorage.setItem('racebib.checkpoint.session', JSON.stringify({ accessToken: 'test', user: { id: 'u' } }))
-  return { window, get, start: () => window.eval(bundle.code) }
+  async function enableOffline() {
+    get('offline-permit').click()
+    await waitFor(() => get('permit-status').textContent.includes('minutes remaining'))
+  }
+  return { window, get, enableOffline, start: () => window.eval(bundle.code) }
 }
 test('captures on Enter before either lookup returns and retries an uncertain receipt unchanged', async () => {
-  const { window, get, start } = await operatorFixture()
+  const { window, get, enableOffline, start } = await operatorFixture()
   const pendingLookup = new Map()
   const submissions = []
   let expired = false
@@ -70,6 +92,7 @@ test('captures on Enter before either lookup returns and retries an uncertain re
   try {
     start()
     await waitFor(() => !get('capture-button').disabled)
+    await enableOffline()
     function capture(bib) {
       get('bib').value = bib
       get('capture').dispatchEvent(new window.Event('submit', { cancelable: true }))
@@ -188,7 +211,7 @@ test('scopes checkpoint choices to the selected event and clears them after even
 
 
 test('saves consecutive offline crossings and automatically resolves them after reconnect', async () => {
-  const { window, get, start } = await operatorFixture()
+  const { window, get, enableOffline, start } = await operatorFixture()
   let grants = [assignment, { ...assignment, eventId: 'revoked' }, { ...assignment, eventId: 'completed' }]
   const submitted = []
   const lookups = []
@@ -222,6 +245,11 @@ test('saves consecutive offline crossings and automatically resolves them after 
   try {
     start()
     await waitFor(() => get('assigned-event').options.length === 4)
+    for (const grant of grants) {
+      select('assigned-event', grant.eventId)
+      select('assigned-checkpoint', 'cp')
+      await enableOffline()
+    }
     connectivity(false)
     for (const [eventId, bib] of [['e', '0042'], ['e', '9999'], ['revoked', '0043'], ['completed', '0044']]) {
       select('assigned-event', eventId)
@@ -286,7 +314,7 @@ test('leaves the entered bib in place if its IndexedDB write fails', async () =>
 })
 
 test('an explicit access denial clears offline authorization while retaining captures', async () => {
-  const { window, get, start } = await operatorFixture()
+  const { window, get, enableOffline, start } = await operatorFixture()
   let denied = false
   window.fetch = async url => {
     if (url.endsWith('/timing-clock')) return denied ? new Response(null, { status: 403 }) :
@@ -301,6 +329,7 @@ test('an explicit access denial clears offline authorization while retaining cap
   try {
     start()
     await waitFor(() => !get('capture-button').disabled)
+    await enableOffline()
     connectivity(false)
     get('bib').value = '0042'
     get('capture').dispatchEvent(new window.Event('submit', { cancelable: true }))
@@ -319,7 +348,7 @@ test('an explicit access denial clears offline authorization while retaining cap
 })
 
 test('a capture read completing after logout never restores the previous account rows', async () => {
-  const { window, get, start } = await operatorFixture()
+  const { window, get, enableOffline, start } = await operatorFixture()
   let capturedRequests = 0
   window.fetch = async url => {
     if (url.endsWith('/timing-clock')) return json({ serverUtc: new Date().toISOString() })
@@ -331,6 +360,7 @@ test('a capture read completing after logout never restores the previous account
   try {
     start()
     await waitFor(() => !get('capture-button').disabled)
+    await enableOffline()
     Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: false })
     window.dispatchEvent(new window.Event('offline'))
     get('bib').value = '0042'
@@ -421,5 +451,31 @@ test('missing or denied Web Locks pauses sync while allowing consecutive durable
         window.close()
       }
     })
+  }
+})
+
+test('assignment refresh invalidates a permit issued by another tab after initialization', async () => {
+  const { window, get, start } = await operatorFixture()
+  let grants = [assignment]
+  window.fetch = async url => {
+    if (url.endsWith('/timing-clock')) return json({ serverUtc: new Date().toISOString() })
+    if (url.endsWith('/timing-assignments')) return json(grants)
+    throw new Error('Unexpected capture request')
+  }
+  try {
+    start()
+    await waitFor(() => !get('capture-button').disabled)
+    const response = await window.fetch('/api/v1/events/e/timing/checkpoints/cp/offline-permit')
+    const envelope = await response.json()
+    const storageKey = 'racebib.checkpoint.permits.u'
+    window.localStorage.setItem(storageKey, JSON.stringify([['e:cp', {
+      envelope, lastWall: Date.now(), lastVerifiedTime: Date.now(),
+    }]]))
+    grants = []
+    get('refresh').click()
+    await waitFor(() => window.localStorage.getItem(storageKey) === '[]')
+    assert.equal(get('capture-button').disabled, true)
+  } finally {
+    window.close()
   }
 })

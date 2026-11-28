@@ -257,6 +257,14 @@ namespace RaceTiming.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Generation")
                         .HasColumnType("char(36)");
 
+                    b.Property<int>("OfflineHours")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(12);
+
+                    b.Property<Guid>("OfflinePolicyRevision")
+                        .HasColumnType("char(36)");
+
                     b.HasKey("EventId", "CheckpointId", "UserId");
 
                     b.HasIndex("CheckpointId", "EventId");

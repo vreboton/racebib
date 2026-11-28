@@ -38,9 +38,18 @@
             <v-btn type="submit" color="primary" :disabled="busy || !checkpoint || !email.trim()">Grant checkpoint access</v-btn>
           </v-form>
           <div v-for="assignment in data.assignments" :key="`${assignment.checkpointId}-${assignment.userId}`"
-            class="d-flex align-center justify-space-between mt-3 ga-2">
+            class="mt-3">
+            <div class="d-flex align-center justify-space-between ga-2">
             <span>{{ assignment.displayName || assignment.email }} · {{ locations.find(x => x.value === assignment.checkpointId)?.title }}</span>
             <v-btn variant="outlined" :disabled="busy" @click="revoke(assignment.checkpointId, assignment.userId)">Revoke</v-btn>
+            </div>
+            <p>{{ assignment.offlineHours }}-hour offline permit limit</p>
+            <v-btn variant="text" :disabled="busy" @click="editOfflinePolicy(assignment)">Configure offline permit</v-btn>
+            <v-form v-if="offlineAssignment === assignment" @submit.prevent="saveOfflinePolicy">
+              <v-select v-model="offlineHours" :items="[12, 24, 36, 48]" label="Maximum offline hours" />
+              <v-text-field v-model="offlineReason" label="Reason for authorization limit" maxlength="300" />
+              <v-btn type="submit" :disabled="busy || !offlineReason.trim()">Approve permit limit</v-btn>
+            </v-form>
           </div>
         </v-card-text>
       </v-card>
@@ -112,7 +121,7 @@ interface Setup {
   locations: { id: string; code: string; name: string }[]
   courses: { id: string; name: string; version: number; occurrences: { id: string; name: string; sequence: number }[] }[]
   mappings: { occurrenceId: string; checkpointId: string }[]
-  assignments: { checkpointId: string; userId: string; displayName: string; email: string }[]
+  assignments: { checkpointId: string; userId: string; displayName: string; email: string; generation: string; offlineHours: number }[]
   races: { id: string; name: string; startAtUtc: string; waves: { id: string; name: string }[] }[]
   eventSchedule: { startUtc: string; endUtc: string; timeZoneId: string }
   setups: { raceId: string; courseId: string; windowStartUtc: string; windowEndUtc: string;
@@ -186,6 +195,23 @@ function grant() {
     const response = await api.get<{ id: string }>(base.value + '/setup/operator', { params: { email: email.value.trim() } })
     await api.put(base.value + `/checkpoints/${checkpoint.value}/assignments/${encodeURIComponent(response.data.id)}`, { active: true })
     email.value = ''
+  })
+}
+const offlineAssignment = ref<Setup['assignments'][number]>()
+const offlineHours = ref(12)
+const offlineReason = ref('')
+function editOfflinePolicy(assignment: Setup['assignments'][number]) {
+  offlineAssignment.value = assignment
+  offlineHours.value = assignment.offlineHours
+  offlineReason.value = ''
+}
+function saveOfflinePolicy() {
+  const assignment = offlineAssignment.value
+  if (!assignment) return
+  return action(async () => {
+    await api.put(base.value + `/checkpoints/${assignment.checkpointId}/assignments/${encodeURIComponent(assignment.userId)}/offline-policy`,
+      { hours: offlineHours.value, reason: offlineReason.value.trim(), generation: assignment.generation })
+    offlineAssignment.value = undefined
   })
 }
 function revoke(id: string, userId: string) {

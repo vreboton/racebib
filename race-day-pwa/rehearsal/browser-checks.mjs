@@ -1,8 +1,11 @@
+import { sign } from 'node:crypto'
 import assert from 'node:assert/strict'
 import { readFile, readdir } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { chromium } from 'playwright'
 
+const signingKey = process.env.REHEARSAL_PERMIT_PRIVATE_KEY
+assert.ok(signingKey, 'Build with a disposable public key and provide its private key to this fixture.')
 const dist = new URL('../dist/', import.meta.url)
 const files = new Map()
 for (const file of await readdir(dist, { recursive: true })) {
@@ -13,7 +16,8 @@ for (const file of await readdir(dist, { recursive: true })) {
 }
 
 const assignment = { eventId: 'test-event', checkpointId: 'test-checkpoint', name: 'Aid',
-  eventName: 'Synthetic event', entryOpen: true, generation: 'test-grant', timeZoneId: 'UTC' }
+  eventName: 'Synthetic event', entryOpen: true, generation: 'test-grant', timeZoneId: 'UTC', offlinePolicyRevision: 'test-policy',
+  operationalStartUtc: '2020-01-01T00:00:00Z', operationalEndUtc: '2099-01-01T00:00:00Z' }
 const attempts = []
 let blockedResponse
 let workerVersion = 1
@@ -33,13 +37,25 @@ const server = createServer(async (request, response) => {
   if (path.endsWith('/auth/logout')) return response.writeHead(204).end()
   if (path.endsWith('/me/timing-clock')) return json({ serverUtc: new Date().toISOString() })
   if (path.endsWith('/me/timing-assignments')) return json([assignment])
+  if (path.endsWith('/offline-permit')) {
+    const issuedAt = Math.floor(Date.now() / 1000)
+    const payload = Buffer.from(JSON.stringify({ id: 'test-permit', operatorId: 'operator', eventId: assignment.eventId,
+      checkpointId: assignment.checkpointId, generation: assignment.generation, policyRevision: assignment.offlinePolicyRevision,
+      issuedAt, expiresAt: issuedAt + 43200 }))
+    return json({ payload: payload.toString('base64url'),
+      signature: sign('sha256', payload, { key: signingKey, dsaEncoding: 'ieee-p1363' }).toString('base64url') })
+  }
   if (path.endsWith('/registrations')) return json({ registrationId: 'runner', raceId: 'race',
     bibNumber: '0042', occurrences: [{ occurrenceId: 'visit' }] })
   if (path.endsWith('/observations')) {
     let body = ''
     for await (const chunk of request) body += chunk
     attempts.push({ body, key: request.headers['idempotency-key'] })
-    if (attempts.length === 1) await new Promise(resolve => { blockedResponse = resolve })
+    if (attempts.length === 1) {
+      await new Promise(resolve => { blockedResponse = resolve })
+      response.destroy()
+      return
+    }
     return json({ observationId: JSON.parse(body).observationId, outcome: 'Accepted' })
   }
   const asset = files.get(path === '/' ? '/index.html' : path)
@@ -62,6 +78,8 @@ try {
   const first = await context.newPage()
   await first.goto(origin)
   await signIn(first)
+  await first.getByRole('button', { name: 'Get offline permit' }).click()
+  await first.getByText(/minutes remaining/).waitFor()
   await first.waitForFunction(() => navigator.serviceWorker.controller !== null)
   await context.setOffline(true)
   await first.getByLabel('Runner bib').fill('0042')
@@ -114,8 +132,8 @@ try {
     throw new Error('Interrupted replay failed after ' + attempts.length + ' attempts: ' +
       await competing.locator('body').innerText(), { cause: error })
   }
-  assert.equal(attempts.length, 2)
-  assert.deepEqual(attempts[0], attempts[1])
+  assert.ok(attempts.length >= 2)
+  for (const attempt of attempts.slice(1)) assert.deepEqual(attempt, attempts[0])
   await context.setOffline(true)
   await competing.getByLabel('Runner bib').fill('0049')
   await competing.getByRole('button', { name: 'Record crossing' }).click()

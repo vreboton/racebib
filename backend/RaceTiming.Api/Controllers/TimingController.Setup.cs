@@ -66,6 +66,8 @@ public sealed partial class TimingController
             {
                 grant.Active = input.Active;
                 grant.Generation = Guid.NewGuid();
+                grant.OfflineHours = 12;
+                grant.OfflinePolicyRevision = Guid.Empty;
                 audit.Record(User, input.Active ? "Timing.AssignmentGranted" : "Timing.AssignmentRevoked",
                     nameof(CheckpointAssignment), grant.Generation.ToString(), item.OrganizerId);
             }

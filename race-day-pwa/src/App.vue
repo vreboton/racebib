@@ -21,6 +21,8 @@
             If support was disabled, restore it and reload. Keep this profile and its site data.
           </p>
           <p id="assignment-freshness"></p>
+          <p id="permit-status" role="status"></p>
+          <button id="offline-permit" type="button">Get offline permit</button>
           <p id="station-time"></p>
           <label for="assigned-event">Assigned Event</label><select id="assigned-event"></select>
           <label for="assigned-checkpoint">Assigned Checkpoint</label><select id="assigned-checkpoint" disabled></select>

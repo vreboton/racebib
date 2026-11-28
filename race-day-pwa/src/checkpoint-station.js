@@ -1,6 +1,7 @@
+import { permitMatchesAssignment, permitTime, verifyStationPermit } from './station-permit.js'
 import { clockSample, clockWarning, createCapture, prepareSubmission } from './capture.js'
 import { loadAccountCaptures, openCaptureStore, readCapture, saveCapture } from './capture-store.js'
-import { captureLockName, retryDelay, validOfflineSnapshot } from './offline-policy.js'
+import { captureLockName, retryDelay } from './offline-policy.js'
 
 export function startCheckpoint() {
   const el = id => document.getElementById(id)
@@ -8,6 +9,11 @@ export function startCheckpoint() {
   const deviceKey = 'racebib.checkpoint.device'
   const offlineAccountKey = 'racebib.checkpoint.offline-account'
   const snapshotKey = accountId => 'racebib.checkpoint.snapshot.' + accountId
+  const permitKey = accountId => 'racebib.checkpoint.permits.' + accountId
+  const verificationKey = import.meta.env.VITE_OFFLINE_PERMIT_PUBLIC_KEY
+  const stationKey = assignment => assignment.eventId + ':' + assignment.checkpointId
+  let permits = new Map()
+  let issuingPermit = false
   const maximumPending = 200
   const probeLifetime = 45_000
   let session
@@ -51,6 +57,100 @@ export function startCheckpoint() {
       localStorage.setItem(offlineAccountKey, session.user.id)
     } catch (error) {
       storageFailure(session, error)
+    }
+  }
+
+  function storedPermits(operator) {
+    return new Map(JSON.parse(localStorage.getItem(permitKey(operator.user.id)) || '[]'))
+  }
+
+  function persistPermit(operator, key, permit, { issue = false, remove = false } = {}) {
+    try {
+      const saved = storedPermits(operator)
+      const previous = saved.get(key)
+      if (!issue && (!previous || previous.envelope?.payload !== permit.envelope?.payload ||
+        previous.envelope?.signature !== permit.envelope?.signature)) return false
+      if (remove) saved.delete(key)
+      else saved.set(key, { envelope: permit.envelope,
+        lastWall: Math.max(permit.lastWall, issue ? -Infinity : previous.lastWall),
+        lastVerifiedTime: Math.max(permit.lastVerifiedTime, issue ? -Infinity : previous.lastVerifiedTime),
+      })
+      localStorage.setItem(permitKey(operator.user.id), JSON.stringify([...saved]))
+      return true
+    } catch (error) {
+      storageFailure(operator, error)
+      return false
+    }
+  }
+
+  async function loadPermits(operator) {
+    const saved = storedPermits(operator)
+    const verified = new Map()
+    for (const assignment of assignments) {
+      const key = stationKey(assignment)
+      const record = saved.get(key)
+      if (!record) continue
+      const claims = await verifyStationPermit(record.envelope, verificationKey, operator.user.id, assignment)
+      if (!claims || !Number.isFinite(record.lastWall) || !Number.isFinite(record.lastVerifiedTime)) continue
+      verified.set(key, {
+        ...record, claims, anchorWall: record.lastWall,
+        anchorTime: Math.max(record.lastVerifiedTime, Date.now(), claims.issuedAt * 1000), anchorMonotonic: performance.now(),
+      })
+    }
+    if (session === operator) permits = verified
+  }
+
+  function selectedPermit() {
+    const assignment = selectedAssignment()
+    const permit = assignment ? permits.get(stationKey(assignment)) : undefined
+    return permitMatchesAssignment(permit?.claims, session?.user.id, assignment) ? permit : undefined
+  }
+
+  async function issuePermit() {
+    const operator = session
+    const assignment = selectedAssignment()
+    if (!onlineReady() || !assignment?.entryOpen || issuingPermit || !verificationKey || storageFailed) return
+    issuingPermit = true
+    updateStatus()
+    try {
+      const envelope = await api(checkpointPath(assignment) + '/offline-permit', { operator, body: {} })
+      const claims = await verifyStationPermit(envelope, verificationKey, operator.user.id, assignment)
+      if (!claims) throw new Error('The station could not verify the offline permit.')
+      const wall = Date.now()
+      if (Math.abs(wall - claims.issuedAt * 1000) > 120_000) {
+        throw new Error('Correct the device clock before enabling offline capture.')
+      }
+      if (session !== operator || !assignments.some(current => stationKey(current) === stationKey(assignment) && current.entryOpen &&
+        current.generation === claims.generation && current.offlinePolicyRevision === claims.policyRevision &&
+        claims.expiresAt * 1000 <= Date.parse(current.operationalEndUtc))) return
+      permits.set(stationKey(assignment), { envelope, claims, lastWall: wall,
+        lastVerifiedTime: Math.max(wall, claims.issuedAt * 1000), anchorWall: wall,
+        anchorTime: Math.max(wall, claims.issuedAt * 1000), anchorMonotonic: performance.now() })
+      if (!persistPermit(operator, stationKey(assignment), permits.get(stationKey(assignment)), { issue: true })) {
+        permits.delete(stationKey(assignment))
+      }
+      else notice()
+    } catch (error) {
+      if (session === operator) {
+        if (error.status === 403) invalidateAssignments(operator)
+        if (error.status === 401) requireAuthentication(operator)
+        notice(error.message)
+      }
+    } finally {
+      issuingPermit = false
+      updateStatus()
+    }
+  }
+
+  async function invalidateChangedPermits(operator) {
+    for (const [key, permit] of storedPermits(operator)) {
+      const assignment = assignments.find(item => stationKey(item) === key)
+      const valid = await verifyStationPermit(permit.envelope, verificationKey, operator.user.id, assignment)
+      if (session !== operator) return
+      if (!valid) {
+        if (permits.get(key)?.envelope.payload === permit.envelope?.payload) permits.delete(key)
+        persistPermit(operator, key, permit, { remove: true })
+      }
     }
   }
 
@@ -111,6 +211,7 @@ export function startCheckpoint() {
     assignments = []
     assignmentsLoaded = false
     snapshot = undefined
+    permits = new Map()
     forceRequested = false
     clearTimeout(syncTimer)
     renderAssignments('', '')
@@ -131,6 +232,8 @@ export function startCheckpoint() {
       if (snapshot) {
         assignments = snapshot.assignments.filter(assignment => assignment.eventStatus !== 'Completed')
         assignmentsLoaded = true
+        await loadPermits(operator)
+        if (session !== operator) return
         renderAssignments(snapshot.eventId, snapshot.checkpointId)
       }
       storageReady = true
@@ -182,7 +285,21 @@ export function startCheckpoint() {
   }
 
   const queueFull = () => rows.filter(row => !row.receipt && row.state !== 'Rejected').length + savingCaptures >= maximumPending
-  const offlineAllowed = () => validOfflineSnapshot(snapshot)
+  function remainingPermitTime(permit = selectedPermit()) {
+    if (!permit || !session) return 0
+    try {
+      const current = storedPermits(session).get(stationKey(selectedAssignment()))
+      if (current?.envelope?.payload !== permit.envelope.payload ||
+        current.envelope.signature !== permit.envelope.signature) return 0
+      permit.lastWall = Math.max(permit.lastWall, current.lastWall)
+      permit.lastVerifiedTime = Math.max(permit.lastVerifiedTime, current.lastVerifiedTime)
+      return permit.claims.expiresAt * 1000 - permitTime(permit, Date.now(), performance.now())
+    } catch {
+      return 0
+    }
+  }
+
+  const offlineAllowed = () => remainingPermitTime() > 0
   const canCapture = () => storageReady && !storageFailed && (onlineReady() || offlineAllowed()) &&
     selectedAssignment()?.entryOpen === true && !queueFull()
 
@@ -229,7 +346,7 @@ export function startCheckpoint() {
     if (queueFull()) detail = syncSupported()
       ? 'Queue full. Sync pending captures to continue.'
       : 'Queue full. Restore Web Locks support to synchronize and continue.'
-    else if (storageReady && !storageFailed && !online && !offlineAllowed()) detail = 'Connect and sign in to renew offline access.'
+    else if (storageReady && !storageFailed && !online && !offlineAllowed()) detail = 'Connect, sign in and get an offline permit to capture without a connection.'
     const quality = online ? clockWarning(sample) || 'Device clock checked.' :
       'Clock check is stale or unavailable. Captures use the current device time.'
     el('clock').textContent = connection + ' | ' + detail + '. ' + quality
@@ -237,6 +354,18 @@ export function startCheckpoint() {
     el('assignment-freshness').textContent = snapshot
       ? (online ? 'Assignments checked ' : 'Cached assignments checked ') + new Date(snapshot.verifiedAt).toLocaleString()
       : 'No verified assignments on this device.'
+    const permit = selectedPermit()
+    const remaining = remainingPermitTime(permit)
+    if (permit && remaining <= 0 && permit.lastVerifiedTime < permit.claims.expiresAt * 1000) {
+      permit.lastVerifiedTime = permit.claims.expiresAt * 1000
+      persistPermit(session, stationKey(selectedAssignment()), permit)
+    }
+    el('permit-status').textContent = !verificationKey ? 'Offline permits are unavailable in this app build.' : permit
+      ? 'Offline permit expires ' + formatStationTime(new Date(permit.claims.expiresAt * 1000), 'UTC', true) + ' UTC. ' +
+        (remaining > 0 ? Math.ceil(remaining / 60_000) + ' minutes remaining.' :
+          'Offline capture unavailable. Check the device clock and request a new permit online.')
+      : 'No offline permit for this station. Request one online before disconnecting.'
+    el('offline-permit').disabled = !verificationKey || !online || issuingPermit || storageFailed || !selectedAssignment()?.entryOpen
     el('reauthenticate').disabled = !navigator.onLine
     el('sync-compatibility').hidden = syncSupported()
     el('sync-now').disabled = !syncSupported() || !session?.accessToken || !navigator.onLine || !storageReady || storageFailed
@@ -268,6 +397,8 @@ export function startCheckpoint() {
         renderAssignments(single?.eventId ?? previousEvent, single?.checkpointId ?? previousCheckpoint)
         assignmentsLoaded = true
         snapshot = { assignments, verifiedAt: Date.now(), eventId: '', checkpointId: '' }
+        await invalidateChangedPermits(operator)
+        if (session !== operator) return
         rememberStation()
         if (!assignments.length) notice('No checkpoint assignments. Ask race control for access.')
       }
@@ -302,11 +433,13 @@ export function startCheckpoint() {
 
   function invalidateAssignments(operator) {
     snapshot = undefined
+    permits.clear()
     assignments = []
     assignmentsLoaded = false
     connected = false
     renderAssignments('', '')
     try {
+      localStorage.removeItem(permitKey(operator.user.id))
       localStorage.removeItem(snapshotKey(operator.user.id))
     } catch (error) {
       storageFailure(operator, error)
@@ -323,6 +456,16 @@ export function startCheckpoint() {
   }
 
   function recordFailure(operator, row, error, phase) {
+    if (session === operator && error.status === 403) {
+      const key = stationKey(row.assignment)
+      permits.delete(key)
+      try {
+        const stored = storedPermits(operator).get(key)
+        if (stored) persistPermit(operator, key, stored, { remove: true })
+      } catch (storageError) {
+        storageFailure(operator, storageError)
+      }
+    }
     const uncertain = !error.status || error.status >= 500 || error.code === 'timing_write_conflict' ||
       error.status === 401 || error.status === 429
     row.nextAttemptAt = uncertain ? Date.now() + retryDelay(row.retryCount + 1) : null
@@ -614,6 +757,7 @@ export function startCheckpoint() {
     if (!confirmLeaving()) return
     const operator = session
     localStorage.removeItem(offlineAccountKey)
+    localStorage.removeItem(permitKey(operator.user.id))
     expireSession()
     notice('Signed out. Pending captures stay on this device for your account.')
     if (!operator?.accessToken) return
@@ -639,6 +783,15 @@ export function startCheckpoint() {
       notice(error.message)
       return
     }
+    if (row.capturedOffline) {
+      const permit = selectedPermit()
+      const remaining = remainingPermitTime(permit)
+      if (!permit || remaining <= 0) { updateStatus(); return }
+      permit.lastVerifiedTime = permit.claims.expiresAt * 1000 - remaining
+      permit.lastWall = Date.now()
+      if (!persistPermit(operator, stationKey(row.assignment), permit)) { updateStatus(); return }
+      row.offlinePermitId = permit.claims.id
+    }
     savingCaptures += 1
     updateStatus()
     const saved = await persist(operator, row)
@@ -652,6 +805,7 @@ export function startCheckpoint() {
     render()
     if (canSync()) void processCapture(operator, row)
   })
+  el('offline-permit').addEventListener('click', () => void issuePermit())
   el('sync-now').addEventListener('click', () => void probe(true, true))
   el('refresh').addEventListener('click', () => void probe(true))
   el('assigned-event').addEventListener('change', () => {
@@ -686,7 +840,7 @@ export function startCheckpoint() {
   }
   window.addEventListener('beforeunload', onBeforeUnload)
   const probeInterval = setInterval(() => { updateStatus(); void probe(true) }, 15_000)
-  const clockInterval = setInterval(updateStationTime, 1000)
+  const clockInterval = setInterval(updateStatus, 1000)
 
   try {
     deviceId = localStorage.getItem(deviceKey) || crypto.randomUUID()

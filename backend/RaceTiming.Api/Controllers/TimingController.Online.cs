@@ -47,7 +47,7 @@ public sealed partial class TimingController
                 join user in db.Users on grant.UserId equals user.Id
                 where grant.EventId == eventId && grant.Active
                 orderby user.DisplayName, grant.CheckpointId
-                select new { grant.CheckpointId, grant.UserId, user.DisplayName, user.Email, grant.Generation })
+                select new { grant.CheckpointId, grant.UserId, user.DisplayName, user.Email, grant.Generation, grant.OfflineHours })
                 .ToListAsync(ct);
             var allGuns = db.Set<OfficialGunDeclaration>();
             var guns = await (from gun in allGuns

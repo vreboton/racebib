@@ -379,6 +379,8 @@ async function rehearseOffline(admin, { event, base, timing, aid, operatorEmail,
     await signIn(page)
     await page.getByLabel('Assigned Event').selectOption({ value: event.id })
     await page.getByLabel('Assigned Checkpoint').selectOption({ value: aid.id })
+    await page.getByRole('button', { name: 'Get offline permit' }).click()
+    await page.getByText(/minutes remaining/).waitFor()
     await page.waitForFunction(() => navigator.serviceWorker.controller !== null)
     await context.setOffline(true)
     for (const bib of ['0042', '0043', '9999']) {
