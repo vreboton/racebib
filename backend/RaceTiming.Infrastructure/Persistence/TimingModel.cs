@@ -26,6 +26,7 @@ internal static class TimingModel
 
         var grant = model.Entity<CheckpointAssignment>().ToTable("CheckpointAssignments");
         grant.HasKey(x => new { x.EventId, x.CheckpointId, x.UserId });
+        grant.Property(x => x.OfflineHours).HasDefaultValue(12);
         grant.HasIndex(x => new { x.UserId, x.Active });
         grant.HasOne<ApplicationUser>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);
         grant.HasOne<PhysicalCheckpoint>().WithMany().HasForeignKey(x => new { x.CheckpointId, x.EventId })

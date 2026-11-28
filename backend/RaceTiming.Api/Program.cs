@@ -109,6 +109,7 @@ builder.Services.AddRateLimiter(options =>
             }));
 });
 builder.Services.AddHealthChecks();
+builder.Services.AddSingleton<RaceTiming.Api.Services.StationPermitSigner>();
 
 var app = builder.Build();
 

@@ -35,7 +35,7 @@ public sealed partial class MySqlApiIntegrationTests
         var item = await db.Events.SingleAsync(x => x.Id == eventId);
         var now = DateTimeOffset.FromUnixTimeSeconds(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
         item.StartDate = now.UtcDateTime.AddHours(-1);
-        item.EndDate = now.UtcDateTime.AddDays(2);
+        item.EndDate = now.UtcDateTime.AddHours(49);
         var course = new Course { EventId = eventId, Name = "Out and back", DistanceKm = 10 };
         var points = Enumerable.Range(1, 4).Select(i => new CourseCheckpoint
         {
@@ -143,6 +143,54 @@ public sealed partial class MySqlApiIntegrationTests
             Assert.Equal(2, match.GetProperty("occurrences").GetArrayLength());
             using var lateLookup = await station.GetAsync(stationPath + "/registrations?bib=0100");
             Assert.Equal(HttpStatusCode.OK, lateLookup.StatusCode);
+
+            var permitPath = stationPath + "/offline-permit";
+            var policyPath = stationPath + $"/assignments/{operatorAccount.Id}/offline-policy";
+            async Task<long> VerifyPermit()
+            {
+                using var response = await station.PostAsJsonAsync(permitPath, new { });
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                var signedPermit = await response.Content.ReadFromJsonAsync<JsonElement>();
+                var payload = Microsoft.AspNetCore.WebUtilities.WebEncoders.Base64UrlDecode(signedPermit.GetProperty("payload").GetString()!);
+                var signature = Microsoft.AspNetCore.WebUtilities.WebEncoders.Base64UrlDecode(signedPermit.GetProperty("signature").GetString()!);
+                Assert.True(MySqlApiFactory.OfflinePermitKey.VerifyData(payload, signature, System.Security.Cryptography.HashAlgorithmName.SHA256,
+                    System.Security.Cryptography.DSASignatureFormat.IeeeP1363FixedFieldConcatenation));
+                using var decoded = JsonDocument.Parse(payload);
+                var permit = decoded.RootElement;
+                Assert.Equal(operatorAccount.Id, permit.GetProperty("operatorId").GetString());
+                Assert.Equal(eventId, permit.GetProperty("eventId").GetGuid());
+                Assert.Equal(aid, permit.GetProperty("checkpointId").GetGuid());
+                Assert.Equal(generation, permit.GetProperty("generation").GetGuid());
+                Assert.True(permit.GetProperty("expiresAt").GetInt64() <= new DateTimeOffset(item.EndDate).ToUnixTimeSeconds());
+                return permit.GetProperty("expiresAt").GetInt64() - permit.GetProperty("issuedAt").GetInt64();
+            }
+
+            Assert.Equal(12 * 3600, await VerifyPermit());
+            using var unauthorizedPolicy = await station.PutAsJsonAsync(policyPath, new { hours = 48, reason = "Not a manager", generation });
+            Assert.Equal(HttpStatusCode.Forbidden, unauthorizedPolicy.StatusCode);
+            using var excessivePolicy = await manager.PutAsJsonAsync(policyPath, new { hours = 49, reason = "Out of bounds", generation });
+            Assert.Equal(HttpStatusCode.BadRequest, excessivePolicy.StatusCode);
+            using var crossEventPermit = await station.PostAsJsonAsync($"/api/v1/events/{otherEventId}/timing/checkpoints/{aid}/offline-permit", new { });
+            Assert.Equal(HttpStatusCode.Forbidden, crossEventPermit.StatusCode);
+            foreach (var hours in new[] { 24, 36, 48 })
+            {
+                using var approved = await manager.PutAsJsonAsync(policyPath, new { hours, reason = "Approved coverage", generation });
+                Assert.Equal(HttpStatusCode.NoContent, approved.StatusCode);
+                var duration = await VerifyPermit();
+                Assert.Equal(hours * 3600, duration);
+            }
+
+            var permitBoundary = now.UtcDateTime.AddHours(2);
+            await db.Set<RaceTimingSetup>().Where(x => x.RaceId == race.Id)
+                .ExecuteUpdateAsync(x => x.SetProperty(setup => setup.WindowEndUtc, permitBoundary));
+            Assert.InRange(await VerifyPermit(), 3600, 7200);
+            await db.Set<RaceTimingSetup>().Where(x => x.RaceId == race.Id)
+                .ExecuteUpdateAsync(x => x.SetProperty(setup => setup.WindowEndUtc, item.EndDate));
+            var permitAudits = await db.AuditRecords.Where(x => x.OrganizerId == organizer &&
+                (x.Action == "Timing.OfflinePolicyChanged" || x.Action == "Timing.OfflinePermitIssued"))
+                .Select(x => x.MetadataJson).ToListAsync();
+            Assert.Equal(8, permitAudits.Count);
+            Assert.All(permitAudits, metadata => Assert.Contains(eventId.ToString(), metadata!));
 
             var gatePath = path + $"/checkpoints/{gate}";
             var gateGeneration = await Grant(manager, gatePath, operatorAccount.Id);
@@ -267,6 +315,8 @@ public sealed partial class MySqlApiIntegrationTests
 
             using var revoke = await manager.PutAsJsonAsync(stationPath + $"/assignments/{operatorAccount.Id}", new { active = false });
             Assert.Equal(HttpStatusCode.OK, revoke.StatusCode);
+            using var revokedPermit = await station.PostAsJsonAsync(permitPath, new { });
+            Assert.Equal(HttpStatusCode.Forbidden, revokedPermit.StatusCode);
             Assert.Equal(HttpStatusCode.Forbidden, (await Send(station, stationPath, key, lateVisit)).Status);
             Assert.NotEqual(generation, await Grant(manager, stationPath, operatorAccount.Id));
             var liveAssignments = await station.GetFromJsonAsync<JsonElement>("/api/v1/me/timing-assignments");
@@ -276,6 +326,8 @@ public sealed partial class MySqlApiIntegrationTests
             var acceptedBefore = await db.Set<AcceptedTiming>().CountAsync(x => x.EventId == eventId);
             using var completed = await manager.PatchAsJsonAsync($"/api/v1/events/{eventId}/status", new { status = "Completed" });
             Assert.Equal(HttpStatusCode.OK, completed.StatusCode);
+            using var completedPermit = await station.PostAsJsonAsync(permitPath, new { });
+            Assert.Equal(HttpStatusCode.Conflict, completedPermit.StatusCode);
             var afterCompletion = await station.GetFromJsonAsync<JsonElement>("/api/v1/me/timing-assignments");
             Assert.DoesNotContain(afterCompletion.EnumerateArray(), row => row.GetProperty("eventId").GetGuid() == eventId);
             using var closedGrant = await manager.PutAsJsonAsync(stationPath + $"/assignments/{operatorAccount.Id}", new { active = true });

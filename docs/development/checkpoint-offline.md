@@ -10,7 +10,7 @@ An updated worker installs into a separate cache and waits for the old app windo
 
 ## Offline authorization and storage
 
-A successful authenticated assignment refresh grants up to 12 hours of local capture on that browser profile. An assignment must have been open when last verified. The station shows whether assignments are cached and when they were checked. When online, fresh assignment data replaces the snapshot, including removal of completed events and revoked grants. An explicit server denial clears cached capture authorization while preserving saved evidence. A backwards device clock earlier than the verification timestamp also ends offline capture. The deadline is a client-side operational limit. The backend still authenticates and authorizes every request.
+Select the assigned station and click **Get offline permit** while connected. A signed permit allows offline capture for that station and account, up to 12 hours by default or 48 hours with explicit manager approval. The event and frozen timing windows can shorten that duration. Check the displayed expiry before disconnecting. Assignment refresh does not renew authorization. [Permit security and configuration](checkpoint-offline-permits.md) describes issuance, denial, clock and restart behavior.
 
 The device remembers the last account and that account's minimal assignment feed and selection in local storage. The queue is partitioned by account. First-time login, provisioning, and switching accounts require the API. Sign-out disables offline access until the next login. If a browser restart ends the authenticated tab session, the previous operator can still record locally within the offline window and must sign in again before upload. Bearer tokens remain in tab session storage. Anyone with access to an unlocked, provisioned browser profile may see and use that profile's offline station, so use a dedicated profile and lock the device when unattended.
 
@@ -32,7 +32,7 @@ For escalation, keep the profile intact and give Race Control the event, checkpo
 
 ## Rehearsal
 
-Use only a disposable local MySQL database and Development API with a synthetic seeded administrator. Follow the [online rehearsal setup](checkpoint-online.md#browser-rehearsal) for the API and administration app. For the checkpoint server run `npm ci`, then `npm run build` and `npm exec vite -- preview --host 127.0.0.1 --port 5194 --strictPort`, with `RACEBIB_API_ORIGIN` pointing to the disposable API. Set `REHEARSAL_OFFLINE=true` and run `npm run rehearsal`. The rehearsal supports custom origins through `REHEARSAL_API_ORIGIN`, `REHEARSAL_ADMIN_ORIGIN`, and `REHEARSAL_CHECKPOINT_ORIGIN`.
+Use only a disposable local MySQL database and Development API with a synthetic seeded administrator. Follow the [online rehearsal setup](checkpoint-online.md#browser-rehearsal) for the API and administration app. Configure a disposable signing key and the matching PWA public pin as described in the permit guide. For the checkpoint server run `npm ci`, then `npm run build` and `npm exec vite -- preview --host 127.0.0.1 --port 5194 --strictPort`, with `RACEBIB_API_ORIGIN` pointing to the disposable API. Set `REHEARSAL_OFFLINE=true` and run `npm run rehearsal`. The rehearsal supports custom origins through `REHEARSAL_API_ORIGIN`, `REHEARSAL_ADMIN_ORIGIN`, and `REHEARSAL_CHECKPOINT_ORIGIN`.
 
 Run `node rehearsal/browser-checks.mjs` after the PWA build for the additional Chromium checks against a synthetic HTTP fixture. The fixture covers worker updates and interrupted synchronization across tabs.
 

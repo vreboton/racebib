@@ -44,10 +44,24 @@ public sealed class AuditLogger(RaceTiming.Infrastructure.Persistence.RaceTiming
                      ((action == CheckInReversed && targetType == "Registration" ||
                        action == "Timing.RosterAmended" && targetType == nameof(TimingRosterEntry)) && pair.Key == "reason" &&
                       IsCheckInReversalReason(value)) ||
+                     (targetType == nameof(CheckpointAssignment) && IsOfflinePermitMetadata(action, pair.Key, value)) ||
                      (action == BulkBibAssigned && targetType == "Registration" && pair.Key == "eventId" &&
                       Guid.TryParseExact(value, "D", out _))))
                 .ToDictionary(pair => pair.Key, pair => pair.Value))
         });
+    }
+
+    private static bool IsOfflinePermitMetadata(string action, string key, string value)
+    {
+        if (action is not ("Timing.OfflinePolicyChanged" or "Timing.OfflinePermitIssued")) return false;
+        return key switch
+        {
+            "eventId" or "checkpointId" or "operatorId" or "policyRevision" or "generation" => Guid.TryParse(value, out _),
+            "issuedAt" or "expiresAt" => long.TryParse(value, out var seconds) && seconds > 0,
+            "hours" or "previousHours" => int.TryParse(value, out var hours) && hours is >= 12 and <= 48,
+            "reason" => action == "Timing.OfflinePolicyChanged" && IsCheckInReversalReason(value),
+            _ => false,
+        };
     }
 
     private static bool IsSensitiveKey(string key) =>

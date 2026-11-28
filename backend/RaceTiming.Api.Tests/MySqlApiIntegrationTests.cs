@@ -109,6 +109,9 @@ public sealed class MySqlApiFactory : WebApplicationFactory<Program>
         builder.UseEnvironment("Testing");
     }
 
+    internal static readonly System.Security.Cryptography.ECDsa OfflinePermitKey =
+        System.Security.Cryptography.ECDsa.Create(System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
+
     protected override IHost CreateHost(IHostBuilder builder)
     {
         builder.ConfigureHostConfiguration(configuration => configuration.AddInMemoryCollection(
@@ -119,6 +122,7 @@ public sealed class MySqlApiFactory : WebApplicationFactory<Program>
                 ["Jwt:Issuer"] = "RaceBib.IntegrationTests",
                 ["Jwt:Audience"] = "RaceBib.IntegrationTests",
                 ["Jwt:AccessTokenMinutes"] = "15",
+                ["OfflineStationPermits:SigningKeyPem"] = OfflinePermitKey.ExportPkcs8PrivateKeyPem(),
             }));
 
         return base.CreateHost(builder);
